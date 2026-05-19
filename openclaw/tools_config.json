@@ -1,0 +1,97 @@
+{
+  "tools": [
+    {
+      "name": "search_startups",
+      "description": "Search the startup database for companies matching criteria. Use this for ANY query about finding startups, discovering companies, or exploring a sector.",
+      "endpoint": "http://localhost:8000/scout/search",
+      "method": "POST",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "query":         { "type": "string",  "description": "Natural language search query" },
+          "country":       { "type": "string",  "description": "Filter by country (optional)" },
+          "industry":      { "type": "string",  "description": "Filter by industry (optional)" },
+          "funding_stage": { "type": "string",  "description": "Filter by stage: Pre-seed, Seed, Series A, etc." },
+          "limit":         { "type": "integer", "description": "Max results to return", "default": 10 }
+        },
+        "required": ["query"]
+      }
+    },
+
+    {
+      "name": "match_investor_to_startups",
+      "description": "Find startups that best match an investor's profile. Use when someone wants to discover investment opportunities or match startups to an investor thesis.",
+      "endpoint": "http://localhost:8000/matchmaking/find-startups",
+      "method": "POST",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name":               { "type": "string", "description": "Investor name" },
+          "type":               { "type": "string", "description": "VC, Angel, Family Office, Corporate" },
+          "focus_industries":   { "type": "array",  "items": { "type": "string" }, "description": "List of target industries" },
+          "focus_stages":       { "type": "array",  "items": { "type": "string" }, "description": "List of investment stages" },
+          "focus_regions":      { "type": "array",  "items": { "type": "string" }, "description": "List of target regions/countries" },
+          "thesis":             { "type": "string", "description": "Investment thesis (optional)" },
+          "limit":              { "type": "integer", "description": "Number of matches", "default": 10 }
+        },
+        "required": ["name", "focus_industries", "focus_stages", "focus_regions"]
+      }
+    },
+
+    {
+      "name": "add_startup",
+      "description": "Manually add a startup to the database. Use when the user mentions a specific company to track.",
+      "endpoint": "http://localhost:8000/scout/add-startup",
+      "method": "POST",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name":          { "type": "string", "description": "Startup name" },
+          "description":   { "type": "string", "description": "What they do" },
+          "industry":      { "type": "string", "description": "Primary sector" },
+          "country":       { "type": "string", "description": "Country" },
+          "city":          { "type": "string", "description": "City" },
+          "funding_stage": { "type": "string", "description": "Current stage" },
+          "website":       { "type": "string", "description": "Website URL" }
+        },
+        "required": ["name", "description"]
+      }
+    },
+
+    {
+      "name": "sector_report",
+      "description": "Generate a full sector intelligence report. Use for broad sector analysis questions.",
+      "endpoint": "http://localhost:8000/scout/sector-report",
+      "method": "POST",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "sector": { "type": "string", "description": "Sector name (e.g. AI, fintech, climate tech)" }
+        },
+        "required": ["sector"]
+      }
+    },
+
+    {
+      "name": "trigger_ingestion",
+      "description": "Trigger data ingestion to refresh the startup database. Use when asked to update, refresh, or scan for new startups.",
+      "endpoint": "http://localhost:8000/ingestion/run-all",
+      "method": "POST",
+      "schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+
+    {
+      "name": "check_database_status",
+      "description": "Check how many startups are in the database. Use when asked about database size or coverage.",
+      "endpoint": "http://localhost:8000/health",
+      "method": "GET",
+      "schema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}
