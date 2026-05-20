@@ -1,3 +1,6 @@
+import json
+import re
+import threading
 import logging
 from typing import Optional, List, Dict
 from config import settings
@@ -122,6 +125,44 @@ class QwenClient:
         if "<think>" in text and "</think>" in text:
             return text.split("</think>", 1)[-1].strip()
         return text.strip()
+
+    @staticmethod
+    def parse_json_array(response: str) -> list:
+        """
+        Robustly extract a JSON array from an LLM response.
+
+        Handles the two most common LLM formatting mistakes:
+          - Trailing commas before ] or }  e.g. {"a": 1,}
+          - Extra prose / markdown wrapping the array
+
+        Returns an empty list (never raises) if all attempts fail.
+        """
+        # Strip think blocks first
+        if "<think>" in response and "</think>" in response:
+            response = response.split("</think>", 1)[-1].strip()
+
+        start = response.find("[")
+        end = response.rfind("]") + 1
+        if start == -1 or end <= start:
+            return []
+
+        json_str = response[start:end]
+
+        # Attempt 1: direct parse
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            pass
+
+        # Attempt 2: strip trailing commas (most common LLM mistake)
+        repaired = re.sub(r",\s*([\]}])", r"\1", json_str)
+        try:
+            result = json.loads(repaired)
+            logger.debug("[Qwen] JSON repaired (trailing commas removed)")
+            return result
+        except json.JSONDecodeError:
+            logger.warning("[Qwen] JSON parsing failed even after repair — skipping response")
+            return []
 
 
 qwen_client = QwenClient()

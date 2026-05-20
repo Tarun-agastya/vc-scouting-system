@@ -1,6 +1,5 @@
 import os
 import base64
-import json
 import uuid
 import logging
 from typing import List
@@ -145,15 +144,7 @@ class NewsletterIngestor:
                 temperature=0.0,
             )
 
-            if "<think>" in response:
-                response = response.split("</think>")[-1].strip()
-
-            start = response.find("[")
-            end = response.rfind("]") + 1
-            if start == -1 or end <= start:
-                return []
-
-            startups: List[dict] = json.loads(response[start:end])
+            startups: List[dict] = qwen_client.parse_json_array(response)
             stored = []
 
             for startup in startups:

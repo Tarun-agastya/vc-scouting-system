@@ -1,6 +1,5 @@
 import feedparser
 import trafilatura
-import json
 import uuid
 import logging
 from typing import List, Optional
@@ -86,16 +85,9 @@ class RSSParser:
                 temperature=0.0,
             )
 
-            # Strip Qwen3 <think>…</think> blocks
-            if "<think>" in response:
-                response = response.split("</think>")[-1].strip()
-
-            start = response.find("[")
-            end = response.rfind("]") + 1
-            if start == -1 or end <= start:
+            startups: List[dict] = qwen_client.parse_json_array(response)
+            if not startups:
                 return []
-
-            startups: List[dict] = json.loads(response[start:end])
             stored = 0
             for startup in startups:
                 if startup.get("name") and len(startup["name"]) > 1:

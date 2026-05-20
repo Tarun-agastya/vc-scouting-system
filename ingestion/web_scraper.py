@@ -1,4 +1,3 @@
-import json
 import uuid
 import logging
 from typing import Optional
@@ -75,15 +74,9 @@ class WebScraper:
                 temperature=0.0,
             )
 
-            if "<think>" in response:
-                response = response.split("</think>")[-1].strip()
-
-            start = response.find("[")
-            end = response.rfind("]") + 1
-            if start == -1 or end <= start:
+            startups = qwen_client.parse_json_array(response)
+            if not startups:
                 return
-
-            startups = json.loads(response[start:end])
             stored = 0
 
             for startup in startups:
