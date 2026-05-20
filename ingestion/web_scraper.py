@@ -45,7 +45,18 @@ class WebScraper:
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch(headless=True)
                 page = await browser.new_page()
-                await page.goto(url, wait_until="networkidle", timeout=30_000)
+                # Spoof a real browser User-Agent — headless Chromium is instantly
+                # fingerprinted and blocked by Cloudflare without this.
+                await page.set_extra_http_headers({
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/125.0.0.0 Safari/537.36"
+                    )
+                })
+                # domcontentloaded is faster than networkidle; sites with
+                # background analytics/chat widgets never reach networkidle.
+                await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
                 html = await page.content()
                 await browser.close()
 
