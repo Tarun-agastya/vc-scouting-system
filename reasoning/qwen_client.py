@@ -23,6 +23,10 @@ class QwenClient:
         self.model = settings.ollama_reason_model
         self.base_url = settings.ollama_base_url
         self._ollama_client = None  # Lazy, cached — avoid re-creating on every call
+        # Cap concurrent Ollama calls to 2 — Qwen3:14b is large and the Mac Mini
+        # only has one inference backend. More than 2 threads queuing simultaneously
+        # wastes memory without improving throughput.
+        self._semaphore = threading.Semaphore(2)
 
     def _client(self):
         if self._ollama_client is None:
@@ -46,22 +50,23 @@ class QwenClient:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        try:
-            response = self._client().chat(
-                model=self.model,
-                messages=messages,
-                options={
-                    "temperature": temperature,
-                    "num_ctx": 4096,
-                    "num_predict": max_tokens,
-                },
-            )
-            content: str = response["message"]["content"]
-            return self._strip_thinking(content)
+        with self._semaphore:
+            try:
+                response = self._client().chat(
+                    model=self.model,
+                    messages=messages,
+                    options={
+                        "temperature": temperature,
+                        "num_ctx": 4096,
+                        "num_predict": max_tokens,
+                    },
+                )
+                content: str = response["message"]["content"]
+                return self._strip_thinking(content)
 
-        except Exception as exc:
-            logger.error(f"[Qwen] Generation failed: {exc}")
-            raise
+            except Exception as exc:
+                logger.error(f"[Qwen] Generation failed: {exc}")
+                raise
 
     def analyze_startup(self, startup: Dict) -> str:
         """Generate investment analysis for a single startup."""
