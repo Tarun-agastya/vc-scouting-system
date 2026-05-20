@@ -43,14 +43,29 @@ class NewsletterIngestor:
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
+                try:
+                    creds.refresh(Request())
+                except Exception as refresh_err:
+                    # Token is dead (Google OAuth "Testing" apps expire tokens every 7 days).
+                    # Remove it so the next call triggers a fresh browser login.
+                    logger.error(
+                        "[Gmail] Token refresh failed — deleting expired token. "
+                        "Re-run the process to open a new browser login flow. "
+                        f"Details: {refresh_err}"
+                    )
+                    if os.path.exists(TOKEN_PATH):
+                        os.remove(TOKEN_PATH)
+                    raise RuntimeError(
+                        "Gmail OAuth token expired and could not be refreshed. "
+                        "Delete credentials/token.json and restart to re-authenticate."
+                    ) from refresh_err
             else:
                 flow = InstalledAppFlow.from_client_secrets_file(
                     settings.gmail_credentials_path, SCOPES
                 )
                 creds = flow.run_local_server(port=0)
 
-            os.makedirs("./credentials", exist_ok=True)
+            os.makedirs(os.path.join(_PROJECT_ROOT, "credentials"), exist_ok=True)
             with open(TOKEN_PATH, "w") as token_file:
                 token_file.write(creds.to_json())
 
