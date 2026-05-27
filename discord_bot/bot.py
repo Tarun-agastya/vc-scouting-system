@@ -80,7 +80,7 @@ def build_scout_embed(query: str, data: dict) -> discord.Embed:
 
         embed.add_field(
             name=f"{name} | {location} | {stage}",
-            value=description or "No description",
+            value=f"{description}\n🔗 **Source:** {source_url}",
             inline=False,
         )
 
