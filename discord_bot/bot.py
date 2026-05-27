@@ -267,6 +267,9 @@ async def ingest_command(interaction: discord.Interaction, source: str = "rss"):
 
 @bot.tree.command(name="status", description="Check system status and database size")
 async def status_command(interaction: discord.Interaction):
+    # 1. Instantly tell Discord "I am thinking..." to prevent the 3-second timeout crash
+    await interaction.response.defer()
+    
     try:
         data = await call_api("GET", "/health")
         embed = discord.Embed(
@@ -275,9 +278,13 @@ async def status_command(interaction: discord.Interaction):
         )
         embed.add_field(name="Status", value=data.get("status", "unknown").upper(), inline=True)
         embed.add_field(name="Startups in DB", value=str(data.get("startups_in_db", "N/A")), inline=True)
-        await interaction.response.send_message(embed=embed)
+
+        # 2. Use followup.send() because we deferred the original response!
+
+        await interaction.followup.send(embed=embed)
     except Exception as exc:
-        await interaction.response.send_message("API server not reachable. Run `start.ps1` first.")
+        # 3. Use followup.send() for the error state too
+        await interaction.followup.send("API server not reachable. Run `start.ps1` first.")
 
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
