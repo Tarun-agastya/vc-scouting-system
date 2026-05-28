@@ -1,7 +1,7 @@
 # VC Scouting Intelligence System
 
 An automated, AI-powered platform for discovering, analyzing, and matching early-stage startups with venture capital investors. The system ingests data from multiple sources (RSS feeds, accelerator websites, university spin-off pages, newsletters), enriches it with local LLM reasoning, stores structured data in PostgreSQL and semantic vectors in Qdrant, and exposes everything through a REST API, a Discord bot, and an OpenClaw AI agent.
-
+test‚
 ---
 
 ## Goal
