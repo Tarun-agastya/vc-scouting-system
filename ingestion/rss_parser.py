@@ -1,6 +1,5 @@
 import feedparser
 import trafilatura
-import uuid
 import logging
 from datetime import datetime
 from typing import List, Optional
@@ -123,23 +122,12 @@ class RSSParser:
             return []
 
     def _store_startup(self, startup: dict, source: str, source_url: str, published_date: Optional[str] = None):
-        """Embed and store one startup in Qdrant."""
-        from embeddings.embedder import embedder
-        from vector_db.qdrant_store import qdrant_store
-
+        """Write to PostgreSQL first, then sync to Qdrant via the central storage layer."""
+        from processing.storage import upsert_startup
         try:
-            startup_id = str(uuid.uuid4())
-            embed_text = embedder.build_startup_text(startup)
-            vector = embedder.embed(embed_text)
-
-            payload = {
-                **startup,
-                "source": source,
-                "source_url": source_url,
-                "id": startup_id,
-                "published_date": published_date,
-            }
-            qdrant_store.upsert_startup(startup_id, vector, payload)
+            result_id = upsert_startup(startup, source, source_url, published_date)
+            if not result_id:
+                logger.debug(f"[RSS] Skipped (no name): {startup}")
         except Exception as exc:
             logger.error(f"[RSS] Store failed for {startup.get('name')}: {exc}")
 

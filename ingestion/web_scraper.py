@@ -1,4 +1,3 @@
-import uuid
 import logging
 from collections import deque
 from typing import Optional
@@ -199,15 +198,15 @@ class WebScraper:
     ):
         """
         Send aggregated multi-page content to Qwen for startup extraction,
-        then upsert each result into Qdrant.
+        then upsert each result via the central storage layer (PostgreSQL first,
+        then Qdrant).
 
         Content is trimmed to 12 000 chars so the combined context stays within
         Qwen's effective context window for structured extraction.
         """
         from reasoning.qwen_client import qwen_client
         from reasoning.prompts import NEWSLETTER_EXTRACTION_PROMPT
-        from embeddings.embedder import embedder
-        from vector_db.qdrant_store import qdrant_store
+        from processing.storage import upsert_startup
 
         context = content[:12_000]
 
@@ -228,19 +227,9 @@ class WebScraper:
                 name = startup.get("name", "").strip()
                 if not name or len(name) < 2:
                     continue
-
-                startup_id = str(uuid.uuid4())
-                embed_text = embedder.build_startup_text(startup)
-                vector = embedder.embed(embed_text)
-
-                payload = {
-                    **startup,
-                    "id": startup_id,
-                    "source": source_url,
-                    "source_type": source_type,
-                }
-                qdrant_store.upsert_startup(startup_id, vector, payload)
-                stored += 1
+                result_id = upsert_startup(startup, source_url, source_url)
+                if result_id:
+                    stored += 1
 
             logger.info(f"[Scraper] Stored {stored} startups from {source_url}")
 
