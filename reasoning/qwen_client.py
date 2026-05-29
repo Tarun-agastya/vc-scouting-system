@@ -57,7 +57,7 @@ class QwenClient:
                     messages=messages,
                     options={
                         "temperature": temperature,
-                        "num_ctx": 4096,
+                        "num_ctx": 8192,  # Qwen3:14b supports 32 768 — 4096 caused silent truncation
                         "num_predict": max_tokens,
                     },
                 )
