@@ -26,18 +26,26 @@ Return a JSON array. Each element must follow this schema exactly:
     "name": "startup name (required)",
     "description": "what they do in 1-2 sentences",
     "website": "URL if mentioned, else null",
-    "industry": "primary sector (e.g. AI, Fintech, Healthtech, Climatetech, SaaS, Deeptech)",
+    "industry": "primary sector (e.g. AI, Fintech, Climatetech, SaaS, Deeptech, Logistics, PropTech)",
     "sub_industry": "more specific niche if identifiable",
     "country": "country if mentioned, else null",
     "city": "city if mentioned, else null",
     "funding_stage": "Pre-seed / Seed / Series A / Series B / Series C / Growth / null",
     "funding_amount": "amount raised if mentioned, else null",
+    "founded_year": "4-digit year as integer if mentioned, else null",
+    "contact_info": "email address or LinkedIn URL if mentioned, else null",
+    "published_date": "ISO 8601 date string of the article/newsletter publish date if identifiable, else null",
     "founders": ["founder name 1", "founder name 2"],
     "tags": ["tag1", "tag2"]
   }}
 ]
 
-Rules:
+STRICT EXCLUSION RULE:
+DO NOT extract startups operating in medicine, biotech, e-commerce, or food
+(unless the startup is strictly related to packaging technology).
+If a startup falls into any of these excluded categories, ignore it entirely and do not include it in the output.
+
+Additional Rules:
 - Only include companies that are clearly startups or scale-ups.
 - Do NOT include large corporations, VCs, or media outlets.
 - If a field is unknown, use null — never guess.
@@ -72,14 +80,9 @@ You retrieved {count} relevant startups from the database. Here are the most rel
 
 {startup_list}
 
-Write an investor-grade intelligence report with these sections:
-1. **Executive Summary** — 2-3 sentence overview of findings
-2. **Top 5 Most Promising** — name each, explain why (1-2 sentences each)
-3. **Market Trends** — what patterns emerge across these companies?
-4. **Investment Themes** — 2-3 themes an investor should track
-5. **Recommended Next Steps** — concrete due diligence actions
-
-Be analytical, specific, and actionable. Avoid fluff."""
+Write a maximum of 2 sentences as an introduction summarising the search results.
+Then output the startup data directly — no executive summaries, no market trend sections.
+Be direct and concise."""
 
 MATCHMAKING_RATIONALE_PROMPT = """Explain in 2-3 sentences why this startup is a strong match
 for the investor profile below. Be specific — cite exact alignment points.
