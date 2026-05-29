@@ -47,6 +47,22 @@ class Startup(Base):
     source_url = Column(String(500))
     source_type = Column(String(100))
 
+    # Source attribution history — never overwritten, only appended
+    # Format: [{"source": "...", "url": "...", "date": "..."}, ...]
+    source_history = Column(JSON, default=list)
+
+    # Deduplication identity
+    normalized_name = Column(String(255), index=True)
+    fingerprint = Column(String(64), unique=True, nullable=True, index=True)
+
+    # Contact
+    contact_info = Column(String(500))
+    linkedin = Column(String(500))
+
+    # Enrichment tracking
+    enrichment_score = Column(Float, default=0.0)
+    last_enriched_at = Column(DateTime, nullable=True)
+
     # AI-generated insights
     ai_summary = Column(Text)
     investment_thesis = Column(Text)
