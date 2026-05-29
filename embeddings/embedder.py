@@ -33,7 +33,7 @@ class Embedder:
         try:
             response = self._client().embeddings(
                 model=self.model,
-                prompt=text[:2000],  # Stay within context limit
+                prompt=text[:6000],  # nomic-embed-text supports 8192 tokens
             )
             return response["embedding"]
         except Exception as exc:
