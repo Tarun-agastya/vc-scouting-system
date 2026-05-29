@@ -2,6 +2,7 @@ import feedparser
 import trafilatura
 import uuid
 import logging
+from datetime import datetime
 from typing import List, Optional
 from ingestion.sources import RSS_FEEDS
 
@@ -37,6 +38,24 @@ class RSSParser:
             except Exception as exc:
                 logger.error(f"[RSS] Failed for {url}: {exc}")
 
+    # ── Date Helper ───────────────────────────────────────────────────────────
+
+    def _get_published_date(self, entry) -> Optional[str]:
+        """Return ISO 8601 publish date string from a feedparser entry, or None."""
+        if getattr(entry, "published_parsed", None):
+            try:
+                return datetime(*entry.published_parsed[:6]).isoformat()
+            except Exception:
+                pass
+        raw = getattr(entry, "published", None) or getattr(entry, "updated", None)
+        if raw:
+            try:
+                import email.utils
+                return email.utils.parsedate_to_datetime(raw).isoformat()
+            except Exception:
+                pass
+        return None
+
         logger.info(f"[RSS] Total startups extracted: {len(all_startups)}")
         return all_startups
 
@@ -67,9 +86,10 @@ class RSSParser:
         if len(full_text) < 80:
             return []
 
-        return self._extract_startups(full_text, source_url, link)
+        published_date = self._get_published_date(entry)
+        return self._extract_startups(full_text, source_url, link, published_date)
 
-    def _extract_startups(self, text: str, source: str, source_url: str) -> List[dict]:
+    def _extract_startups(self, text: str, source: str, source_url: str, published_date: Optional[str] = None) -> List[dict]:
         """
         Call Qwen to extract structured startup data from raw text.
         Import is deferred so this module can be imported before Ollama is ready.
@@ -91,7 +111,7 @@ class RSSParser:
             stored = 0
             for startup in startups:
                 if startup.get("name") and len(startup["name"]) > 1:
-                    self._store_startup(startup, source, source_url)
+                    self._store_startup(startup, source, source_url, published_date)
                     stored += 1
 
             if stored:
@@ -102,7 +122,7 @@ class RSSParser:
             logger.debug(f"[RSS] Extraction failed: {exc}")
             return []
 
-    def _store_startup(self, startup: dict, source: str, source_url: str):
+    def _store_startup(self, startup: dict, source: str, source_url: str, published_date: Optional[str] = None):
         """Embed and store one startup in Qdrant."""
         from embeddings.embedder import embedder
         from vector_db.qdrant_store import qdrant_store
@@ -117,6 +137,7 @@ class RSSParser:
                 "source": source,
                 "source_url": source_url,
                 "id": startup_id,
+                "published_date": published_date,
             }
             qdrant_store.upsert_startup(startup_id, vector, payload)
         except Exception as exc:

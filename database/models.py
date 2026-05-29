@@ -35,6 +35,9 @@ class Startup(Base):
     total_funding_usd = Column(Float)
     last_funding_date = Column(DateTime)
 
+    # Publication tracking
+    published_at = Column(DateTime, nullable=True)
+
     # Company details
     founded_year = Column(Integer)
     employee_count = Column(String(50))
