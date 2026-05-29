@@ -65,24 +65,52 @@ async def call_api(
 
 def build_scout_embed(query: str, data: dict) -> discord.Embed:
     """Format scout results as a Discord embed."""
+    analysis = data.get("ai_analysis") or ""
+    # Limit intro to maximum 2 sentences
+    sentences = [s.strip() for s in analysis.split(".") if s.strip()]
+    intro = ". ".join(sentences[:2]) + ("." if len(sentences) >= 2 else "")
+
     embed = discord.Embed(
         title=f"Scout: {query[:100]}",
-        description=(data.get("ai_analysis") or "No analysis available.")[:2000],
+        description=intro[:500] or "No analysis available.",
         color=discord.Color.blue(),
     )
     embed.set_footer(text=f"Found {data.get('total_found', 0)} startups in database")
 
     for startup in data.get("startups", [])[:5]:
         name = startup.get("name", "Unknown")
-        location = f"{startup.get('city', '')}, {startup.get('country', '')}".strip(", ")
-        stage = startup.get("funding_stage") or "Stage N/A"
-        description = str(startup.get("description") or "")[:120]
+        city = startup.get("city") or ""
+        country = startup.get("country") or ""
+        place = f"{city}, {country}".strip(", ") or "N/A"
+        founded = startup.get("founded_year") or "N/A"
 
-        embed.add_field(
-            name=f"{name} | {location} | {stage}",
-            value=f"{description}\n🔗 **Source:** {source_url}",
-            inline=False,
+        stage = startup.get("funding_stage") or "N/A"
+        amount = startup.get("funding_amount")
+        funding = f"{stage} ({amount})" if amount else stage
+
+        contact = startup.get("contact_info") or "N/A"
+
+        raw_desc = str(startup.get("description") or "")
+        summary = raw_desc.split(".")[0].strip()
+        if summary and not summary.endswith("."):
+            summary += "."
+
+        source_url = startup.get("source_url") or startup.get("website") or "N/A"
+        published = (
+            startup.get("published_date")
+            or startup.get("published_at")
+            or "N/A"
         )
+
+        value = (
+            f"**Place/Origin:** {place}\n"
+            f"**Founded:** {founded}\n"
+            f"**Funding:** {funding}\n"
+            f"**Contact:** {contact}\n"
+            f"**Summary:** {summary or 'N/A'}\n"
+            f"**Source:** {source_url} | **Date:** {published}"
+        )
+        embed.add_field(name=f"**{name}**", value=value[:1024], inline=False)
 
     return embed
 
