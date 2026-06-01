@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections import deque
 from typing import Optional
@@ -119,39 +120,82 @@ class WebScraper:
         source_type: str = "general",
         max_depth: int = 2,
         max_pages: int = 10,
+        # url_priority_map: dict = None  # extension point: future priority crawling
     ):
-        """Entry point: deep-crawl `url`, extract startups, store in Qdrant."""
-        aggregated = await self._deep_crawl(url, max_depth=max_depth, max_pages=max_pages)
-        if aggregated:
-            await self._extract_and_store(aggregated, url, source_type)
-        else:
-            logger.warning(f"[Scraper] No content retrieved from {url}")
+        """
+        Coordinator: launches the 4-stage worker pipeline and awaits completion.
 
-    # ── BFS Deep Crawler ──────────────────────────────────────────────────────
+        Stages
+        ------
+        Crawler Task  →  page_queue  →  Chunker Task  →  chunk_queue
+          →  Qwen Worker(s)  →  storage_queue  →  Storage Worker
 
-    async def _deep_crawl(
+        Scraping and Qwen extraction run concurrently.  Back-pressure from
+        bounded queues prevents memory explosions when Qwen falls behind.
+
+        Returns PipelineMetrics for the completed run (callers may ignore it).
+        """
+        import time
+        from config import settings
+        from ingestion.worker_queue import (
+            PipelineMetrics,
+            chunker_task,
+            qwen_worker_task,
+            storage_worker_task,
+        )
+
+        metrics = PipelineMetrics()
+        t0 = time.time()
+        num_workers = settings.max_qwen_workers
+
+        page_queue    = asyncio.Queue(maxsize=settings.page_queue_size)
+        chunk_queue   = asyncio.Queue(maxsize=settings.chunk_queue_size)
+        storage_queue = asyncio.Queue(maxsize=settings.storage_queue_size)
+
+        await asyncio.gather(
+            self._crawler_task(
+                url, source_type, max_depth, max_pages, page_queue, metrics
+            ),
+            chunker_task(page_queue, chunk_queue, metrics),
+            *[
+                qwen_worker_task(chunk_queue, storage_queue, metrics, i)
+                for i in range(num_workers)
+            ],
+            storage_worker_task(storage_queue, metrics, num_workers),
+        )
+
+        metrics.total_processing_time = time.time() - t0
+        metrics.report(url)
+        return metrics
+
+    # ── BFS Crawler Task ──────────────────────────────────────────────────────
+
+    async def _crawler_task(
         self,
         start_url: str,
-        max_depth: int = 2,
-        max_pages: int = 10,
-    ) -> str:
+        source_type: str,
+        max_depth: int,
+        max_pages: int,
+        page_queue: asyncio.Queue,
+        metrics: "PipelineMetrics",
+    ) -> None:
         """
-        Asynchronous BFS crawler.
+        Asynchronous BFS crawler — Stage 1 of the worker pipeline.
 
-        Starts at `start_url` (depth 0), follows <a href> links at depth 1,
-        and their children at depth 2. Only links that share the exact same
-        base domain as `start_url` are followed. Stops when `max_pages` unique
-        pages have been scraped.
+        Fetches pages and puts PageItems into page_queue as each page is
+        retrieved, so the chunker and Qwen workers can start processing
+        immediately without waiting for the entire crawl to complete.
 
-        Returns all page texts concatenated with
-            --- Source: <url> ---
-        section headers so the LLM can attribute each passage.
+        Puts the None sentinel into page_queue when the BFS is exhausted.
+        Domain isolation, SKIP_PATTERNS filtering, and Playwright fallback
+        are all preserved from the original _deep_crawl implementation.
         """
+        from ingestion.worker_queue import PageItem
+
         allowed_domain = _base_domain(start_url)
         visited: set = set()
         # Queue items: (url, depth)
         queue: deque = deque([(start_url, 0)])
-        page_blocks: list = []
 
         async with httpx.AsyncClient(
             headers=_HEADERS,
@@ -168,15 +212,24 @@ class WebScraper:
 
                 html = await self._fetch_page(client, current_url)
                 if not html:
+                    metrics.inc("pages_skipped")
                     continue
 
                 text = _extract_text(html)
                 if text:
-                    page_blocks.append(f"--- Source: {current_url} ---\n{text}")
+                    await page_queue.put(PageItem(
+                        url=current_url,
+                        text=text,
+                        source_type=source_type,
+                        source_url=start_url,
+                    ))
+                    metrics.inc("pages_crawled")
                     logger.debug(
                         f"[Scraper] [{depth}] Crawled {current_url} "
                         f"({len(text)} chars)"
                     )
+                else:
+                    metrics.inc("pages_skipped")
 
                 # Only enqueue children if we haven't reached max depth
                 if depth < max_depth:
@@ -189,10 +242,10 @@ class WebScraper:
                         queue.append((link, depth + 1))
 
         logger.info(
-            f"[Scraper] Deep crawl complete — {len(page_blocks)} pages "
+            f"[Scraper] Crawl complete — {metrics.pages_crawled} pages "
             f"scraped from {allowed_domain}"
         )
-        return "\n\n".join(page_blocks)
+        await page_queue.put(None)  # sentinel: signals chunker that crawl is done
 
     # ── Fetch Strategies ──────────────────────────────────────────────────────
 
@@ -233,38 +286,6 @@ class WebScraper:
         except Exception as exc:
             logger.error(f"[Scraper] Playwright failed {url}: {exc}")
         return ""
-
-    # ── Extraction & Storage ──────────────────────────────────────────────────
-
-    async def _extract_and_store(
-        self, content: str, source_url: str, source_type: str
-    ):
-        """
-        Run the chunked extraction pipeline on aggregated crawl content,
-        then store each discovered startup via the central storage layer.
-
-        Phase 3: replaces the old content[:12_000] + single Qwen call.
-        The pipeline splits the full content into overlapping chunks,
-        filters non-startup chunks, and calls Qwen on each passing chunk.
-        """
-        from ingestion.pipeline import pipeline
-        from processing.storage import upsert_startup
-
-        try:
-            startups = pipeline.run(content, source_url, source_type)
-            if not startups:
-                return
-            stored = 0
-            for startup in startups:
-                name = startup.get("name", "").strip()
-                if not name or len(name) < 2:
-                    continue
-                result_id = upsert_startup(startup, source_url, source_url)
-                if result_id:
-                    stored += 1
-            logger.info(f"[Scraper] Stored {stored} startups from {source_url}")
-        except Exception as exc:
-            logger.error(f"[Scraper] Extraction/store failed for {source_url}: {exc}")
 
 
 web_scraper = WebScraper()
