@@ -1,4 +1,3 @@
-import uuid
 import logging
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -6,6 +5,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, HttpUrl
 from database.connection import get_db
 from database.models import Startup, ScoutingSession
+from processing.deduplicator import name_to_stable_uuid
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -100,64 +100,50 @@ async def search_startups(request: ScoutRequest, db: Session = Depends(get_db)):
 async def add_startup(
     request: StartupAddRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
 ):
     """
     Manually add a startup to PostgreSQL and Qdrant.
+
+    Uses the same deduplication pipeline as automated ingestion:
+      fingerprint = sha256(normalized_name | domain)
+      stable UUID  = uuid5(NAMESPACE_URL, fingerprint)
+
+    If the startup already exists, its record is enriched and
+    source_history is extended rather than creating a duplicate row.
     AI analysis runs in the background after the response is returned.
     """
-    from embeddings.embedder import embedder
-    from vector_db.qdrant_store import qdrant_store
+    from processing.storage import upsert_startup
 
-    startup_id = str(uuid.uuid4())
+    # Derive the stable ID up-front so we can return it in error responses too
+    stable_id = name_to_stable_uuid(request.name, request.website or "")
+    if not stable_id:
+        raise HTTPException(status_code=422, detail="Startup name is required")
 
-    # Embed immediately — fail fast with a helpful error before touching the DB
     try:
-        embed_text = embedder.build_startup_text(request.model_dump())
-        vector = embedder.embed(embed_text)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        result_id = upsert_startup(
+            startup=request.model_dump(),
+            source=request.source or "manual",
+            source_url=request.website or "",
+        )
+    except Exception as exc:
+        logger.error(f"[Scout] /add-startup failed for '{request.name}': {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
 
-    # Save to PostgreSQL
-    db_startup = Startup(
-        id=startup_id,
-        name=request.name,
-        description=request.description,
-        industry=request.industry,
-        sub_industry=request.sub_industry,
-        country=request.country,
-        city=request.city,
-        funding_stage=request.funding_stage,
-        website=request.website,
-        source=request.source,
-        tags=request.tags,
-        embedding_id=startup_id,
-    )
-    db.add(db_startup)
-    db.commit()
-
-    # Save to Qdrant
-    qdrant_store.upsert_startup(
-        startup_id=startup_id,
-        vector=vector,
-        payload={
-            "id": startup_id,
-            "name": request.name,
-            "description": request.description,
-            "industry": request.industry,
-            "country": request.country,
-            "city": request.city,
-            "funding_stage": request.funding_stage,
-            "website": request.website,
-            "tags": request.tags,
-            "source": request.source,
-        },
-    )
+    if result_id is None:
+        # upsert_startup returns None when the embedder (Ollama) is unreachable
+        raise HTTPException(
+            status_code=503,
+            detail="Could not store startup — is Ollama running?",
+        )
 
     # AI analysis in background (does not block the response)
-    background_tasks.add_task(_run_ai_analysis, startup_id)
+    background_tasks.add_task(_run_ai_analysis, result_id)
 
-    return {"status": "added", "id": startup_id, "message": "AI analysis running in background"}
+    return {
+        "status": "ok",
+        "id": result_id,
+        "message": "Startup saved. AI analysis running in background.",
+    }
 
 
 @router.get("/startup/{startup_id}")
