@@ -90,33 +90,23 @@ class RSSParser:
 
     def _extract_startups(self, text: str, source: str, source_url: str, published_date: Optional[str] = None) -> List[dict]:
         """
-        Call Qwen to extract structured startup data from raw text.
-        Import is deferred so this module can be imported before Ollama is ready.
+        Run the chunked extraction pipeline on article text.
+
+        Phase 3: replaces the old text[:3500] + single Qwen call.
+        Import is deferred so this module can be loaded before Ollama is ready.
         """
-        from reasoning.qwen_client import qwen_client
-        from reasoning.prompts import NEWSLETTER_EXTRACTION_PROMPT
+        from ingestion.pipeline import pipeline
 
         try:
-            prompt = NEWSLETTER_EXTRACTION_PROMPT.format(text=text[:3500])
-            response = qwen_client.generate(
-                prompt,
-                system="Return ONLY a valid JSON array. No explanation, no markdown.",
-                temperature=0.0,
-            )
-
-            startups: List[dict] = qwen_client.parse_json_array(response)
-            if not startups:
-                return []
+            startups = pipeline.run(text, source_url, source, published_date)
             stored = 0
             for startup in startups:
                 if startup.get("name") and len(startup["name"]) > 1:
                     self._store_startup(startup, source, source_url, published_date)
                     stored += 1
-
             if stored:
                 logger.info(f"[RSS] Stored {stored} startups from {source_url}")
             return startups
-
         except Exception as exc:
             logger.debug(f"[RSS] Extraction failed: {exc}")
             return []

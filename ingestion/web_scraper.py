@@ -197,32 +197,21 @@ class WebScraper:
         self, content: str, source_url: str, source_type: str
     ):
         """
-        Send aggregated multi-page content to Qwen for startup extraction,
-        then upsert each result via the central storage layer (PostgreSQL first,
-        then Qdrant).
+        Run the chunked extraction pipeline on aggregated crawl content,
+        then store each discovered startup via the central storage layer.
 
-        Content is trimmed to 12 000 chars so the combined context stays within
-        Qwen's effective context window for structured extraction.
+        Phase 3: replaces the old content[:12_000] + single Qwen call.
+        The pipeline splits the full content into overlapping chunks,
+        filters non-startup chunks, and calls Qwen on each passing chunk.
         """
-        from reasoning.qwen_client import qwen_client
-        from reasoning.prompts import NEWSLETTER_EXTRACTION_PROMPT
+        from ingestion.pipeline import pipeline
         from processing.storage import upsert_startup
 
-        context = content[:12_000]
-
         try:
-            prompt = NEWSLETTER_EXTRACTION_PROMPT.format(text=context)
-            response = qwen_client.generate(
-                prompt,
-                system="Return ONLY valid JSON array. No explanation.",
-                temperature=0.0,
-            )
-
-            startups = qwen_client.parse_json_array(response)
+            startups = pipeline.run(content, source_url, source_type)
             if not startups:
                 return
             stored = 0
-
             for startup in startups:
                 name = startup.get("name", "").strip()
                 if not name or len(name) < 2:
@@ -230,9 +219,7 @@ class WebScraper:
                 result_id = upsert_startup(startup, source_url, source_url)
                 if result_id:
                     stored += 1
-
             logger.info(f"[Scraper] Stored {stored} startups from {source_url}")
-
         except Exception as exc:
             logger.error(f"[Scraper] Extraction/store failed for {source_url}: {exc}")
 
