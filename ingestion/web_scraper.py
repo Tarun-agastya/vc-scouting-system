@@ -20,6 +20,35 @@ _HEADERS = {
 }
 
 
+# ── URL Skip Patterns ─────────────────────────────────────────────────────────
+# Path segments that indicate pages with no startup intelligence value.
+# Checked at the segment level so '/login' is skipped but '/online-platform'
+# and '/innovation' are not false-positives.
+# Add entries here to expand coverage without touching any other code.
+SKIP_PATTERNS: frozenset = frozenset({
+    # Authentication / account management
+    "login", "logout", "signin", "signup", "register",
+    "auth", "oauth", "sso", "password", "reset-password", "forgot-password",
+    # Administrative
+    "admin", "intranet", "dashboard", "backend", "cms",
+    # Recruitment  (irrelevant to startup discovery)
+    "jobs", "karriere", "career", "careers",
+    "stellenangebote", "stellenangebot", "bewerbung", "apply", "hiring",
+    # Legal / compliance
+    "privacy", "datenschutz", "impressum", "legal",
+    "terms", "agb", "cookie", "cookies", "gdpr",
+    # Contact / generic navigation
+    "contact", "kontakt", "support", "help", "faq",
+    "newsletter", "subscribe", "unsubscribe",
+    # Press / media  (usually about the org, not startups)
+    "press", "media",
+    # User account areas
+    "profile", "account", "settings", "preferences",
+    # Utility
+    "search", "sitemap",
+})
+
+
 # ── URL Utilities ─────────────────────────────────────────────────────────────
 
 def _base_domain(url: str) -> str:
@@ -55,6 +84,19 @@ def _extract_links(html: str, base_url: str) -> list:
             seen.add(clean)
             links.append(clean)
     return links
+
+
+def _is_irrelevant_url(url: str) -> bool:
+    """
+    Return True if any path segment of *url* matches a SKIP_PATTERNS entry.
+
+    Segment-level matching prevents false positives:
+      /login           → skipped   (segment 'login' is in SKIP_PATTERNS)
+      /online-platform → kept      ('online-platform' is not in SKIP_PATTERNS)
+      /portfolio/founders → kept   (neither segment matches)
+    """
+    path_parts = urlparse(url).path.lower().strip("/").split("/")
+    return any(part in SKIP_PATTERNS for part in path_parts if part)
 
 
 # ── Scraper ───────────────────────────────────────────────────────────────────
@@ -139,11 +181,12 @@ class WebScraper:
                 # Only enqueue children if we haven't reached max depth
                 if depth < max_depth:
                     for link in _extract_links(html, current_url):
-                        if (
-                            link not in visited
-                            and _base_domain(link) == allowed_domain
-                        ):
-                            queue.append((link, depth + 1))
+                        if link in visited or _base_domain(link) != allowed_domain:
+                            continue
+                        if _is_irrelevant_url(link):
+                            logger.debug(f"[Scraper] Skipping irrelevant URL: {link}")
+                            continue
+                        queue.append((link, depth + 1))
 
         logger.info(
             f"[Scraper] Deep crawl complete — {len(page_blocks)} pages "
