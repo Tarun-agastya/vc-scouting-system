@@ -89,6 +89,11 @@ def upsert_startup(
 
         if existing:
             # ── Update existing record ────────────────────────────────────────
+            # Evaluate rescore triggers BEFORE mutating source_history so
+            # should_rescore() sees the pre-mutation URL set correctly.
+            from processing.scorer import compute_enrichment_score, should_rescore
+            do_score = should_rescore(existing, source_url)
+
             history: list = list(existing.source_history or [])
             known_urls = {entry.get("url") for entry in history}
             if source_url not in known_urls:
@@ -99,7 +104,8 @@ def upsert_startup(
             _fill_empty_fields(existing, startup)
             existing.updated_at = datetime.utcnow()
             db.commit()
-            record_id = str(existing.id)
+            record_id     = str(existing.id)
+            active_record = existing
             logger.debug(f"[Storage] Updated existing record: {name}")
 
         else:
@@ -131,8 +137,26 @@ def upsert_startup(
             )
             db.add(new_startup)
             db.commit()
-            record_id = stable_id
+            record_id     = stable_id
+            active_record = new_startup
+            do_score      = True
             logger.debug(f"[Storage] Inserted new record: {name}")
+
+        # ── Scoring ───────────────────────────────────────────────────────────
+        if do_score:
+            from processing.scorer import compute_enrichment_score
+            score_result = compute_enrichment_score(active_record)
+            active_record.enrichment_score  = score_result.enrichment_score
+            active_record.source_confidence = score_result.source_confidence
+            active_record.score_tier        = score_result.score_tier
+            active_record.score_breakdown   = score_result.score_breakdown
+            active_record.last_enriched_at  = datetime.utcnow()
+            flag_modified(active_record, "score_breakdown")
+            db.commit()
+            logger.info(
+                f"[Scorer] '{name}': {score_result.enrichment_score}/100 "
+                f"({score_result.score_tier}), confidence={score_result.source_confidence}"
+            )
 
         # ── Sync to Qdrant with stable ID ─────────────────────────────────────
         embed_text = embedder.build_startup_text(startup)
@@ -140,11 +164,14 @@ def upsert_startup(
 
         qdrant_payload = {
             **startup,
-            "id": record_id,
-            "fingerprint": fingerprint,
-            "source": source,
-            "source_url": source_url,
-            "published_date": published_date,
+            "id":               record_id,
+            "fingerprint":      fingerprint,
+            "source":           source,
+            "source_url":       source_url,
+            "published_date":   published_date,
+            "enrichment_score": active_record.enrichment_score  or 0.0,
+            "source_confidence": active_record.source_confidence or 0.0,
+            "score_tier":       active_record.score_tier        or "WEAK_SIGNAL",
         }
         qdrant_store.upsert_startup(record_id, vector, qdrant_payload)
 

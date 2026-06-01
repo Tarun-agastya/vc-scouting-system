@@ -60,8 +60,11 @@ class Startup(Base):
     linkedin = Column(String(500))
 
     # Enrichment tracking
-    enrichment_score = Column(Float, default=0.0)
-    last_enriched_at = Column(DateTime, nullable=True)
+    enrichment_score  = Column(Float, default=0.0)
+    source_confidence = Column(Float, default=0.0)    # Phase 3: extraction trust score
+    score_tier        = Column(String(50), nullable=True, index=True)  # Phase 3: tier label
+    score_breakdown   = Column(JSON, nullable=True)   # Phase 3: explainable breakdown
+    last_enriched_at  = Column(DateTime, nullable=True)
 
     # AI-generated insights
     ai_summary = Column(Text)
