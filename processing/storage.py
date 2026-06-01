@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Optional
 
 from processing.deduplicator import (
+    fuzzy_match_existing,
     generate_fingerprint,
     name_to_stable_uuid,
     normalize_company_name,
@@ -69,6 +70,22 @@ def upsert_startup(
         existing = (
             db.query(Startup).filter(Startup.fingerprint == fingerprint).first()
         )
+
+        # Phase 2 fallback: fuzzy name match for variants with a different
+        # domain (or no website).  Only runs when fingerprint yields nothing.
+        if not existing:
+            fuzzy = fuzzy_match_existing(name, db)
+            if fuzzy:
+                fuzzy_id, fuzzy_name, score = fuzzy
+                existing = (
+                    db.query(Startup)
+                    .filter(Startup.id == fuzzy_id)
+                    .first()
+                )
+                logger.info(
+                    f"[Storage] Fuzzy match '{name}' → '{fuzzy_name}' "
+                    f"(score={score}) — treating as same startup"
+                )
 
         if existing:
             # ── Update existing record ────────────────────────────────────────

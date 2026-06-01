@@ -7,13 +7,16 @@ The stable UUID  = uuid5(NAMESPACE_URL, fingerprint)
 
 This means the same startup always maps to the same DB row and the same
 Qdrant point, regardless of which source or ingestion run surfaced it.
+
+Phase 2 adds fuzzy_match_existing() as a fallback for cases where the
+same company surfaces with a different domain or no website at all.
 """
 import re
 import uuid
 import hashlib
 import logging
 from urllib.parse import urlparse
-from typing import Optional
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -104,3 +107,67 @@ def name_to_stable_uuid(name: str, website: str = "") -> Optional[str]:
     if not fingerprint:
         return None
     return str(uuid.uuid5(uuid.NAMESPACE_URL, fingerprint))
+
+
+def fuzzy_match_existing(
+    name: str,
+    db_session,
+    threshold: int = 88,
+) -> Optional[Tuple[str, str, int]]:
+    """
+    Find an existing startup in PostgreSQL whose normalized name closely
+    matches the given name. This is the Phase 2 fallback for cases where
+    the fingerprint lookup misses (different domain, no website, etc.).
+
+    Uses token_sort_ratio which is insensitive to word order and handles
+    common variants:
+      "DeepDrive Technologies GmbH"  ↔  "DeepDrive Technologies"  → ~93
+      "Celonis AG"                   ↔  "Celonis"                  → 100
+      "Deep-Drive"                   ↔  "DeepDrive"                → ~91
+
+    Short names (< 4 chars after normalizing) are skipped to avoid
+    false positives on generic words like "AI", "Hub", "Lab".
+
+    Returns (id_str, matched_normalized_name, score) or None.
+    """
+    try:
+        from rapidfuzz import process, fuzz
+        from database.models import Startup
+    except ImportError:
+        logger.warning("[Dedup] rapidfuzz not installed — skipping fuzzy match")
+        return None
+
+    normalized = normalize_company_name(name)
+    if not normalized or len(normalized) < 4:
+        return None
+
+    rows = db_session.query(Startup.id, Startup.normalized_name).filter(
+        Startup.normalized_name.isnot(None),
+        Startup.normalized_name != "",
+    ).all()
+
+    if not rows:
+        return None
+
+    # Build {id_str: normalized_name} dict; skip short candidates too
+    choices = {
+        str(row_id): row_name
+        for row_id, row_name in rows
+        if row_name and len(row_name) >= 4
+    }
+
+    if not choices:
+        return None
+
+    # extractOne returns (matched_value, score, key) for a dict input
+    result = process.extractOne(
+        normalized,
+        choices,
+        scorer=fuzz.token_sort_ratio,
+        score_cutoff=threshold,
+    )
+
+    if result:
+        matched_name, score, matched_id = result
+        return (matched_id, matched_name, int(score))
+    return None
