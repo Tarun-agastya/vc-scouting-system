@@ -27,26 +27,35 @@ def run_rss():
 
 def run_accelerators():
     import asyncio
-    from ingestion.sources import ACCELERATOR_SOURCES
+    from config.source_registry import get_high_priority_sources, SourceType
     from ingestion.web_scraper import web_scraper
 
-    print(f"Scraping {len(ACCELERATOR_SOURCES)} accelerator pages...")
-    for source in ACCELERATOR_SOURCES:
-        print(f"  → {source['name']}")
-        asyncio.run(web_scraper.scrape_source(source["url"], "accelerator"))
-    print("Accelerator scraping complete.")
+    # All HIGH priority non-university sources (accelerators, incubators, networks)
+    sources = [
+        s for s in get_high_priority_sources()
+        if s.source_type != SourceType.UNIVERSITY_HUB
+    ]
+    print(f"Scraping {len(sources)} accelerator/hub pages (source registry)...")
+    for source in sources:
+        print(f"  [SOURCE] {source.source_name}")
+        asyncio.run(web_scraper.scrape_source(source.primary_url, source.source_type.value))
+    print("Accelerator/hub scraping complete.")
 
 
 def run_universities():
     import asyncio
-    from ingestion.sources import UNIVERSITY_SOURCES
+    from config.source_registry import get_high_priority_sources, SourceType
     from ingestion.web_scraper import web_scraper
 
-    print(f"Scraping {len(UNIVERSITY_SOURCES)} university pages...")
-    for source in UNIVERSITY_SOURCES:
-        print(f"  → {source['name']}")
-        asyncio.run(web_scraper.scrape_source(source["url"], "university"))
-    print("University scraping complete.")
+    sources = [
+        s for s in get_high_priority_sources()
+        if s.source_type == SourceType.UNIVERSITY_HUB
+    ]
+    print(f"Scraping {len(sources)} university hub pages (source registry)...")
+    for source in sources:
+        print(f"  [SOURCE] {source.source_name}")
+        asyncio.run(web_scraper.scrape_source(source.primary_url, source.source_type.value))
+    print("University hub scraping complete.")
 
 
 def run_all():

@@ -56,39 +56,49 @@ async def scrape_website(request: ScrapeRequest, background_tasks: BackgroundTas
 
 @router.post("/scrape-accelerators")
 async def scrape_all_accelerators(background_tasks: BackgroundTasks):
-    """Scrape all configured accelerator portfolio pages."""
-    from ingestion.sources import ACCELERATOR_SOURCES
+    """Scrape all HIGH-priority accelerator/incubator/hub pages from the source registry."""
+    from config.source_registry import get_high_priority_sources, SourceType
     from ingestion.web_scraper import web_scraper
 
-    for source in ACCELERATOR_SOURCES:
+    sources = [
+        s for s in get_high_priority_sources()
+        if s.source_type != SourceType.UNIVERSITY_HUB
+    ]
+    for source in sources:
+        logger.info(f"[SOURCE] {source.source_name}")
         background_tasks.add_task(
             web_scraper.scrape_source,
-            url=source["url"],
-            source_type="accelerator",
+            url=source.primary_url,
+            source_type=source.source_type.value,
         )
-
     return {
         "status": "started",
-        "message": f"Scraping {len(ACCELERATOR_SOURCES)} accelerator pages",
+        "message": f"Scraping {len(sources)} accelerator/hub pages from registry",
+        "sources": [s.source_name for s in sources],
     }
 
 
 @router.post("/scrape-universities")
 async def scrape_universities(background_tasks: BackgroundTasks):
-    """Scrape all configured university spinoff pages."""
-    from ingestion.sources import UNIVERSITY_SOURCES
+    """Scrape all HIGH-priority university hub pages from the source registry."""
+    from config.source_registry import get_high_priority_sources, SourceType
     from ingestion.web_scraper import web_scraper
 
-    for source in UNIVERSITY_SOURCES:
+    sources = [
+        s for s in get_high_priority_sources()
+        if s.source_type == SourceType.UNIVERSITY_HUB
+    ]
+    for source in sources:
+        logger.info(f"[SOURCE] {source.source_name}")
         background_tasks.add_task(
             web_scraper.scrape_source,
-            url=source["url"],
-            source_type="university",
+            url=source.primary_url,
+            source_type=source.source_type.value,
         )
-
     return {
         "status": "started",
-        "message": f"Scraping {len(UNIVERSITY_SOURCES)} university pages",
+        "message": f"Scraping {len(sources)} university hub pages from registry",
+        "sources": [s.source_name for s in sources],
     }
 
 
@@ -110,36 +120,31 @@ async def ingest_newsletters(background_tasks: BackgroundTasks):
 @router.post("/run-all")
 async def run_full_ingestion(background_tasks: BackgroundTasks):
     """
-    Run all ingestion pipelines: RSS + all accelerators + all universities.
+    Run all ingestion pipelines: RSS feeds + all HIGH-priority registry sources.
     This is the 'big sweep' — use when you want to refresh everything.
     """
     from ingestion.rss_parser import rss_parser
     from ingestion.web_scraper import web_scraper
-    from ingestion.sources import ACCELERATOR_SOURCES, UNIVERSITY_SOURCES
+    from config.source_registry import get_high_priority_sources
 
     # RSS feeds
     background_tasks.add_task(rss_parser.ingest_feeds, max_entries=50)
 
-    # Accelerators
-    for source in ACCELERATOR_SOURCES:
+    # All HIGH priority sources — accelerators, incubators, hubs, universities
+    sources = get_high_priority_sources()
+    for source in sources:
+        logger.info(f"[SOURCE] {source.source_name}")
         background_tasks.add_task(
             web_scraper.scrape_source,
-            url=source["url"],
-            source_type="accelerator",
+            url=source.primary_url,
+            source_type=source.source_type.value,
         )
 
-    # Universities
-    for source in UNIVERSITY_SOURCES:
-        background_tasks.add_task(
-            web_scraper.scrape_source,
-            url=source["url"],
-            source_type="university",
-        )
-
-    total_tasks = 1 + len(ACCELERATOR_SOURCES) + len(UNIVERSITY_SOURCES)
+    total_tasks = 1 + len(sources)
     return {
         "status": "started",
         "message": f"Full ingestion pipeline started — {total_tasks} tasks queued",
+        "registry_sources": [s.source_name for s in sources],
     }
 
 
