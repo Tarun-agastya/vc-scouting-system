@@ -232,7 +232,6 @@ def _qwen_extract_sync(
             prompt,
             system="Return ONLY a valid JSON array. No explanation, no markdown.",
             temperature=0,
-            num_ctx=4096,
         )
         elapsed = time.time() - t0
         logger.info(f"[Qwen Worker] Qwen completed in {elapsed:.1f}s")
