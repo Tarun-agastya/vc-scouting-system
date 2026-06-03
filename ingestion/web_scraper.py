@@ -120,6 +120,8 @@ class WebScraper:
         source_type: str = "general",
         max_depth: int = 2,
         max_pages: int = 10,
+        *,
+        validation_session=None,
         # url_priority_map: dict = None  # extension point: future priority crawling
     ):
         """
@@ -158,10 +160,16 @@ class WebScraper:
             ),
             chunker_task(page_queue, chunk_queue, metrics),
             *[
-                qwen_worker_task(chunk_queue, storage_queue, metrics, i)
+                qwen_worker_task(
+                    chunk_queue, storage_queue, metrics, i,
+                    validation_session=validation_session,
+                )
                 for i in range(num_workers)
             ],
-            storage_worker_task(storage_queue, metrics, num_workers),
+            storage_worker_task(
+                storage_queue, metrics, num_workers,
+                validation_session=validation_session,
+            ),
         )
 
         metrics.total_processing_time = time.time() - t0

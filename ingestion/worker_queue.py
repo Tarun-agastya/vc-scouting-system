@@ -69,6 +69,13 @@ class StorageItem:
     source: str
     source_url: str
     published_date: Optional[str] = None
+    # Validation provenance — populated by qwen_worker_task when a
+    # ValidationSession is active; zero-cost defaults otherwise.
+    page_url:       str   = ""
+    chunk_num:      int   = 0
+    total_chunks:   int   = 0
+    chunk_preview:  str   = ""
+    qwen_duration_s: float = 0.0
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
@@ -198,11 +205,15 @@ async def chunker_task(
 
 # ── Stage 3: Qwen Workers ────────────────────────────────────────────────────
 
-def _qwen_extract_sync(item: ChunkItem, metrics: PipelineMetrics) -> List[dict]:
+def _qwen_extract_sync(
+    item: ChunkItem, metrics: PipelineMetrics
+) -> tuple:  # (List[dict], float elapsed_s)
     """
     Synchronous Qwen extraction — called via run_in_executor from qwen_worker_task.
 
-    Returns a (possibly empty) list of startup dicts on both success and failure.
+    Returns a 2-tuple (startups, elapsed_s).
+      startups  — possibly empty list of startup dicts
+      elapsed_s — wall-clock seconds spent in Qwen (0.0 on failure)
     Never raises: all exceptions are caught, logged, and counted as qwen_failures.
     """
     from reasoning.qwen_client import qwen_client
@@ -239,7 +250,7 @@ def _qwen_extract_sync(item: ChunkItem, metrics: PipelineMetrics) -> List[dict]:
             f"[Qwen Worker] Chunk {item.chunk_num}/{item.total_chunks}: "
             f"{len(startups)} startup(s) extracted"
         )
-        return startups
+        return startups, elapsed
 
     except Exception as exc:
         metrics.inc("qwen_failures")
@@ -247,7 +258,7 @@ def _qwen_extract_sync(item: ChunkItem, metrics: PipelineMetrics) -> List[dict]:
             f"[Qwen Worker] Chunk {item.chunk_num}/{item.total_chunks} failed "
             f"({item.source_url}): {exc}"
         )
-        return []
+        return [], 0.0
 
 
 async def qwen_worker_task(
@@ -255,6 +266,8 @@ async def qwen_worker_task(
     storage_queue: asyncio.Queue,
     metrics: PipelineMetrics,
     worker_id: int,
+    *,
+    validation_session=None,
 ) -> None:
     """
     Pull ChunkItems, dispatch Qwen extraction to thread executor, push StorageItems.
@@ -265,6 +278,11 @@ async def qwen_worker_task(
     Sentinel propagation:
       - Re-puts None into chunk_queue so sibling workers also receive the signal.
       - Puts None into storage_queue so the storage worker counts this worker done.
+
+    validation_session : ValidationSession | None
+      When provided, empty-extraction chunks are recorded immediately here.
+      Non-empty extractions are recorded by storage_worker_task (after we
+      know whether they were stored or deduplicated).
     """
     loop = asyncio.get_event_loop()
 
@@ -277,9 +295,23 @@ async def qwen_worker_task(
             await storage_queue.put(_SENTINEL)  # signal storage worker: one worker done
             return
 
-        startups = await loop.run_in_executor(
+        startups, qwen_duration = await loop.run_in_executor(
             None, _qwen_extract_sync, item, metrics
         )
+
+        # ── Validation: record empty extractions immediately ──────────────────
+        if not startups and validation_session is not None:
+            validation_session.record(
+                page_url=item.source_url,
+                chunk_num=item.chunk_num,
+                total_chunks=item.total_chunks,
+                chunk_preview=item.chunk[:200],
+                company_name="",
+                startup_dict={},
+                qwen_duration_s=qwen_duration,
+                stored=False,
+                record_id=None,
+            )
 
         for startup in startups:
             name = (startup.get("name") or "").strip()
@@ -290,6 +322,11 @@ async def qwen_worker_task(
                 source=item.source_type,
                 source_url=item.source_url,
                 published_date=item.published_date or startup.get("published_date"),
+                page_url=item.source_url,
+                chunk_num=item.chunk_num,
+                total_chunks=item.total_chunks,
+                chunk_preview=item.chunk[:200],
+                qwen_duration_s=qwen_duration,
             ))
 
 
@@ -299,6 +336,8 @@ async def storage_worker_task(
     storage_queue: asyncio.Queue,
     metrics: PipelineMetrics,
     num_qwen_workers: int,
+    *,
+    validation_session=None,
 ) -> None:
     """
     Serial storage worker — pulls StorageItems and calls upsert_startup().
@@ -309,6 +348,10 @@ async def storage_worker_task(
     Exits only after receiving num_qwen_workers None sentinels (one per Qwen
     worker), guaranteeing that all upstream work has been drained before the
     coordinator's asyncio.gather() returns.
+
+    validation_session : ValidationSession | None
+      When provided, every upsert outcome (stored or deduplicated) is recorded
+      with full provenance from the StorageItem.
     """
     from processing.storage import upsert_startup
 
@@ -330,6 +373,20 @@ async def storage_worker_task(
             item.source_url,
             item.published_date,
         )
+
+        # ── Validation capture ────────────────────────────────────────────────
+        if validation_session is not None:
+            validation_session.record(
+                page_url=item.page_url or item.source_url,
+                chunk_num=item.chunk_num,
+                total_chunks=item.total_chunks,
+                chunk_preview=item.chunk_preview,
+                company_name=(item.startup_dict.get("name") or "").strip(),
+                startup_dict=item.startup_dict,
+                qwen_duration_s=item.qwen_duration_s,
+                stored=bool(result_id),
+                record_id=result_id,
+            )
 
         if result_id:
             metrics.inc("startups_inserted")
