@@ -111,20 +111,25 @@ class ExtractionPipeline:
         total_chunks: int,
     ) -> List[dict]:
         """Send one chunk to Qwen and return the parsed startup list."""
+        import time
         from reasoning.qwen_client import qwen_client
         from reasoning.prompts import NEWSLETTER_EXTRACTION_PROMPT
 
+        logger.info(f"[Pipeline] Chunk {chunk_num}/{total_chunks}")
         try:
             prompt = NEWSLETTER_EXTRACTION_PROMPT.format(text=chunk)
+            logger.info("[Pipeline] Sending to Qwen")
+            t0 = time.time()
             response = qwen_client.generate(
                 prompt,
                 system="Return ONLY a valid JSON array. No explanation, no markdown.",
-                temperature=0.0,
+                temperature=0,
+                num_ctx=4096,
             )
+            logger.info(f"[Pipeline] Qwen completed in {time.time() - t0:.1f}s")
             startups = qwen_client.parse_json_array(response)
-            logger.debug(
-                f"[Pipeline] Chunk {chunk_num}/{total_chunks} "
-                f"from {source_url}: {len(startups)} startup(s)"
+            logger.info(
+                f"[Pipeline] Chunk {chunk_num}/{total_chunks}: {len(startups)} startup(s) extracted"
             )
             return startups or []
         except Exception as exc:

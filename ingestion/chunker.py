@@ -10,8 +10,8 @@ content of every crawled page is processed rather than silently dropped.
 from typing import List
 
 # 1 token ≈ 4 chars for mixed English/German text
-CHUNK_SIZE = 6_000   # ~1 500 tokens — fits comfortably in an 8 192-token context
-OVERLAP    =   800   # ~200 tokens  — enough to avoid splitting mid-entity
+CHUNK_SIZE = 1_800   # ~450 tokens — fits inside a 4 096-token Qwen context with headroom for prompt + schema
+OVERLAP    =   250   # ~62 tokens  — enough to avoid splitting mid-entity without duplicating content
 
 
 def split(
@@ -34,8 +34,8 @@ def split(
 
     Examples
     --------
-    A 30 000-char crawl of 5 pages produces ~5 chunks of ≤ 6 000 chars
-    instead of being truncated after the first 12 000 chars.
+    A 30 000-char crawl of 5 pages produces ~17 chunks of ≤ 1 800 chars
+    each processed with a 4 096-token Qwen context.
     """
     text = text.strip()
     if not text:

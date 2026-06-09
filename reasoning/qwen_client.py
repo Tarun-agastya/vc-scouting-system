@@ -3,6 +3,7 @@ import re
 import threading
 import logging
 from typing import Optional, List, Dict
+import httpx
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,10 @@ class QwenClient:
     def _client(self):
         if self._ollama_client is None:
             import ollama
-            self._ollama_client = ollama.Client(host=self.base_url)
+            self._ollama_client = ollama.Client(
+                host=self.base_url,
+                timeout=120,
+            )
         return self._ollama_client
 
     def generate(
@@ -40,6 +44,7 @@ class QwenClient:
         system: Optional[str] = None,
         temperature: float = 0.1,
         max_tokens: int = 1500,
+        num_ctx: int = 8192,
     ) -> str:
         """
         Single-turn generation. No conversation history.
@@ -57,12 +62,16 @@ class QwenClient:
                     messages=messages,
                     options={
                         "temperature": temperature,
-                        "num_ctx": 8192,  # Qwen3:14b supports 32 768 — 4096 caused silent truncation
+                        "num_ctx": num_ctx,
                         "num_predict": max_tokens,
                     },
                 )
                 content: str = response["message"]["content"]
                 return self._strip_thinking(content)
+
+            except httpx.TimeoutException:
+                logger.error("[Qwen] Timeout after 120 seconds")
+                raise
 
             except Exception as exc:
                 logger.error(f"[Qwen] Generation failed: {exc}")
