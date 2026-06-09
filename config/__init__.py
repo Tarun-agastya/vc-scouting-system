@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # Worker Queue
-    max_qwen_workers: int = 1    # Raise via env MAX_QWEN_WORKERS; keep at 1 on Mac Mini
+    max_qwen_workers: int = 2    # Raise via env MAX_QWEN_WORKERS; keep at 1 on Mac Mini
     page_queue_size: int = 5     # Max pages buffered between crawler and chunker
     chunk_queue_size: int = 20   # Max chunks buffered between chunker and Qwen workers
     storage_queue_size: int = 50 # Max startup dicts buffered before storage
