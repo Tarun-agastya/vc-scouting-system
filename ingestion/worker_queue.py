@@ -237,7 +237,31 @@ def _qwen_extract_sync(
         elapsed = time.time() - t0
         logger.info(f"[Qwen Worker] Qwen completed in {elapsed:.1f}s")
 
+        # ── DEBUG: raw Qwen response before any parsing ───────────────────────
+        logger.debug(
+            "[Qwen Worker] RAW RESPONSE | chunk=%d/%d | source=%s"
+            " | response_len=%d | response=%r",
+            item.chunk_num, item.total_chunks, item.source_url,
+            len(response), response[:500],
+        )
+
+        t_parse = time.time()
         startups = qwen_client.parse_json_array(response) or []
+        parse_elapsed = time.time() - t_parse
+
+        # ── DEBUG: separate timing ────────────────────────────────────────
+        logger.debug(
+            "[Qwen Worker] TIMING | chunk=%d/%d | ollama=%.2fs | json_parse=%.4fs",
+            item.chunk_num, item.total_chunks, elapsed, parse_elapsed,
+        )
+
+        # ── DEBUG: per-chunk extraction summary ───────────────────────────────
+        logger.debug(
+            "[Qwen Worker] CHUNK SUMMARY | chunk_id=%d/%d | source=%s "
+            "| preview=%r | raw_qwen_response=%r | parsed_startup_count=%d",
+            item.chunk_num, item.total_chunks, item.source_url,
+            item.chunk[:120], response[:300], len(startups),
+        )
 
         # Propagate published_date to each startup dict if not already set
         if item.published_date:
@@ -316,6 +340,14 @@ async def qwen_worker_task(
         for startup in startups:
             name = (startup.get("name") or "").strip()
             if not name or len(name) < 2:
+                # DEBUG: case A — Qwen returned valid JSON but name field is
+                # absent or too short; startup is silently dropped here.
+                logger.debug(
+                    "[Qwen Worker] STARTUP DROPPED (name missing/too short) |"
+                    " chunk=%d/%d | raw_name=%r | startup=%r",
+                    item.chunk_num, item.total_chunks,
+                    startup.get("name"), startup,
+                )
                 continue
             await storage_queue.put(StorageItem(
                 startup_dict=startup,

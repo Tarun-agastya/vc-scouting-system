@@ -158,15 +158,28 @@ class QwenClient:
         start = response.find("[")
         end = response.rfind("]") + 1
         if start == -1 or end <= start:
+            logger.debug(
+                "[Qwen] parse_json_array: NO ARRAY BRACKETS found — "
+                "raw_response=%r", response[:300]
+            )
             return []
 
         json_str = response[start:end]
 
         # Attempt 1: direct parse
         try:
-            return json.loads(json_str)
-        except json.JSONDecodeError:
-            pass
+            result = json.loads(json_str)
+            if not result:
+                logger.debug(
+                    "[Qwen] parse_json_array: EMPTY ARRAY returned — "
+                    "json_str=%r", json_str[:200]
+                )
+            return result
+        except json.JSONDecodeError as exc:
+            logger.debug(
+                "[Qwen] parse_json_array: INVALID JSON (attempt 1) — %s — "
+                "json_str=%r", exc, json_str[:300]
+            )
 
         # Attempt 2: strip trailing commas (most common LLM mistake)
         repaired = re.sub(r",\s*([\]}])", r"\1", json_str)
@@ -174,8 +187,11 @@ class QwenClient:
             result = json.loads(repaired)
             logger.debug("[Qwen] JSON repaired (trailing commas removed)")
             return result
-        except json.JSONDecodeError:
-            logger.warning("[Qwen] JSON parsing failed even after repair — skipping response")
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "[Qwen] parse_json_array: PARSE FAILED even after repair — "
+                "%s — json_str=%r", exc, json_str[:300]
+            )
             return []
 
 

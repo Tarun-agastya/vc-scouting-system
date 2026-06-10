@@ -126,10 +126,36 @@ class ExtractionPipeline:
                 temperature=0,
                 num_ctx=4096,
             )
-            logger.info(f"[Pipeline] Qwen completed in {time.time() - t0:.1f}s")
+            ollama_elapsed = time.time() - t0
+            logger.info(f"[Pipeline] Qwen completed in {ollama_elapsed:.1f}s")
+
+            # ── DEBUG: raw Qwen response before any parsing ───────────────────
+            logger.debug(
+                "[Pipeline] RAW RESPONSE | chunk=%d/%d | source=%s"
+                " | response_len=%d | response=%r",
+                chunk_num, total_chunks, source_url, len(response), response[:500],
+            )
+
+            t_parse = time.time()
             startups = qwen_client.parse_json_array(response)
+            parse_elapsed = time.time() - t_parse
+
+            # ── DEBUG: separate timing ─────────────────────────────────────
+            logger.debug(
+                "[Pipeline] TIMING | chunk=%d/%d | ollama=%.2fs | json_parse=%.4fs",
+                chunk_num, total_chunks, ollama_elapsed, parse_elapsed,
+            )
+
+            # ── DEBUG: per-chunk extraction summary ───────────────────────────
+            logger.debug(
+                "[Pipeline] CHUNK SUMMARY | chunk_id=%d/%d | source=%s "
+                "| preview=%r | raw_qwen_response=%r | parsed_startup_count=%d",
+                chunk_num, total_chunks, source_url,
+                chunk[:120], response[:300], len(startups or []),
+            )
+
             logger.info(
-                f"[Pipeline] Chunk {chunk_num}/{total_chunks}: {len(startups)} startup(s) extracted"
+                f"[Pipeline] Chunk {chunk_num}/{total_chunks}: {len(startups or [])} startup(s) extracted"
             )
             return startups or []
         except Exception as exc:
