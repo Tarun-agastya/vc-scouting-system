@@ -120,7 +120,7 @@ async def add_startup(
         raise HTTPException(status_code=422, detail="Startup name is required")
 
     try:
-        result_id = upsert_startup(
+        record_id, _ = upsert_startup(
             startup=request.model_dump(),
             source=request.source or "manual",
             source_url=request.website or "",
@@ -129,7 +129,7 @@ async def add_startup(
         logger.error(f"[Scout] /add-startup failed for '{request.name}': {exc}")
         raise HTTPException(status_code=500, detail=str(exc))
 
-    if result_id is None:
+    if record_id is None:
         # upsert_startup returns None when the embedder (Ollama) is unreachable
         raise HTTPException(
             status_code=503,
@@ -137,11 +137,11 @@ async def add_startup(
         )
 
     # AI analysis in background (does not block the response)
-    background_tasks.add_task(_run_ai_analysis, result_id)
+    background_tasks.add_task(_run_ai_analysis, record_id)
 
     return {
         "status": "ok",
-        "id": result_id,
+        "id": record_id,
         "message": "Startup saved. AI analysis running in background.",
     }
 

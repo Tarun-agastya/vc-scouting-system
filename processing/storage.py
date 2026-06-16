@@ -27,7 +27,7 @@ def upsert_startup(
     source: str,
     source_url: str,
     published_date: Optional[str] = None,
-) -> Optional[str]:
+) -> tuple[Optional[str], bool]:
     """
     Write a startup record to PostgreSQL, then sync to Qdrant.
 
@@ -39,8 +39,9 @@ def upsert_startup(
       - If new: insert a complete row.
       - Always re-embed and upsert to Qdrant with the stable UUID.
 
-    Returns the stable UUID string, or None if the record was skipped
-    (e.g. empty name).
+    Returns (record_id, is_new):
+      record_id — stable UUID string, or None on skip/error
+      is_new    — True for a fresh INSERT, False for a dedup UPDATE
     """
     from database.connection import SessionLocal
     from database.models import Startup
@@ -50,14 +51,14 @@ def upsert_startup(
 
     name = (startup.get("name") or "").strip()
     if not name or len(name) < 2:
-        return None
+        return None, False
 
     website = startup.get("website") or ""
     fingerprint = generate_fingerprint(name, website)
     stable_id = name_to_stable_uuid(name, website)
 
     if not fingerprint or not stable_id:
-        return None
+        return None, False
 
     source_entry = {
         "source": source,
@@ -106,6 +107,7 @@ def upsert_startup(
             db.commit()
             record_id     = str(existing.id)
             active_record = existing
+            is_new        = False
             logger.debug(f"[Storage] Updated existing record: {name}")
 
         else:
@@ -140,6 +142,7 @@ def upsert_startup(
             record_id     = stable_id
             active_record = new_startup
             do_score      = True
+            is_new        = True
             logger.debug(f"[Storage] Inserted new record: {name}")
 
         # ── Scoring ───────────────────────────────────────────────────────────
@@ -175,12 +178,12 @@ def upsert_startup(
         }
         qdrant_store.upsert_startup(record_id, vector, qdrant_payload)
 
-        return record_id
+        return record_id, is_new
 
     except Exception as exc:
         logger.error(f"[Storage] Failed to store '{name}': {exc}")
         db.rollback()
-        return None
+        return None, False
     finally:
         db.close()
 

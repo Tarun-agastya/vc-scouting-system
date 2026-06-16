@@ -99,8 +99,8 @@ class PipelineMetrics:
     qwen_calls          — total Qwen generate() calls dispatched
     qwen_failures       — calls that raised an exception (timeout, parse, etc.)
     startups_extracted  — startup dicts returned by successful Qwen calls
-    startups_inserted   — upsert_startup() returned a non-None UUID (insert or update)
-    duplicates_detected — startup with valid name where upsert_startup() returned None
+    startups_inserted   — new records written to the database (upsert_startup is_new=True)
+    duplicates_detected — startups merged into an existing record (upsert_startup is_new=False, id non-None)
     total_processing_time — wall-clock seconds from first URL fetch to last upsert
     """
     pages_crawled:          int   = 0
@@ -361,7 +361,7 @@ async def storage_worker_task(
                 return
             continue
 
-        result_id = upsert_startup(
+        record_id, is_new = upsert_startup(
             item.startup_dict,
             item.source,
             item.source_url,
@@ -378,15 +378,12 @@ async def storage_worker_task(
                 company_name=(item.startup_dict.get("name") or "").strip(),
                 startup_dict=item.startup_dict,
                 qwen_duration_s=item.qwen_duration_s,
-                stored=bool(result_id),
-                record_id=result_id,
+                stored=bool(record_id),
+                record_id=record_id,
             )
 
-        if result_id:
+        if record_id and is_new:
             metrics.inc("startups_inserted")
-        else:
-            # upsert_startup returns None when name validation fails or on exception.
-            # If the name was valid, count it as a detected duplicate/rejection.
-            name = (item.startup_dict.get("name") or "").strip()
-            if name and len(name) >= 2:
-                metrics.inc("duplicates_detected")
+        elif record_id:
+            # Known startup seen again from a new source — correctly deduplicated.
+            metrics.inc("duplicates_detected")

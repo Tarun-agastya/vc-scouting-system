@@ -115,8 +115,8 @@ class RSSParser:
         """Write to PostgreSQL first, then sync to Qdrant via the central storage layer."""
         from processing.storage import upsert_startup
         try:
-            result_id = upsert_startup(startup, source, source_url, published_date)
-            if not result_id:
+            record_id, _ = upsert_startup(startup, source, source_url, published_date)
+            if not record_id:
                 logger.debug(f"[RSS] Skipped (no name): {startup}")
         except Exception as exc:
             logger.error(f"[RSS] Store failed for {startup.get('name')}: {exc}")
