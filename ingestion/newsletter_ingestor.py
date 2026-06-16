@@ -23,14 +23,16 @@ NEWSLETTER_SEARCH_QUERY = (
 
 # Trusted-sender domain/address allowlist.
 # Only emails whose From header contains one of these strings are processed.
-# Set to an empty list to accept ALL senders that match the search query.
-# Add entries as you subscribe to newsletters: e.g. "sifted.eu", "eu-startups.com".
+# The check is a case-insensitive substring match on the full From header, so
+# "sce.de" matches "SCE Newsletter <info@sce.de>".
+# Set to an empty list to accept ALL senders matching the search query.
 TRUSTED_NEWSLETTER_SENDERS: List[str] = [
-    # "sifted.eu",
-    # "eu-startups.com",
-    # "techcrunch.com",
-    # "dealroom.co",
-    # "tomtunguz.com",
+    "sce.de",            # Strascheg Center for Entrepreneurship
+    "munich-startup.de", # Munich Startup
+    "unternehmertum.de", # Unternehmertum
+    "startpicker",       # Startpicker (covers startpicker.net and display name)
+    "schwaben.digital",  # Digitales Zentrum Schwaben
+    "kit.edu",           # KIT Gründerschmiede
 ]
 
 
