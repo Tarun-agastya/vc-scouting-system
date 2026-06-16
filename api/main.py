@@ -31,20 +31,37 @@ async def lifespan(app: FastAPI):
     # Start background scheduler
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from datetime import timedelta
         from ingestion.rss_parser import rss_parser
+        from ingestion.newsletter_ingestor import newsletter_ingestor
 
         async def _scheduled_rss():
-            """
-            Wrap the synchronous ingest_feeds() in a thread executor so the
-            AsyncIOScheduler never blocks the FastAPI event loop during Qwen
-            inference or network I/O.
-            """
+            """Run RSS ingestion in a thread executor (synchronous + Ollama calls)."""
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None, lambda: rss_parser.ingest_feeds(max_entries=40)
             )
 
+        async def _scheduled_gmail():
+            """
+            Run Gmail newsletter ingestion in a thread executor.
+            Staggered 30 min after start, then every 8 h, so it never
+            overlaps with the RSS job (every 6 h from start).
+            Silently skips if credentials are missing — not a startup blocker.
+            """
+            import os
+            creds_path = "credentials/gmail_credentials.json"
+            if not os.path.exists(creds_path):
+                logger.debug("[Gmail] Credentials not found — skipping scheduled run")
+                return
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, lambda: newsletter_ingestor.run_ingestion(max_messages=50)
+            )
+
         scheduler = AsyncIOScheduler()
+
+        # RSS: fire immediately on first interval, then every 6 h
         scheduler.add_job(
             func=_scheduled_rss,
             trigger="interval",
@@ -52,9 +69,22 @@ async def lifespan(app: FastAPI):
             id="rss_ingestion",
             replace_existing=True,
         )
+
+        # Gmail: first run 30 min after startup, then every 8 h
+        # (staggered so it never starts at the same time as an RSS run)
+        from datetime import datetime as _dt
+        scheduler.add_job(
+            func=_scheduled_gmail,
+            trigger="interval",
+            hours=8,
+            start_date=_dt.now() + timedelta(minutes=30),
+            id="gmail_ingestion",
+            replace_existing=True,
+        )
+
         scheduler.start()
         app.state.scheduler = scheduler
-        logger.info("Background scheduler started (RSS every 6 hours)")
+        logger.info("Background scheduler started (RSS every 6 h, Gmail every 8 h +30 min offset)")
     except Exception as exc:
         logger.warning(f"Scheduler could not start: {exc}")
 

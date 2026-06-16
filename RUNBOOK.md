@@ -66,15 +66,41 @@ python scripts/run_validation.py metrics --run-id <UUID>
 
 Validation outputs land in `validation/{run_id}/`.
 
-## Gmail OAuth re-authentication
+## Gmail newsletter setup
 
-The new Gmail account uses OAuth2. The token at `credentials/token.json` expires every 7 days for Google Cloud apps in "Testing" mode.
+The dedicated scouting Gmail account is **greentechhubx@gmail.com**. Newsletters already subscribed there are automatically processed on the 8-hour schedule.
+
+### Subscribing to new newsletters
+Subscribe greentechhubx@gmail.com to VC/startup newsletters (e.g. Sifted, EU-Startups, Dealroom, TechCrunch, etc.). The ingestor will extract startups from each email using the same pipeline as web sources.
+
+### Trusted-sender allowlist
+Edit `ingestion/newsletter_ingestor.py` → `TRUSTED_NEWSLETTER_SENDERS`. Add the domain or substring from the sender's `From` header:
+```python
+TRUSTED_NEWSLETTER_SENDERS = [
+    "sifted.eu",
+    "eu-startups.com",
+    "dealroom.co",
+]
+```
+Leave the list empty to process **all** emails matching the search query (useful during setup).
+
+### Incremental fetch state
+Processed message IDs are tracked in `credentials/newsletter_state.json`. This prevents re-processing the same 50 emails on every scheduler tick. The file is auto-created on the first run. Delete it to force a full re-scan.
+
+### Schedule
+Gmail ingestion runs **every 8 hours**, starting 30 minutes after the API server starts. This staggers it away from the RSS job (every 6 hours). To trigger a manual run:
+```bash
+curl -X POST http://localhost:8000/ingestion/newsletters
+```
+
+### OAuth re-authentication
+The token at `credentials/token.json` expires every 7 days for Google Cloud apps in "Testing" mode.
 
 To re-authenticate:
 ```bash
 rm credentials/token.json
 # Then trigger newsletter ingestion — a browser window will open for consent:
-python scripts/run_ingestion.py  # or POST /ingestion/newsletters
+curl -X POST http://localhost:8000/ingestion/newsletters
 ```
 
 To avoid the 7-day expiry, promote the Google Cloud app from "Testing" to "Production" in the Google Cloud Console.
