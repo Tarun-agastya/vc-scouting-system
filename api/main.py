@@ -32,32 +32,24 @@ async def lifespan(app: FastAPI):
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from datetime import timedelta
-        from ingestion.rss_parser import rss_parser
-        from ingestion.newsletter_ingestor import newsletter_ingestor
+        from processing.scout_controller import scout_controller
 
         async def _scheduled_rss():
-            """Run RSS ingestion in a thread executor (synchronous + Ollama calls)."""
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None, lambda: rss_parser.ingest_feeds(max_entries=40)
-            )
+            """Run RSS ingestion through the controller (queues on the GPU mutex)."""
+            await scout_controller.run_rss(max_entries=40)
 
         async def _scheduled_gmail():
             """
-            Run Gmail newsletter ingestion in a thread executor.
+            Run Gmail newsletter ingestion through the controller.
             Staggered 30 min after start, then every 8 h, so it never
             overlaps with the RSS job (every 6 h from start).
-            Silently skips if credentials are missing — not a startup blocker.
+            Silently skips if OAuth credentials are missing — not a blocker.
             """
             import os
-            creds_path = "credentials/gmail_credentials.json"
-            if not os.path.exists(creds_path):
+            if not os.path.exists("credentials/gmail_credentials.json"):
                 logger.debug("[Gmail] Credentials not found — skipping scheduled run")
                 return
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None, lambda: newsletter_ingestor.run_ingestion(max_messages=50)
-            )
+            await scout_controller.run_newsletters(max_messages=50)
 
         scheduler = AsyncIOScheduler()
 

@@ -1,6 +1,6 @@
 import logging
 from typing import Optional, List
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 # ── Request Models ────────────────────────────────────────────────────────────
 
 class RSSIngestionRequest(BaseModel):
-    feed_urls: Optional[List[str]] = None  # None = use all default feeds
+    feed_urls: Optional[List[str]] = None  # reserved; controller runs all default feeds
     max_entries: int = 50
 
 
@@ -19,142 +19,127 @@ class ScrapeRequest(BaseModel):
     source_type: str = "accelerator"  # accelerator | incubator | university | general
 
 
+class TargetedRequest(BaseModel):
+    """
+    The agent's lever (Phase 4). Provide exactly one target:
+      - kind="rss" or kind="newsletter" for those whole-source sweeps, OR
+      - source_id matching a config/source_registry entry, OR
+      - url for an ad-hoc web scrape.
+    """
+    kind:        Optional[str] = None        # "rss" | "newsletter"
+    source_id:   Optional[str] = None        # registry source_id
+    url:         Optional[str] = None         # ad-hoc URL
+    source_type: str = "general"
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
+# Every ingestion path goes through scout_controller so the GPU mutex serializes
+# all heavy LLM work. Runs are launched as background tasks that queue on the
+# mutex; the endpoint returns immediately.
 
 @router.post("/rss")
-async def ingest_rss_feeds(request: RSSIngestionRequest, background_tasks: BackgroundTasks):
-    """Trigger RSS ingestion from startup news feeds (runs in background)."""
-    from ingestion.rss_parser import rss_parser
+async def ingest_rss_feeds(request: RSSIngestionRequest):
+    """Trigger RSS ingestion through the controller (queues on the GPU mutex)."""
+    import asyncio
+    from processing.scout_controller import scout_controller
 
-    background_tasks.add_task(
-        rss_parser.ingest_feeds,
-        feed_urls=request.feed_urls,
-        max_entries=request.max_entries,
-    )
-    return {
-        "status": "started",
-        "message": f"RSS ingestion started — processing {'default feeds' if not request.feed_urls else len(request.feed_urls)} feeds",
-    }
+    asyncio.create_task(scout_controller.run_rss(max_entries=request.max_entries))
+    return {"status": "started", "message": "RSS ingestion queued via controller"}
 
 
 @router.post("/scrape")
-async def scrape_website(request: ScrapeRequest, background_tasks: BackgroundTasks):
-    """Scrape a single startup source URL (runs in background)."""
-    from ingestion.web_scraper import web_scraper
+async def scrape_website(request: ScrapeRequest):
+    """Scrape a single source URL through the controller."""
+    import asyncio
+    from processing.scout_controller import scout_controller
 
-    # Use the async method directly — FastAPI awaits coroutine background tasks
-    background_tasks.add_task(
-        web_scraper.scrape_source,
-        url=request.url,
-        source_type=request.source_type,
+    asyncio.create_task(
+        scout_controller.run_web_source(request.url, request.source_type)
     )
     return {
         "status": "started",
-        "message": f"Scraping {request.url} as '{request.source_type}'",
+        "message": f"Scraping {request.url} as '{request.source_type}' (queued via controller)",
     }
 
 
 @router.post("/scrape-accelerators")
-async def scrape_all_accelerators(background_tasks: BackgroundTasks):
-    """Scrape all HIGH-priority accelerator/incubator/hub pages from the source registry."""
-    from config.source_registry import get_high_priority_sources, SourceType
-    from ingestion.web_scraper import web_scraper
+async def scrape_all_accelerators():
+    """Scrape all HIGH-priority accelerator/incubator/hub pages, sequentially."""
+    import asyncio
+    from processing.scout_controller import scout_controller
 
-    sources = [
-        s for s in get_high_priority_sources()
-        if s.source_type != SourceType.UNIVERSITY_HUB
-    ]
-    for source in sources:
-        logger.info(f"[SOURCE] {source.source_name}")
-        background_tasks.add_task(
-            web_scraper.scrape_source,
-            url=source.primary_url,
-            source_type=source.source_type.value,
-        )
-    return {
-        "status": "started",
-        "message": f"Scraping {len(sources)} accelerator/hub pages from registry",
-        "sources": [s.source_name for s in sources],
-    }
+    asyncio.create_task(scout_controller.run_accelerators())
+    return {"status": "started", "message": "Accelerator/hub sweep queued via controller"}
 
 
 @router.post("/scrape-universities")
-async def scrape_universities(background_tasks: BackgroundTasks):
-    """Scrape all HIGH-priority university hub pages from the source registry."""
-    from config.source_registry import get_high_priority_sources, SourceType
-    from ingestion.web_scraper import web_scraper
+async def scrape_universities():
+    """Scrape all HIGH-priority university hub pages, sequentially."""
+    import asyncio
+    from processing.scout_controller import scout_controller
 
-    sources = [
-        s for s in get_high_priority_sources()
-        if s.source_type == SourceType.UNIVERSITY_HUB
-    ]
-    for source in sources:
-        logger.info(f"[SOURCE] {source.source_name}")
-        background_tasks.add_task(
-            web_scraper.scrape_source,
-            url=source.primary_url,
-            source_type=source.source_type.value,
-        )
-    return {
-        "status": "started",
-        "message": f"Scraping {len(sources)} university hub pages from registry",
-        "sources": [s.source_name for s in sources],
-    }
+    asyncio.create_task(scout_controller.run_universities())
+    return {"status": "started", "message": "University hub sweep queued via controller"}
 
 
 @router.post("/newsletters")
-async def ingest_newsletters(background_tasks: BackgroundTasks):
-    """
-    Trigger Gmail newsletter ingestion.
-    Requires gmail_credentials.json in ./credentials/ directory.
-    """
-    from ingestion.newsletter_ingestor import newsletter_ingestor
+async def ingest_newsletters():
+    """Trigger Gmail newsletter ingestion through the controller."""
+    import asyncio
+    from processing.scout_controller import scout_controller
 
-    background_tasks.add_task(newsletter_ingestor.run_ingestion)
-    return {
-        "status": "started",
-        "message": "Gmail newsletter ingestion started",
-    }
+    asyncio.create_task(scout_controller.run_newsletters())
+    return {"status": "started", "message": "Gmail newsletter ingestion queued via controller"}
 
 
 @router.post("/run-all")
-async def run_full_ingestion(background_tasks: BackgroundTasks):
-    """
-    Run all ingestion pipelines: RSS feeds + all HIGH-priority registry sources.
-    This is the 'big sweep' — use when you want to refresh everything.
-    """
-    from ingestion.rss_parser import rss_parser
-    from ingestion.web_scraper import web_scraper
-    from config.source_registry import get_high_priority_sources
+async def run_full_ingestion():
+    """Run the big sweep: RSS → accelerators → universities → newsletters."""
+    import asyncio
+    from processing.scout_controller import scout_controller
 
-    # RSS feeds
-    background_tasks.add_task(rss_parser.ingest_feeds, max_entries=50)
+    asyncio.create_task(scout_controller.run_all())
+    return {"status": "started", "message": "Full ingestion sweep queued via controller"}
 
-    # All HIGH priority sources — accelerators, incubators, hubs, universities
-    sources = get_high_priority_sources()
-    for source in sources:
-        logger.info(f"[SOURCE] {source.source_name}")
-        background_tasks.add_task(
-            web_scraper.scrape_source,
-            url=source.primary_url,
-            source_type=source.source_type.value,
+
+@router.post("/targeted")
+async def ingest_targeted(request: TargetedRequest):
+    """
+    The agent's command lever: run ONE focused ingestion under the mutex and
+    return a run_id. Poll GET /ingestion/status?run_id=<id> until it finishes.
+    """
+    from processing.scout_controller import scout_controller
+
+    try:
+        run_id = scout_controller.submit_targeted(
+            kind=request.kind,
+            source_id=request.source_id,
+            url=request.url,
+            source_type=request.source_type,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
-    total_tasks = 1 + len(sources)
-    return {
-        "status": "started",
-        "message": f"Full ingestion pipeline started — {total_tasks} tasks queued",
-        "registry_sources": [s.source_name for s in sources],
-    }
+    return {"status": "started", "run_id": run_id}
 
 
 @router.get("/status")
-async def ingestion_status():
-    """Check current database size."""
-    from vector_db.qdrant_store import qdrant_store
+async def ingestion_status(run_id: Optional[str] = None):
+    """
+    Controller state: current run, last finished run, recent history, and GPU
+    mutex state. Pass ?run_id=<id> to fetch a single run (for polling targeted
+    requests). Also includes the current vector-DB startup count.
+    """
+    from processing.scout_controller import scout_controller
 
-    try:
-        count = qdrant_store.get_startup_count()
-        return {"startups_in_vector_db": count}
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Qdrant unavailable: {exc}")
+    payload = scout_controller.status(run_id=run_id)
+
+    if run_id is None:
+        try:
+            from vector_db.qdrant_store import qdrant_store
+            payload["startups_in_vector_db"] = qdrant_store.get_startup_count()
+        except Exception as exc:
+            payload["startups_in_vector_db"] = None
+            payload["vector_db_error"] = str(exc)
+
+    return payload

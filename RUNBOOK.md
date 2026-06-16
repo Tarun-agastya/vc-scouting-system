@@ -51,6 +51,45 @@ python scripts/run_ingestion.py universities
 python scripts/run_ingestion.py all
 ```
 
+## Ingestion controller & API (Phase 3)
+
+All server-side ingestion runs through `processing/scout_controller.py`, which
+holds a single **GPU mutex** (`asyncio.Lock`). Only one heavy LLM job touches
+Ollama at a time — scheduled jobs, API-triggered runs, and (Phase 4) the agent's
+14B reasoning all queue on the same lock, so the Mac is never oversubscribed.
+
+Before any run the controller pre-flights Ollama + Qdrant; if either is down the
+run is **skipped and logged**, never crashed. Every run is tracked in an
+in-memory history (last 50) queryable via the status endpoint.
+
+```bash
+# Trigger ingestion (all queue on the GPU mutex, return immediately)
+curl -X POST http://localhost:8000/ingestion/rss
+curl -X POST http://localhost:8000/ingestion/scrape-accelerators
+curl -X POST http://localhost:8000/ingestion/scrape-universities
+curl -X POST http://localhost:8000/ingestion/newsletters
+curl -X POST http://localhost:8000/ingestion/run-all      # RSS → accel → uni → newsletters
+
+# Targeted run (the agent's lever) — returns a run_id to poll
+curl -X POST http://localhost:8000/ingestion/targeted \
+     -H 'Content-Type: application/json' \
+     -d '{"source_id":"munich_startup"}'        # or {"kind":"rss"} / {"url":"https://..."}
+
+# Controller status: current run, last run, recent history, GPU lock state
+curl http://localhost:8000/ingestion/status
+
+# Poll a specific targeted run until status == completed | failed | skipped
+curl "http://localhost:8000/ingestion/status?run_id=<run_id>"
+```
+
+Scheduled jobs (set in `api/main.py`): RSS every 6 h, Gmail every 8 h (offset
++30 min). Both call the controller, so they serialize against each other and
+against any API-triggered run.
+
+> The manual CLI (`scripts/run_ingestion.py`) calls the scraper directly and is
+> intended for use when the API server is **not** running. Do not run it
+> alongside the server — the in-process mutex cannot guard a separate process.
+
 ## Validation harness
 
 ```bash
