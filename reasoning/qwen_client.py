@@ -24,10 +24,8 @@ class QwenClient:
         self.model = settings.ollama_reason_model
         self.base_url = settings.ollama_base_url
         self._ollama_client = None  # Lazy, cached — avoid re-creating on every call
-        # Cap concurrent Ollama calls to 2 — Qwen3:14b is large and the Mac Mini
-        # only has one inference backend. More than 2 threads queuing simultaneously
-        # wastes memory without improving throughput.
-        self._semaphore = threading.Semaphore(2)
+        # Derived from max_qwen_workers so config and semaphore stay in sync.
+        self._semaphore = threading.Semaphore(settings.max_qwen_workers)
 
     def _client(self):
         if self._ollama_client is None:
