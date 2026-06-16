@@ -1,10 +1,69 @@
 import json
 import re
 import threading
+import time
 import logging
 from typing import Optional, List, Dict
 import httpx
 from config import settings
+
+# JSON Schema for structured startup extraction.
+# Wrapped in an object (not top-level array) for maximum grammar compatibility.
+# Optional string fields use anyOf-null so the model can express "not found".
+# All string fields use plain "string" (no anyOf/null) — nullable types confuse
+# llama.cpp constrained decoding on 7B models and produce empty extractions.
+# All fields are required so the model fills every key; _normalize_startup()
+# converts empty-string sentinels back to None before returning.
+_STARTUP_EXTRACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "startups": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name":           {"type": "string"},
+                    "description":    {"type": "string"},
+                    "website":        {"type": "string"},
+                    "industry":       {"type": "string"},
+                    "sub_industry":   {"type": "string"},
+                    "country":        {"type": "string"},
+                    "city":           {"type": "string"},
+                    "funding_stage":  {"type": "string"},
+                    "funding_amount": {"type": "string"},
+                    "founded_year":   {"type": "integer"},
+                    "contact_info":   {"type": "string"},
+                    "published_date": {"type": "string"},
+                    "founders":       {"type": "array", "items": {"type": "string"}},
+                    "tags":           {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "name", "description", "website", "industry", "sub_industry",
+                    "country", "city", "funding_stage", "funding_amount",
+                    "founded_year", "contact_info", "published_date",
+                    "founders", "tags",
+                ],
+            },
+        }
+    },
+    "required": ["startups"],
+}
+
+# String fields that should be None (not "") when the model returns empty/zero.
+_NULLABLE_STR_FIELDS = (
+    "description", "website", "industry", "sub_industry", "country", "city",
+    "funding_stage", "funding_amount", "contact_info", "published_date",
+)
+
+
+def _normalize_startup(s: dict) -> dict:
+    """Convert empty-string sentinels to None so upsert_startup sees null values."""
+    for field in _NULLABLE_STR_FIELDS:
+        if s.get(field) == "":
+            s[field] = None
+    if s.get("founded_year") == 0:
+        s["founded_year"] = None
+    return s
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +82,8 @@ class QwenClient:
     def __init__(self):
         self.model = settings.ollama_reason_model
         self.base_url = settings.ollama_base_url
-        self._ollama_client = None  # Lazy, cached — avoid re-creating on every call
+        self._ollama_client = None         # lazy reason client (14B, 120s timeout)
+        self._extract_ollama_client = None # lazy extract client (7B, 45s timeout)
         # Derived from max_qwen_workers so config and semaphore stay in sync.
         self._semaphore = threading.Semaphore(settings.max_qwen_workers)
 
@@ -35,6 +95,57 @@ class QwenClient:
                 timeout=120,
             )
         return self._ollama_client
+
+    def _extract_client(self):
+        """Separate client for the small extraction model with a tighter timeout."""
+        if self._extract_ollama_client is None:
+            import ollama
+            # 7B model: ~8–15s for typical chunks, up to ~60s for dense portfolio pages
+            # with 10+ companies and all fields required. 75s gives adequate headroom.
+            self._extract_ollama_client = ollama.Client(
+                host=self.base_url,
+                timeout=75,
+            )
+        return self._extract_ollama_client
+
+    def extract_startups(self, text: str) -> list:
+        """
+        Extract startup entities from text using the small fast extraction model.
+
+        Uses Ollama structured output (format= JSON schema) so the response is
+        guaranteed-valid JSON — no <think> stripping or parse-repair needed.
+        Retries once after a 2-second pause on transient failure, then re-raises
+        so the caller (worker_queue) can count the failure and move on.
+        """
+        from reasoning.prompts import EXTRACTION_PROMPT, SYSTEM_EXTRACTOR
+
+        prompt = EXTRACTION_PROMPT.format(text=text)
+        messages = [
+            {"role": "system", "content": SYSTEM_EXTRACTOR},
+            {"role": "user",   "content": prompt},
+        ]
+
+        last_exc: Exception = RuntimeError("no attempts made")
+        for attempt in range(2):
+            try:
+                with self._semaphore:
+                    response = self._extract_client().chat(
+                        model=settings.ollama_extract_model,
+                        messages=messages,
+                        format=_STARTUP_EXTRACTION_SCHEMA,
+                        options={"temperature": 0, "num_predict": 3000},
+                    )
+                data = json.loads(response["message"]["content"])
+                return [_normalize_startup(s) for s in data.get("startups", [])]
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 0:
+                    logger.warning(
+                        f"[Extract] Attempt 1 failed ({exc}), retrying in 2s…"
+                    )
+                    time.sleep(2)
+
+        raise last_exc
 
     def generate(
         self,

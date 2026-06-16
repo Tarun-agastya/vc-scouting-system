@@ -209,34 +209,32 @@ def _qwen_extract_sync(
     item: ChunkItem, metrics: PipelineMetrics
 ) -> tuple:  # (List[dict], float elapsed_s)
     """
-    Synchronous Qwen extraction — called via run_in_executor from qwen_worker_task.
+    Synchronous extraction — called via run_in_executor from qwen_worker_task.
+
+    Delegates to qwen_client.extract_startups() which uses the small fast model
+    (qwen2.5:7b-instruct) with Ollama structured output for guaranteed-valid JSON
+    and a one-retry-on-failure policy with a 45s per-attempt timeout.
 
     Returns a 2-tuple (startups, elapsed_s).
       startups  — possibly empty list of startup dicts
-      elapsed_s — wall-clock seconds spent in Qwen (0.0 on failure)
+      elapsed_s — wall-clock seconds spent in the extract call (0.0 on failure)
     Never raises: all exceptions are caught, logged, and counted as qwen_failures.
     """
     from reasoning.qwen_client import qwen_client
-    from reasoning.prompts import NEWSLETTER_EXTRACTION_PROMPT
 
     metrics.inc("qwen_calls")
     logger.info(
-        f"[Qwen Worker] Chunk {item.chunk_num}/{item.total_chunks} — {item.source_url}"
+        f"[Extract Worker] Chunk {item.chunk_num}/{item.total_chunks} — {item.source_url}"
     )
-    logger.info("[Qwen Worker] Sending to Qwen")
     t0 = time.time()
 
     try:
-        prompt = NEWSLETTER_EXTRACTION_PROMPT.format(text=item.chunk)
-        response = qwen_client.generate(
-            prompt,
-            system="Return ONLY a valid JSON array. No explanation, no markdown.",
-            temperature=0,
-        )
+        startups = qwen_client.extract_startups(item.chunk)
         elapsed = time.time() - t0
-        logger.info(f"[Qwen Worker] Qwen completed in {elapsed:.1f}s")
-
-        startups = qwen_client.parse_json_array(response) or []
+        logger.info(
+            f"[Extract Worker] Chunk {item.chunk_num}/{item.total_chunks}: "
+            f"{len(startups)} startup(s) in {elapsed:.1f}s"
+        )
 
         # Propagate published_date to each startup dict if not already set
         if item.published_date:
@@ -245,17 +243,14 @@ def _qwen_extract_sync(
                     s["published_date"] = item.published_date
 
         metrics.inc("startups_extracted", len(startups))
-        logger.info(
-            f"[Qwen Worker] Chunk {item.chunk_num}/{item.total_chunks}: "
-            f"{len(startups)} startup(s) extracted"
-        )
         return startups, elapsed
 
     except Exception as exc:
+        elapsed = time.time() - t0
         metrics.inc("qwen_failures")
         logger.error(
-            f"[Qwen Worker] Chunk {item.chunk_num}/{item.total_chunks} failed "
-            f"({item.source_url}): {exc}"
+            f"[Extract Worker] Chunk {item.chunk_num}/{item.total_chunks} failed "
+            f"after {elapsed:.1f}s ({item.source_url}): {exc}"
         )
         return [], 0.0
 
