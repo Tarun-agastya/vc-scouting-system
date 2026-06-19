@@ -310,6 +310,14 @@ async def qwen_worker_task(
         for startup in startups:
             name = (startup.get("name") or "").strip()
             if not name or len(name) < 2:
+                # DEBUG: case A — Qwen returned valid JSON but name field is
+                # absent or too short; startup is silently dropped here.
+                logger.debug(
+                    "[Qwen Worker] STARTUP DROPPED (name missing/too short) |"
+                    " chunk=%d/%d | raw_name=%r | startup=%r",
+                    item.chunk_num, item.total_chunks,
+                    startup.get("name"), startup,
+                )
                 continue
             await storage_queue.put(StorageItem(
                 startup_dict=startup,
