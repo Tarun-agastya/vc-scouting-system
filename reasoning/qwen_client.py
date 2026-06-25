@@ -23,24 +23,29 @@ _STARTUP_EXTRACTION_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "name":           {"type": "string"},
+                    "one_liner":      {"type": "string"},
                     "description":    {"type": "string"},
                     "website":        {"type": "string"},
                     "industry":       {"type": "string"},
                     "sub_industry":   {"type": "string"},
+                    "tech_cluster":   {"type": "string"},
                     "country":        {"type": "string"},
                     "city":           {"type": "string"},
+                    "address":        {"type": "string"},
                     "funding_stage":  {"type": "string"},
                     "funding_amount": {"type": "string"},
                     "founded_year":   {"type": "integer"},
+                    "employee_count": {"type": "string"},
                     "contact_info":   {"type": "string"},
                     "published_date": {"type": "string"},
                     "founders":       {"type": "array", "items": {"type": "string"}},
                     "tags":           {"type": "array", "items": {"type": "string"}},
                 },
                 "required": [
-                    "name", "description", "website", "industry", "sub_industry",
-                    "country", "city", "funding_stage", "funding_amount",
-                    "founded_year", "contact_info", "published_date",
+                    "name", "one_liner", "description", "website", "industry",
+                    "sub_industry", "tech_cluster", "country", "city", "address",
+                    "funding_stage", "funding_amount", "founded_year",
+                    "employee_count", "contact_info", "published_date",
                     "founders", "tags",
                 ],
             },
@@ -51,8 +56,9 @@ _STARTUP_EXTRACTION_SCHEMA = {
 
 # String fields that should be None (not "") when the model returns empty/zero.
 _NULLABLE_STR_FIELDS = (
-    "description", "website", "industry", "sub_industry", "country", "city",
-    "funding_stage", "funding_amount", "contact_info", "published_date",
+    "one_liner", "description", "website", "industry", "sub_industry",
+    "tech_cluster", "country", "city", "address", "funding_stage",
+    "funding_amount", "employee_count", "contact_info", "published_date",
 )
 
 

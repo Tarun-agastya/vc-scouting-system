@@ -22,6 +22,7 @@ class Startup(Base):
     # Categorization
     industry = Column(String(100), index=True)
     sub_industry = Column(String(100))
+    tech_cluster = Column(String(200))
     tags = Column(ARRAY(String))
     business_model = Column(String(100))
 
@@ -29,6 +30,7 @@ class Startup(Base):
     country = Column(String(100), index=True)
     city = Column(String(100))
     region = Column(String(100))
+    address = Column(String(500))
 
     # Funding
     funding_stage = Column(String(50), index=True)

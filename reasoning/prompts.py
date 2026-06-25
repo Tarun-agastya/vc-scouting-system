@@ -27,7 +27,15 @@ EXCLUDE:
 - VC firms, investment funds, accelerators, media outlets.
 - Companies in medicine, biotech, e-commerce, or food retail (exception: packaging technology).
 
-For unknown fields use empty string "" (string fields) or 0 (founded_year). Never guess a value.
+Field instructions:
+- one_liner: exactly 1 sentence — what the company does and who it serves. This is the first thing a VC reads to decide if they are interested. Be specific, never generic.
+- description: 2-3 sentences with more context (product, traction, differentiation).
+- tech_cluster: the specific technology domain, e.g. "AI/ML Infrastructure", "ClimateTech - Carbon Capture", "FinTech - Payments", "DeepTech - Robotics", "B2B SaaS - HR Tech". Be precise.
+- employee_count: one of exactly: "1-10", "11-50", "51-200", "201-500", "500+" — use "" if not mentioned.
+- address: full street address if mentioned; city + country is acceptable if no street address is given; "" if unknown.
+- contact_info: email address or LinkedIn URL if mentioned, else "".
+
+For all other unknown fields use "" (strings) or 0 (founded_year). Never guess a value.
 Return an empty startups list only if the text contains absolutely no matching companies.
 
 Text:
