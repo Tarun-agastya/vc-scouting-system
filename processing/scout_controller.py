@@ -324,6 +324,15 @@ class ScoutController:
 
     # ── Status ───────────────────────────────────────────────────────────────────
 
+    @property
+    def current_run_id(self) -> Optional[str]:
+        """
+        The run_id currently executing under the GPU mutex, or None if no
+        controller-managed run is in flight (e.g. a manual /add-startup call).
+        Read by processing/storage.py to stamp provenance on every write.
+        """
+        return self._current_run_id
+
     def get_run(self, run_id: str) -> Optional[dict]:
         rec = self._runs.get(run_id)
         return rec.to_dict() if rec else None

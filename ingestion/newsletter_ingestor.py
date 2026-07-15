@@ -189,7 +189,12 @@ class NewsletterIngestor:
             published_date = self._parse_email_date(date_str)
             source_url = f"gmail://{message_id}"
 
-            count = self._extract_and_store(text, published_date, source_url, message_id)
+            provenance = {
+                "source_name": self._extract_sender_name(sender),
+                "sender": sender,
+                "subject": subject,
+            }
+            count = self._extract_and_store(text, published_date, source_url, provenance, message_id)
             self._save_email_record(message_id, subject, sender, text, count)
             return count
 
@@ -201,6 +206,16 @@ class NewsletterIngestor:
         """Return True if sender matches any entry from config/sources.yaml's newsletter_senders."""
         sender_lower = sender.lower()
         return any(t.lower() in sender_lower for t in trusted_senders)
+
+    def _extract_sender_name(self, sender: str) -> str:
+        """
+        Extract the display name from a From header for a human-readable
+        source_name, e.g. '"KIT-Gründerschmiede" <x@kit.edu>' -> 'KIT-Gründerschmiede'.
+        Falls back to the raw header if there's no quoted display name.
+        """
+        import re
+        match = re.match(r'^"?([^"<]+?)"?\s*<', sender)
+        return match.group(1).strip() if match else sender
 
     def _extract_text(self, message: dict) -> str:
         """Extract clean plain text from a Gmail message payload."""
@@ -230,6 +245,7 @@ class NewsletterIngestor:
         text: str,
         published_date: Optional[str],
         source_url: str,
+        provenance: dict,
         message_id: str,
     ) -> int:
         """
@@ -268,6 +284,7 @@ class NewsletterIngestor:
                         source="newsletter",
                         source_url=source_url,
                         published_date=published_date,
+                        provenance=provenance,
                     )
                     if record_id and is_new:
                         inserted += 1

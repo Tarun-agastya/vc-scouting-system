@@ -22,11 +22,44 @@ from processing.deduplicator import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_source_name(source_url: str) -> Optional[str]:
+    """
+    Best-effort human-readable label for a web/RSS source_url, looked up
+    from the live registry (config/sources.yaml) by exact URL match.
+    Newsletters (gmail://<id> URLs) never match here — their source_name
+    comes from the explicit provenance dict instead.
+    """
+    try:
+        from config.source_loader import get_web_sources, get_rss_feeds
+        for s in get_web_sources():
+            if s.primary_url == source_url:
+                return s.source_name
+        for f in get_rss_feeds():
+            if f["url"] == source_url:
+                return f["name"]
+    except Exception:
+        pass
+    return None
+
+
+def _get_current_run_id() -> Optional[str]:
+    """
+    Best-effort lookup of the scout_controller run currently in flight.
+    None for calls outside a controller-managed run (e.g. manual /add-startup).
+    """
+    try:
+        from processing.scout_controller import scout_controller
+        return scout_controller.current_run_id
+    except Exception:
+        return None
+
+
 def upsert_startup(
     startup: dict,
     source: str,
     source_url: str,
     published_date: Optional[str] = None,
+    provenance: Optional[dict] = None,
 ) -> tuple[Optional[str], bool]:
     """
     Write a startup record to PostgreSQL, then sync to Qdrant.
@@ -38,6 +71,12 @@ def upsert_startup(
           • Fill any NULL fields with newly discovered values.
       - If new: insert a complete row.
       - Always re-embed and upsert to Qdrant with the stable UUID.
+
+    provenance : optional dict with any of "source_name", "sender", "subject"
+      — used by newsletter_ingestor to attach which newsletter (sender +
+      subject) a startup came from, since gmail:// URLs alone aren't
+      human-readable. Web/RSS callers don't need this — source_name is
+      resolved automatically from the source registry by source_url.
 
     Returns (record_id, is_new):
       record_id — stable UUID string, or None on skip/error
@@ -60,11 +99,21 @@ def upsert_startup(
     if not fingerprint or not stable_id:
         return None, False
 
+    source_name = (provenance or {}).get("source_name") or _resolve_source_name(source_url)
+
     source_entry = {
         "source": source,
+        "source_name": source_name,
         "url": source_url,
         "date": published_date or datetime.utcnow().isoformat(),
+        "extracted_at": datetime.utcnow().isoformat(),
+        "run_id": _get_current_run_id(),
     }
+    if provenance:
+        if provenance.get("sender"):
+            source_entry["sender"] = provenance["sender"]
+        if provenance.get("subject"):
+            source_entry["subject"] = provenance["subject"]
 
     db = SessionLocal()
     try:
