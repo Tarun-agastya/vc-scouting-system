@@ -31,52 +31,61 @@ async def lifespan(app: FastAPI):
     # Start background scheduler
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
-        from datetime import timedelta
+        from apscheduler.triggers.cron import CronTrigger
         from processing.scout_controller import scout_controller
 
-        async def _scheduled_rss():
-            """Run RSS ingestion through the controller (queues on the GPU mutex)."""
-            await scout_controller.run_rss(max_entries=40)
-
-        async def _scheduled_gmail():
-            """
-            Run Gmail newsletter ingestion through the controller.
-            Staggered 30 min after start, then every 8 h, so it never
-            overlaps with the RSS job (every 6 h from start).
-            Silently skips if OAuth credentials are missing — not a blocker.
-            """
+        def _gmail_credentials_present() -> bool:
             import os
-            if not os.path.exists("credentials/gmail_credentials.json"):
-                logger.debug("[Gmail] Credentials not found — skipping scheduled run")
+            return os.path.exists("credentials/gmail_credentials.json")
+
+        async def _scheduled_full_sweep():
+            """
+            The twice-weekly full sweep: RSS -> accelerators -> universities ->
+            newsletters, run sequentially through the controller (each source
+            acquires the GPU mutex in turn, so nothing overlaps).
+            """
+            logger.info("[Scheduler] Starting twice-weekly full sweep")
+            await scout_controller.run_all()
+
+        async def _scheduled_gmail_topup():
+            """
+            Daily incremental Gmail check, independent of the twice-weekly full
+            sweep, so newsletters arriving between sweeps don't wait days to be
+            picked up. Cheap: only processes messages not already in the
+            incremental-fetch state file. Silently skips if OAuth credentials
+            are missing — not a blocker.
+            """
+            if not _gmail_credentials_present():
+                logger.debug("[Gmail] Credentials not found — skipping scheduled top-up")
                 return
             await scout_controller.run_newsletters(max_messages=50)
 
         scheduler = AsyncIOScheduler()
 
-        # RSS: fire immediately on first interval, then every 6 h
+        # Full sweep: Monday + Thursday at 05:00 (twice a week, per the 25 June
+        # requirements). Off-hours so it never competes with anyone using the
+        # dashboard/agent during the day.
         scheduler.add_job(
-            func=_scheduled_rss,
-            trigger="interval",
-            hours=6,
-            id="rss_ingestion",
+            func=_scheduled_full_sweep,
+            trigger=CronTrigger(day_of_week="mon,thu", hour=5, minute=0),
+            id="full_sweep",
             replace_existing=True,
         )
 
-        # Gmail: first run 30 min after startup, then every 8 h
-        # (staggered so it never starts at the same time as an RSS run)
-        from datetime import datetime as _dt
+        # Gmail top-up: daily at 13:00, offset from the 05:00 full sweep so it
+        # never fires at the same moment on Mon/Thu.
         scheduler.add_job(
-            func=_scheduled_gmail,
-            trigger="interval",
-            hours=8,
-            start_date=_dt.now() + timedelta(minutes=30),
-            id="gmail_ingestion",
+            func=_scheduled_gmail_topup,
+            trigger=CronTrigger(hour=13, minute=0),
+            id="gmail_topup",
             replace_existing=True,
         )
 
         scheduler.start()
         app.state.scheduler = scheduler
-        logger.info("Background scheduler started (RSS every 6 h, Gmail every 8 h +30 min offset)")
+        logger.info(
+            "Background scheduler started (full sweep Mon+Thu 05:00, Gmail top-up daily 13:00)"
+        )
     except Exception as exc:
         logger.warning(f"Scheduler could not start: {exc}")
 
