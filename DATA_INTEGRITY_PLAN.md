@@ -63,6 +63,41 @@ These ride along with work already scheduled, so they ship by 15 July at no adde
 
 **Trigger to revisit:** first check-in after the owner returns from vacation, once Phase G's unattended operation has a month of real evidence behind it.
 
+### Backlog — Phase S-3: Multi-signal deduplication *(deferred until after the vacation, ~2–3 days)*
+
+**Origin:** raised in a 15 July working session on how `processing/deduplicator.py` actually matches startups. Current logic is two-tier: (1) exact fingerprint = `sha256(normalized_name + domain)`, (2) fallback fuzzy match on **name only** (rapidfuzz `token_sort_ratio`, threshold 88) when no website is on record. Tested live against realistic name variants — confirmed two real failure modes, one of which is a data-corruption risk, not just a missed merge:
+
+1. **False negative — same startup, renamed, same everything else** (e.g. a rebrand keeping the same website). The fingerprint hash has no partial similarity — a name change alone produces a completely unrelated hash even with an identical domain — so the domain match, which should have been the strong signal here, is never checked on its own; it's only ever bundled inside one hash with the name. Confirmed with a real pair scoring 53/100 on the fuzzy fallback, well under threshold.
+2. **False positive — different startup, same name, nothing else in common** (e.g. two unrelated pre-seed companies both mentioned in newsletters before either has a website on record). The fuzzy fallback compares **only** the name string against every existing startup — no check on country, industry, or founding year. An exact name coincidence with no other differentiating check silently merges two unrelated companies' data into one record. This is worse than #1: it actively corrupts a legitimate existing startup's history rather than just creating an extra row.
+
+**Target design — a layered match function (from a 15 July research review).** The 2025/26 entity-resolution literature has a clear conclusion: pairwise "are these two records the same?" accuracy has hit a practical ceiling — the frontier is now the *pipeline* around it (blocking, clustering, uncertainty-aware human review). Two paradigms were evaluated against this system's constraints:
+
+- **Whole-record embedding** (embed all of a startup's info into one vector, compare by cosine similarity — the `entity-embed`/LinkTransformer approach). Solves both failure modes above *and* the "comparing every column isn't feasible" scaling concern — you never hand-write per-field logic; new attributes just extend the text. **But dangerous as the *sole* decision mechanism:** (a) *dilution* — the identity-defining domain becomes ~5% of the blob, so the strongest deterministic signal gets watered down; (b) *semantic neighbors ≠ same entity* — two different seed-stage AI-logistics startups in Berlin embed very close together, a real false-positive risk; (c) *threshold fragility* — cosine "same-entity" cutoffs are highly data-dependent and drift as sources change. So: use it for **blocking (shortlisting candidates), not for the final decision.**
+- **Graph representation** (each startup a node with founder/investor/location/tech edges; compare graph structure — knowledge-graph entity resolution). The *most powerful* long-term approach: shared uncommon founder + city + investor is a devastating same-entity signal even when names differ (nails the rename case). **But premature now:** current data is near-flat (each startup a star with 1–2 leaves), so graph comparison degenerates into attribute comparison the simpler method already does; and Neo4j/graph-neural-nets are a heavy infra/complexity jump for a Mac mini that must stay simple enough to run unattended. It's the natural *evolution*, not the starting point.
+
+**Recommended layered match function** (cost-ordered — each layer runs only if the previous is inconclusive; three outcomes throughout: auto-merge / auto-reject / needs-review):
+
+1. **Deterministic (free, certain):** exact domain match, or exact founder-name overlap (founders are *already* extracted but unused for dedup today) → high-confidence auto-merge.
+2. **Blocking (cheap, reuses Qdrant):** whole-record embedding → retrieve top-N most-similar existing startups. This is the "whole-record vector" idea in its *safe* role — shortlisting, not deciding — which sidesteps the semantic-neighbor false-positive trap because a later layer makes the call.
+3. **Multi-signal weighted score (moderate):** for those candidates, combine *field-level* embedding similarity (description embedded separately from name, so domain stays a hard signal) + location + founded-year proximity + founder overlap. Ambiguous middle band → needs-review.
+4. **Local-LLM judge (expensive, rare):** hand genuinely ambiguous pairs to `qwen3:14b` ("are these the same company?") under the GPU mutex. Legitimately modern (active 2025 research direction), fits the local-only privacy constraint, and only ever runs on the handful of pairs that reach it.
+5. **Human confirmation → feedback loop:** every confirm/reject in the team dashboard (§Phase G.3) becomes training data to tune the layer weights over time — this is what makes it *dynamic* (learns from the team) rather than a frozen threshold. Also gives the clustering step (§Phase B) a globally-consistent group decision instead of contradictory pairwise merges.
+
+**Graph (the eventual evolution):** once founders/investors/tech-stacks make the data genuinely networked, add a "shared-neighbor" term to the layer-3 score and grow toward the graph approach incrementally — no rewrite. The whole design reuses infra already running (Qdrant for blocking, local Qwen for the judge); it's using what's there more intelligently, not a new stack.
+
+**Why deferred:** this changes core matching behavior for every ingestion run — exactly the kind of change that shouldn't be rushed right before the 15 July demo or the unattended vacation month. The current two-tier system is a reasonable, well-tested baseline; this is a genuine upgrade, not an emergency fix.
+
+**Trigger to revisit:** same checkpoint as Phase S-2 — first check-in after the owner returns, once a month of real ingestion data exists to validate against (essential for calibrating the layer-3 embedding-similarity threshold and layer weights, which need real examples, not guessed defaults).
+
+**Research references (for whoever implements this):**
+- [An Investigation of LLMs for Entity Matching (arXiv 2405.16884)](https://arxiv.org/pdf/2405.16884) — the "pairwise accuracy has plateaued, invest in the pipeline" finding
+- [OpenSanctions Pairs: Large-Scale Entity Matching with LLMs (arXiv 2603.11051)](https://arxiv.org/html/2603.11051)
+- [LinkTransformer: Record Linkage with Transformer LMs (arXiv 2309.00789)](https://arxiv.org/pdf/2309.00789) — kNN-retrieval framing = the blocking layer
+- [Pre-trained Embeddings for Entity Resolution: Experimental Analysis (VLDB)](https://www.vldb.org/pvldb/vol16/p2225-skoutas.pdf)
+- [Entity Resolution Explained: Top 12 Techniques (Spot Intelligence)](https://spotintelligence.com/2024/01/22/entity-resolution/)
+- [Entity Resolution at Scale for Knowledge Graphs (Modern Data 101)](https://www.moderndata101.com/blogs/entity-resolution-at-scale-deduplication-strategies-for-knowledge-graph-construction) — graph "shared-neighbor" signal
+- [Entity-Resolved Knowledge Graphs (Towards Data Science)](https://towardsdatascience.com/entity-resolved-knowledge-graphs-6b22c09a1442/)
+
 ---
 
 ## A. Invariants (carry over from the main plan)
