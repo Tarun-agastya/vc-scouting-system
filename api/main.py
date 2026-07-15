@@ -3,7 +3,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routes import scout, matchmaking, ingestion
+from api.routes import scout, matchmaking, ingestion, sources
 from database.connection import init_db
 
 logging.basicConfig(
@@ -110,6 +110,7 @@ app.add_middleware(
 app.include_router(scout.router,       prefix="/scout",       tags=["Scouting"])
 app.include_router(matchmaking.router, prefix="/matchmaking", tags=["Matchmaking"])
 app.include_router(ingestion.router,   prefix="/ingestion",   tags=["Ingestion"])
+app.include_router(sources.router,     prefix="/sources",     tags=["Sources"])
 
 
 @app.get("/health", tags=["System"])

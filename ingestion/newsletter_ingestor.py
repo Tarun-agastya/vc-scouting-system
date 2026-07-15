@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import List, Optional
 from bs4 import BeautifulSoup
 from config import settings
+from config.source_loader import get_newsletter_search_terms, get_newsletter_senders
 
 logger = logging.getLogger(__name__)
 
@@ -15,20 +16,16 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOKEN_PATH   = os.path.join(_PROJECT_ROOT, "credentials", "token.json")
 _STATE_PATH  = os.path.join(_PROJECT_ROOT, "credentials", "newsletter_state.json")
 
-# Gmail search query for incoming VC/startup newsletters
-NEWSLETTER_SEARCH_QUERY = (
-    "subject:(startup OR venture OR newsletter OR funding OR accelerator OR incubator) "
-    "newer_than:14d"
-)
 
-# Trusted-sender domain/address allowlist.
-# Only emails whose From header contains one of these strings are processed.
-# The check is a case-insensitive substring match on the full From header, so
-# "sce.de" matches "SCE Newsletter <info@sce.de>".
-# Set to an empty list to accept ALL senders matching the search query.
-# Empty list = accept all senders. Content relevance is gated downstream
-# by candidate_filter.is_relevant() before any LLM call is made.
-TRUSTED_NEWSLETTER_SENDERS: List[str] = []
+def _build_search_query() -> str:
+    """
+    Build the Gmail search query from config/sources.yaml's
+    newsletter_search_terms, re-read fresh on every call (Phase S: dynamic
+    sources). Falls back to a sane default if the list is empty.
+    """
+    terms = get_newsletter_search_terms() or ["startup", "venture", "newsletter"]
+    subject_clause = " OR ".join(terms)
+    return f"subject:({subject_clause}) newer_than:14d"
 
 
 class NewsletterIngestor:
@@ -127,7 +124,7 @@ class NewsletterIngestor:
         result = (
             self._service.users()
             .messages()
-            .list(userId="me", q=NEWSLETTER_SEARCH_QUERY, maxResults=max_messages)
+            .list(userId="me", q=_build_search_query(), maxResults=max_messages)
             .execute()
         )
 
@@ -180,7 +177,8 @@ class NewsletterIngestor:
             subject = headers.get("Subject", "")
             date_str = headers.get("Date", "")
 
-            if TRUSTED_NEWSLETTER_SENDERS and not self._is_trusted_sender(sender):
+            trusted_senders = get_newsletter_senders()
+            if trusted_senders and not self._is_trusted_sender(sender, trusted_senders):
                 logger.debug(f"[Gmail] Skipping untrusted sender: {sender!r}")
                 return 0
 
@@ -199,10 +197,10 @@ class NewsletterIngestor:
             logger.error(f"[Gmail] Failed to process message {message_id}: {exc}")
             return 0
 
-    def _is_trusted_sender(self, sender: str) -> bool:
-        """Return True if sender matches any TRUSTED_NEWSLETTER_SENDERS entry."""
+    def _is_trusted_sender(self, sender: str, trusted_senders: List[str]) -> bool:
+        """Return True if sender matches any entry from config/sources.yaml's newsletter_senders."""
         sender_lower = sender.lower()
-        return any(t.lower() in sender_lower for t in TRUSTED_NEWSLETTER_SENDERS)
+        return any(t.lower() in sender_lower for t in trusted_senders)
 
     def _extract_text(self, message: dict) -> str:
         """Extract clean plain text from a Gmail message payload."""

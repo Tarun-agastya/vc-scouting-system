@@ -1,0 +1,243 @@
+# ══════════════════════════════════════════════════════════════════════════
+# VC Scouting — Live Source Registry
+# ══════════════════════════════════════════════════════════════════════════
+#
+# This file controls WHAT the pipeline scans. It is re-read fresh on every
+# ingestion run — no restart, no code change, no deploy needed to add or
+# remove a source.
+#
+# You can edit this file directly, or use the "Add source" form in the
+# team dashboard (which writes here for you). Comments (like this one) are
+# preserved when the dashboard edits the file.
+#
+# If you break the YAML syntax, the pipeline will NOT crash — it logs an
+# error and keeps using the last version that worked, until this file is
+# fixed. Still, try to keep the indentation consistent (use spaces, not tabs).
+#
+# ── Sections ─────────────────────────────────────────────────────────────
+#   rss_feeds              — news/blog RSS feeds to poll
+#   web_sources             — accelerator / incubator / university portfolio pages to scrape
+#   newsletter_senders      — optional allowlist of trusted newsletter senders
+#                             (leave empty to accept all senders in the inbox —
+#                             relevance is still filtered by content downstream)
+#   newsletter_search_terms — Gmail subject-line keywords used to find newsletters
+# ══════════════════════════════════════════════════════════════════════════
+
+rss_feeds:
+  - name: EU-Startups
+    url: https://eu-startups.com/feed/
+    region: europe
+    type: directory
+
+  - name: Sifted
+    url: https://sifted.eu/feed
+    region: europe
+    type: news
+
+  - name: Tech.eu
+    url: https://tech.eu/feed/
+    region: europe
+    type: news
+
+  - name: Gruenderszene
+    url: https://www.gruenderszene.de/feed
+    region: dach
+    type: news
+
+  - name: StartupTicker.ch
+    url: https://www.startupticker.ch/en/news/rss-feed
+    region: dach
+    type: news
+
+
+web_sources:
+  # ── HIGH priority — scraped weekly, processed first ──────────────────────
+  - source_id: starthub_augsburg
+    source_name: StartHub Augsburg
+    source_type: university_hub
+    location: Augsburg, Germany
+    primary_url: https://www.uni-augsburg.de/de/organisation/einrichtungen/starthub/startseite/
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+
+  - source_id: dzs_schwaben
+    source_name: D.Z.S. Digitales Zentrum Schwaben
+    source_type: incubator
+    location: Augsburg, Germany
+    primary_url: https://schwaben.digital
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+
+  - source_id: tha_funkenwerk
+    source_name: THA Funkenwerk
+    source_type: university_hub
+    location: Augsburg, Germany
+    primary_url: https://funkenwerk.tha.de
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+
+  - source_id: hbc_biberach
+    source_name: HBC Biberach Gründungsberatung
+    source_type: university_hub
+    location: Biberach an der Riß, Germany
+    primary_url: https://www.hochschule-biberach.de/forschung-transfer/gruendung
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+
+  - source_id: allgaeu_digital
+    source_name: Allgäu Digital
+    source_type: startup_network
+    location: Allgäu, Germany
+    primary_url: https://allgaeu-digital.de
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+
+  - source_id: xpreneurs
+    source_name: XPRENEURS
+    source_type: accelerator
+    location: Munich, Germany
+    primary_url: https://www.xpreneurs.io
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+
+  - source_id: techfounders
+    source_name: TechFounders
+    source_type: accelerator
+    location: Munich, Germany
+    primary_url: https://www.techfounders.com
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+
+  - source_id: strascheg_center
+    source_name: Strascheg Center for Entrepreneurship
+    source_type: incubator
+    location: Munich, Germany
+    primary_url: https://sce.de
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+
+  - source_id: cdtm
+    source_name: CDTM — Center for Digital Technology and Management
+    source_type: university_hub
+    location: Munich, Germany
+    primary_url: https://www.cdtm.de
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+
+  - source_id: kit_gruenderschmiede
+    source_name: KIT Gründerschmiede
+    source_type: university_hub
+    location: Karlsruhe, Germany
+    primary_url: https://www.gruenderschmiede.kit.edu
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+
+  - source_id: cyberlab_karlsruhe
+    source_name: CyberLab Karlsruhe
+    source_type: incubator
+    location: Karlsruhe, Germany
+    primary_url: https://www.cyberlab.eu
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+
+  - source_id: campus_founders
+    source_name: Campus Founders
+    source_type: accelerator
+    location: Heilbronn, Germany
+    primary_url: https://www.campus-founders.de
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+
+  - source_id: munich_startup
+    source_name: Munich Startup
+    source_type: startup_network
+    location: Munich, Germany
+    primary_url: https://www.munich-startup.de
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+
+  # ── MEDIUM priority — scraped biweekly ────────────────────────────────────
+  - source_id: baystartup
+    source_name: BayStartup
+    source_type: startup_network
+    location: Munich, Germany
+    primary_url: https://www.baystartup.de
+    crawl_strategy: website_scrape
+    crawl_frequency: biweekly
+    priority: MEDIUM
+
+  - source_id: startup_autobahn
+    source_name: Startup Autobahn
+    source_type: accelerator
+    location: Stuttgart, Germany
+    primary_url: https://www.startup-autobahn.com
+    crawl_strategy: website_scrape
+    crawl_frequency: biweekly
+    priority: MEDIUM
+
+  - source_id: arena2036
+    source_name: Arena2036
+    source_type: incubator
+    location: Stuttgart, Germany
+    primary_url: https://www.arena2036.de
+    crawl_strategy: website_scrape
+    crawl_frequency: biweekly
+    priority: MEDIUM
+
+  # ── LOW priority — enrichment only, NEVER a primary scrape target ─────────
+  - source_id: linkedin
+    source_name: LinkedIn
+    source_type: intelligence_platform
+    location: Global
+    primary_url: https://www.linkedin.com
+    crawl_strategy: enrichment_only
+    crawl_frequency: on_demand
+    priority: LOW
+
+  - source_id: crunchbase
+    source_name: Crunchbase
+    source_type: intelligence_platform
+    location: Global
+    primary_url: https://www.crunchbase.com
+    crawl_strategy: enrichment_only
+    crawl_frequency: on_demand
+    priority: LOW
+
+  - source_id: tracxn
+    source_name: Tracxn
+    source_type: intelligence_platform
+    location: Global
+    primary_url: https://tracxn.com
+    crawl_strategy: enrichment_only
+    crawl_frequency: on_demand
+    priority: LOW
+
+
+# Empty = accept every sender in the inbox; relevance is filtered by content
+# downstream (candidate_filter.is_relevant). Add entries here only if you
+# want to restrict to specific senders (substring match, case-insensitive).
+newsletter_senders: []
+
+
+# Gmail subject-line search terms (OR'd together) used to find newsletters
+# worth looking at in the inbox.
+newsletter_search_terms:
+  - startup
+  - venture
+  - newsletter
+  - funding
+  - accelerator
+  - incubator

@@ -2,61 +2,48 @@
 All startup intelligence sources: RSS feeds, accelerators,
 incubators, university spinoff pages, and hubs.
 Strictly focused on the DACH region and Europe.
+
+Phase S: RSS_FEEDS now lives in config/sources.yaml (loaded/validated by
+config/source_loader.py) instead of being hardcoded here. RSS_FEEDS below is
+a lazy proxy — every access re-reads the YAML file fresh, so adding/removing
+a feed there takes effect on the next ingestion run with no restart needed.
+
+ACCELERATOR_SOURCES / UNIVERSITY_SOURCES / HUB_SOURCES were legacy/unused
+duplicates of what's now config/sources.yaml's web_sources section (the
+live registry powering scout_controller's accelerator/university runs) —
+removed to avoid two disagreeing lists of the same sources.
 """
+from typing import Iterator, List
 
-# ── RSS Feeds ─────────────────────────────────────────────────────────────────
-RSS_FEEDS = [
-    # Europe-focused
-    {"name": "EU-Startups",             "url": "https://eu-startups.com/feed/",                     "region": "europe",  "type": "directory"},
-    {"name": "Sifted",                  "url": "https://sifted.eu/feed",                            "region": "europe",  "type": "news"},
-    {"name": "Tech.eu",                 "url": "https://tech.eu/feed/",                             "region": "europe",  "type": "news"},
+from config.source_loader import get_rss_feeds
 
-    # DACH
-    {"name": "Gruenderszene",           "url": "https://www.gruenderszene.de/feed",                 "region": "dach",    "type": "news"},
-    {"name": "StartupTicker.ch",        "url": "https://www.startupticker.ch/en/news/rss-feed",     "region": "dach",    "type": "news"},
-]
 
-# ── Accelerator Portfolio Pages ───────────────────────────────────────────────
-ACCELERATOR_SOURCES = [
-    {"name": "Entrepreneur First",              "url": "https://www.joinef.com/portfolio/",                 "region": "europe"},
-    {"name": "Plug and Play Europe",            "url": "https://www.plugandplaytechcenter.com/europe/",     "region": "europe"},
-    {"name": "High-Tech Gruenderfonds",         "url": "https://www.htgf.de/en/portfolio/",                "region": "dach"},
-    {"name": "UnternehmerTUM",                  "url": "https://www.unternehmertum.de/en/portfolio",       "region": "dach"},
-    {"name": "Atlantic Labs",                   "url": "https://www.atlanticlabs.de/portfolio/",            "region": "dach"},
-    {"name": "Axel Springer Plug and Play",     "url": "https://aspp.com/portfolio",                       "region": "dach"},
-    {"name": "Factory Berlin",                  "url": "https://factoryberlin.com/community/",              "region": "dach"},
-    {"name": "Station F",                       "url": "https://stationf.co/startups/",                    "region": "europe"},
-    {"name": "D.Z.S. Digitales Zentrum Schwaben", "url": "https://schwaben.digital",                       "region": "dach"},
-]
+class _LiveRSSFeeds:
+    """
+    Iterable proxy standing in for the old static RSS_FEEDS list.
 
-# ── University & Research Spinoff Pages ───────────────────────────────────────
-UNIVERSITY_SOURCES = [
-    {"name": "TU Munich Startups",              "url": "https://www.tum.de/en/innovation/startups",                                 "region": "dach"},
-    {"name": "ETH Zurich Spinoffs",             "url": "https://ethz.ch/en/industry/entrepreneurship/startups.html",               "region": "dach"},
-    {"name": "LMU Munich Startups",             "url": "https://www.lmu.de/en/research/transfer/startup/",                         "region": "dach"},
-    {"name": "KIT Startups",                    "url": "https://www.kit.edu/kit/english/innnovations-transfer.php",                "region": "dach"},
-    {"name": "Oxford University Innovation",    "url": "https://innovation.ox.ac.uk/companies/spinout-companies/",                 "region": "europe"},
-    {"name": "Imperial College London",         "url": "https://www.imperial.ac.uk/enterprise/staff/start-a-business/",           "region": "europe"},
-    {"name": "Cambridge Enterprise",            "url": "https://www.enterprise.cam.ac.uk/cambridge-start-ups/",                   "region": "europe"},
-    {"name": "EPFL Innovation Park",            "url": "https://innovationpark.ch/en/startups/",                                  "region": "dach"},
-    {"name": "StartHub Augsburg",               "url": "https://www.uni-augsburg.de/de/organisation/einrichtungen/starthub/startseite/", "region": "dach"},
-]
+    Every iteration re-reads config/sources.yaml via the loader, so this
+    stays fresh even though it's imported once at module load time.
+    """
 
-# ── Startup Hubs & Databases ──────────────────────────────────────────────────
-HUB_SOURCES = [
-    {"name": "Dealroom.co",     "url": "https://dealroom.co",                   "region": "europe",  "requires_api": True},
-]
+    def __iter__(self) -> Iterator[dict]:
+        return iter(get_rss_feeds())
 
-# ── Newsletter Keyword Filters ─────────────────────────────────────────────────
-NEWSLETTER_KEYWORDS = [
-    "startup", "raises", "funding", "seed round", "series a", "series b",
-    "series c", "founders", "launch", "venture", "investment", "accelerator",
-    "incubator", "AI startup", "fintech", "healthtech", "climate tech",
-    "deeptech", "SaaS", "b2b startup", "early stage", "pre-seed",
-    "portfolio company", "batch", "cohort", "demo day",
-]
+    def __len__(self) -> int:
+        return len(get_rss_feeds())
+
+    def __getitem__(self, index):
+        return get_rss_feeds()[index]
+
+    def __repr__(self) -> str:
+        return f"<LiveRSSFeeds: {len(self)} feeds from config/sources.yaml>"
+
+
+RSS_FEEDS: List[dict] = _LiveRSSFeeds()  # type: ignore[assignment]
 
 # ── Default Search Prompts for Sector Intelligence ────────────────────────────
+# Not sourced from sources.yaml (these are query templates, not sources) —
+# kept here as-is.
 SECTOR_PROMPTS = {
     "ai": "AI machine learning deep learning neural networks LLM artificial intelligence",
     "fintech": "fintech financial technology payments banking neobank insurtech",
