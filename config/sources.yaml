@@ -229,6 +229,15 @@ web_sources:
 # Empty = accept every sender in the inbox; relevance is filtered by content
 # downstream (candidate_filter.is_relevant). Add entries here only if you
 # want to restrict to specific senders (substring match, case-insensitive).
+# Added via dashboard on 2026-07-15
+  - source_id: new_accelerator
+    source_name: Some New Accelerator
+    source_type: accelerator
+    location: Global
+    primary_url: https://example.com/portfolio
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: MEDIUM
 newsletter_senders: []
 
 

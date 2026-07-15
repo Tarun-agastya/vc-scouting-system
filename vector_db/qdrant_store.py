@@ -103,6 +103,14 @@ class QdrantStore:
         except Exception:
             return 0
 
+    def delete_startup(self, startup_id: str) -> None:
+        """Remove a single startup point by its stable UUID."""
+        self._ensure_ready()
+        self._get_client().delete(
+            collection_name="startups",
+            points_selector=[startup_id],
+        )
+
     # ── Investor Operations ───────────────────────────────────────────────────
 
     def upsert_investor(self, investor_id: str, vector: List[float], payload: Dict):
