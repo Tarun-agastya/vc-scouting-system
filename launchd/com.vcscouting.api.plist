@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.vcscouting.api</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>-m</string>
+        <string>uvicorn</string>
+        <string>api.main:app</string>
+        <string>--host</string>
+        <string>0.0.0.0</string>
+        <string>--port</string>
+        <string>8000</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/gthubaiuser/vc-scouting-system/vc-scouting-system</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/gthubaiuser</string>
+    </dict>
+
+    <!-- Start automatically when this launchd session loads (login/boot) -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart automatically if the process ever exits, for any reason -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Don't restart-loop faster than every 10s if it keeps crashing -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/gthubaiuser/vc-scouting-system/vc-scouting-system/logs/api.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/gthubaiuser/vc-scouting-system/vc-scouting-system/logs/api.error.log</string>
+</dict>
+</plist>

@@ -22,6 +22,8 @@ All inference is **local only** — never configure a cloud provider.
 
 ## Starting the system
 
+**On the Mac mini, this is now automatic** — see "Unattended operation" below. The steps here are for manual/dev use or debugging.
+
 ```bash
 # 1. Start infrastructure
 docker compose up -d
@@ -113,21 +115,23 @@ The dedicated scouting Gmail account is **greentechhubx@gmail.com**. Newsletters
 Subscribe greentechhubx@gmail.com to VC/startup newsletters (e.g. Sifted, EU-Startups, Dealroom, TechCrunch, etc.). The ingestor will extract startups from each email using the same pipeline as web sources.
 
 ### Trusted-sender allowlist
-Edit `ingestion/newsletter_ingestor.py` → `TRUSTED_NEWSLETTER_SENDERS`. Add the domain or substring from the sender's `From` header:
-```python
-TRUSTED_NEWSLETTER_SENDERS = [
-    "sifted.eu",
-    "eu-startups.com",
-    "dealroom.co",
-]
+Edit `config/sources.yaml` → `newsletter_senders` (no restart needed — re-read fresh on every run; see "Dynamic sources" below):
+```yaml
+newsletter_senders:
+  - sifted.eu
+  - eu-startups.com
+  - dealroom.co
 ```
-Leave the list empty to process **all** emails matching the search query (useful during setup).
+Leave the list empty (the default) to process **all** emails matching the search terms — relevance is still filtered by content downstream, which is the current setup since greentechhubx@gmail.com is a dedicated scouting inbox.
 
 ### Incremental fetch state
 Processed message IDs are tracked in `credentials/newsletter_state.json`. This prevents re-processing the same 50 emails on every scheduler tick. The file is auto-created on the first run. Delete it to force a full re-scan.
 
 ### Schedule
-Gmail ingestion runs **every 8 hours**, starting 30 minutes after the API server starts. This staggers it away from the RSS job (every 6 hours). To trigger a manual run:
+- **Full sweep** (RSS + accelerators + universities + newsletters): **Monday and Thursday at 05:00**.
+- **Gmail top-up** (incremental, cheap): **daily at 13:00**, so newsletters arriving between sweeps don't wait days.
+
+To trigger a manual run any time:
 ```bash
 curl -X POST http://localhost:8000/ingestion/newsletters
 ```
@@ -144,14 +148,65 @@ curl -X POST http://localhost:8000/ingestion/newsletters
 
 To avoid the 7-day expiry, promote the Google Cloud app from "Testing" to "Production" in the Google Cloud Console.
 
+## Dynamic sources
+
+All RSS feeds, web sources, newsletter senders, and Gmail search terms live in `config/sources.yaml` — not in Python code. It's re-read fresh on every ingestion run, so edits take effect on the next run with no restart, no deploy.
+
+- Edit the file directly, or use the API:
+  ```bash
+  curl http://localhost:8000/sources                    # list everything
+  curl -X POST http://localhost:8000/sources/web -d '{...}'   # add a web source
+  curl -X POST http://localhost:8000/sources/rss -d '{...}'   # add an RSS feed
+  curl -X DELETE http://localhost:8000/sources/web/<source_id>
+  ```
+- A malformed entry is skipped and logged — it never crashes a run. A totally broken file falls back to the last version that worked.
+- New entries added via the API/dashboard get an auto "Added via dashboard on \<date\>" comment; human-written comments in the file always survive edits.
+
+## Unattended operation (Mac mini, runs for weeks with nobody there)
+
+The system is designed to survive reboots, crashes, and long absences with zero manual intervention. Three things make this work, all installed as `launchd` agents (templates version-controlled in `launchd/` — reinstall with the commands below if the machine is ever rebuilt):
+
+| Agent | What it does |
+|---|---|
+| `com.vcscouting.dockerstack` | Runs once at every login: waits (up to 3 min) for the Docker daemon to be ready, then `docker compose up -d`. **This exists because Docker Desktop's own container restart-on-reboot was found to be unreliable** in a real reboot test — containers were left in an "Exited (255)" state after a full macOS restart and did not resume on their own even with `restart: unless-stopped`. Logs to `logs/docker_stack.log`. |
+| `com.vcscouting.api` | Runs the FastAPI server + scheduler. `RunAtLoad` + `KeepAlive` — if it ever crashes (e.g. because Postgres wasn't ready yet at boot), it retries every 10s until it succeeds. Logs to `logs/api.log` (uvicorn access logs) and `logs/api.error.log` (application logs — Python's `logging` module writes to stderr by default). |
+| Ollama.app | Already auto-starts at login as a standard macOS app — no custom agent needed. |
+
+Also required for full unattended survival (system settings, not code):
+- **No sleep**: `sudo pmset -c sleep 0 displaysleep 0 disksleep 0`
+- **Docker Desktop → Settings → General → "Start Docker Desktop when you log in"**
+- **Automatic login** (System Settings → Users & Groups → Login Options) — without this, a `launchd` **Agent** (as opposed to a Daemon) never runs at all, since it only starts within a logged-in GUI session. A reboot with no auto-login sits at the lock screen forever.
+
+### Reinstalling the launchd agents (e.g. after a fresh macOS install)
+```bash
+cp launchd/*.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.vcscouting.dockerstack.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.vcscouting.api.plist
+```
+
+### Verifying it's actually working
+```bash
+launchctl list | grep vcscouting     # both should show a PID, not "-"
+docker ps                            # vc_postgres and vc_qdrant both (healthy)
+curl http://localhost:8000/health
+```
+
+### Full reboot rehearsal (do this before any long absence)
+```bash
+sudo shutdown -r now
+```
+Wait for the Mac to come back, log in with nobody touching a terminal, then run the verification commands above. This exact test caught the Docker container issue described above — don't skip it.
+
 ## Troubleshooting
 
 | Symptom | Check | Fix |
 |---|---|---|
 | `vc_qdrant` unhealthy | `docker inspect vc_qdrant` | Healthcheck uses bash `/dev/tcp`; if still failing restart: `docker compose restart qdrant` |
+| Containers "Exited" after a reboot, don't come back | `docker ps -a` | Confirm `com.vcscouting.dockerstack` ran: `cat logs/docker_stack.log`. Manually recover with `docker compose up -d`. |
+| API not responding after a reboot | `launchctl list \| grep vcscouting` | If PID is `-`, check `logs/api.error.log` — usually means Postgres/Qdrant weren't ready; it retries automatically every 10s once they are. |
 | Ollama timeouts | `ollama ps` | Only one model should be loaded for extraction; GPU oversubscription means 2 are fighting. Set `OLLAMA_NUM_PARALLEL=1`. |
 | Extraction returns empty arrays | Run validation harness | Check `qwen2.5:7b-instruct` is pulled and `OLLAMA_EXTRACT_MODEL` points to it |
-| Gmail ingestion finds 0 emails | Check query filter | `NEWSLETTER_SEARCH_QUERY` in `ingestion/newsletter_ingestor.py` filters by subject keywords and `newer_than:14d` |
+| Gmail ingestion finds 0 emails | Check search terms | `newsletter_search_terms` in `config/sources.yaml` controls the subject-line filter (`newer_than:14d` is fixed) |
 | PG connection refused | `docker ps` | `docker compose up -d postgres` |
 
 ## Configuration

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.vcscouting.dockerstack</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/gthubaiuser/vc-scouting-system/vc-scouting-system/scripts/start_docker_stack.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/gthubaiuser</string>
+    </dict>
+
+    <!-- One-shot at login: wait for Docker, bring the stack up, exit. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/gthubaiuser/vc-scouting-system/vc-scouting-system/logs/docker_stack.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/gthubaiuser/vc-scouting-system/vc-scouting-system/logs/docker_stack.log</string>
+</dict>
+</plist>
