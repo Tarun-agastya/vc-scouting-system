@@ -170,7 +170,18 @@ The system is designed to survive reboots, crashes, and long absences with zero 
 |---|---|
 | `com.vcscouting.dockerstack` | Runs once at every login: waits (up to 3 min) for the Docker daemon to be ready, then `docker compose up -d`. **This exists because Docker Desktop's own container restart-on-reboot was found to be unreliable** in a real reboot test — containers were left in an "Exited (255)" state after a full macOS restart and did not resume on their own even with `restart: unless-stopped`. Logs to `logs/docker_stack.log`. |
 | `com.vcscouting.api` | Runs the FastAPI server + scheduler. `RunAtLoad` + `KeepAlive` — if it ever crashes (e.g. because Postgres wasn't ready yet at boot), it retries every 10s until it succeeds. Logs to `logs/api.log` (uvicorn access logs) and `logs/api.error.log` (application logs — Python's `logging` module writes to stderr by default). |
+| `com.vcscouting.dashboard` | Runs the Streamlit team dashboard / Review Inbox (`ui/app.py`) on `0.0.0.0:8501`, `RunAtLoad` + `KeepAlive`. Staff open `http://<mac-mini-LAN-IP>:8501` in a browser on the office network. Logs to `logs/dashboard.log`. |
 | Ollama.app | Already auto-starts at login as a standard macOS app — no custom agent needed. |
+
+## Team dashboard — Review Inbox (Phase S-3b)
+
+The pipeline never changes existing startup data on its own. Every field change and every possible-duplicate is **staged** for a human. Team members (Fabian/Stefan) resolve them in the browser:
+
+- **URL:** `http://<mac-mini-LAN-IP>:8501` (find the IP with `ipconfig getifaddr en0`). Office Wi-Fi only — stays fully local.
+- **Markers:** 🔴 conflict (a populated field would change) · 🟡 new info (fills a blank) · ⚠️ anomaly (e.g. a shared domain like linkedin.com with nothing else matching).
+- **Actions:** *Approve* applies the change to the master (or merges a duplicate); *Reject* discards it **and remembers the decision** so the same thing isn't re-flagged on the next sweep.
+- **AI explanation:** a nightly job (02:00) has the local 14B model write a plain-language summary of the evidence for each item — guidance only, never a decision.
+- **Run it manually** (dev): `python3 -m streamlit run ui/app.py --server.address 0.0.0.0 --server.port 8501`. It talks to the API at `http://localhost:8000` (override with `SCOUT_API_BASE`).
 
 Also required for full unattended survival (system settings, not code):
 - **No sleep**: `sudo pmset -c sleep 0 displaysleep 0 disksleep 0`
