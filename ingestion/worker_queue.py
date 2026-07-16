@@ -99,8 +99,10 @@ class PipelineMetrics:
     qwen_calls          — total Qwen generate() calls dispatched
     qwen_failures       — calls that raised an exception (timeout, parse, etc.)
     startups_extracted  — startup dicts returned by successful Qwen calls
-    startups_inserted   — new records written to the database (upsert_startup is_new=True)
-    duplicates_detected — startups merged into an existing record (upsert_startup is_new=False, id non-None)
+    startups_inserted   — new master records inserted (status "new_master")
+    updates_staged      — field changes staged for human review (status "staged_update")
+    duplicates_staged   — possible-duplicate/anomaly pairs staged (status "staged_duplicate"/"staged_anomaly")
+    unchanged           — exact re-extractions with no meaningful change (status "no_op")
     total_processing_time — wall-clock seconds from first URL fetch to last upsert
     """
     pages_crawled:          int   = 0
@@ -111,7 +113,9 @@ class PipelineMetrics:
     qwen_failures:          int   = 0
     startups_extracted:     int   = 0
     startups_inserted:      int   = 0
-    duplicates_detected:    int   = 0
+    updates_staged:         int   = 0
+    duplicates_staged:      int   = 0
+    unchanged:              int   = 0
     total_processing_time:  float = 0.0
 
     _lock: threading.Lock = field(
@@ -145,8 +149,10 @@ class PipelineMetrics:
             f"[Pipeline]  Qwen calls       : {self.qwen_calls}\n"
             f"[Pipeline]  Qwen failures    : {self.qwen_failures} ({failure_pct}%)\n"
             f"[Pipeline]  Startups found   : {self.startups_extracted}\n"
-            f"[Pipeline]  Startups stored  : {self.startups_inserted}\n"
-            f"[Pipeline]  Duplicates       : {self.duplicates_detected}\n"
+            f"[Pipeline]  New masters      : {self.startups_inserted}\n"
+            f"[Pipeline]  Updates staged   : {self.updates_staged}\n"
+            f"[Pipeline]  Duplicates staged: {self.duplicates_staged}\n"
+            f"[Pipeline]  Unchanged        : {self.unchanged}\n"
             f"[Pipeline]  Total time       : {self.total_processing_time:.1f}s\n"
             "[Pipeline] ─────────────────────────────────────────────────────"
         )
@@ -369,7 +375,7 @@ async def storage_worker_task(
                 return
             continue
 
-        record_id, is_new = upsert_startup(
+        record_id, status = upsert_startup(
             item.startup_dict,
             item.source,
             item.source_url,
@@ -390,8 +396,13 @@ async def storage_worker_task(
                 record_id=record_id,
             )
 
-        if record_id and is_new:
-            metrics.inc("startups_inserted")
-        elif record_id:
-            # Known startup seen again from a new source — correctly deduplicated.
-            metrics.inc("duplicates_detected")
+        _STATUS_COUNTER = {
+            "new_master":       "startups_inserted",
+            "staged_update":    "updates_staged",
+            "staged_duplicate": "duplicates_staged",
+            "staged_anomaly":   "duplicates_staged",
+            "no_op":            "unchanged",
+        }
+        counter = _STATUS_COUNTER.get(status)
+        if counter:
+            metrics.inc(counter)

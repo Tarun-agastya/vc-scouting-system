@@ -38,7 +38,8 @@ class Startup(Base):
     last_funding_date = Column(DateTime)
 
     # Publication tracking
-    published_at = Column(DateTime, nullable=True)
+    published_at = Column(DateTime, nullable=True)   # the source article/newsletter's own date
+    extracted_at = Column(DateTime, nullable=True)   # when THIS pipeline captured the record (date + time)
 
     # Company details
     founded_year = Column(Integer)
@@ -173,32 +174,78 @@ class NewsletterEntry(Base):
 
 class DuplicateReview(Base):
     """
-    A pair flagged by the multi-signal matcher (Phase S-3) as a *possible*
-    duplicate that scored in the uncertain band — not confident enough to
-    auto-merge, not different enough to ignore. The incoming startup is still
-    inserted (never lost / always searchable); this row records the ambiguity
-    for a human to resolve in the team dashboard.
+    A data-stewardship review item (Phase S-3b). The pipeline NEVER auto-merges
+    or auto-overwrites; instead every change to an existing master and every
+    possible-duplicate is staged here for a human to approve/reject in the
+    dashboard "Review Inbox". The incoming data is never lost.
+
+    review_type:
+      field_update       — the same master, but a field changed. `master_id` is
+                           the record; `proposed_changes` is the diff. The master
+                           is NOT modified until a human approves. `incoming_id`
+                           is NULL (no separate row — it's the same startup).
+      possible_duplicate — an incoming record resembles an existing master but
+                           identity is not exact. Incoming was inserted as its
+                           own master (`incoming_id`), the pair is flagged.
+      anomaly            — layers contradict (e.g. shared/multi-tenant domain +
+                           mismatched name/founders). Handled like possible_duplicate.
 
     status transitions:
-      pending             — awaiting human decision
-      confirmed_same      — human said "same company" -> merge the two rows
-      confirmed_different — human said "different" -> keep both, suppress future re-flagging
+      pending  → approved  (field_update → apply diff to master; duplicate → merge rows)
+      pending  → rejected  (discard; record suppression so it isn't re-flagged)
     """
     __tablename__ = "duplicate_reviews"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    # The freshly-inserted startup that triggered the review
-    incoming_id   = Column(UUID(as_uuid=True), index=True)
+    review_type = Column(String(30), default="possible_duplicate", index=True)
+
+    # The existing master this review concerns
+    master_id   = Column(UUID(as_uuid=True), index=True)
+    master_name = Column(String(255))
+
+    # The incoming record. incoming_id is set only for possible_duplicate/anomaly
+    # (where incoming was inserted as its own row); NULL for field_update.
+    incoming_id   = Column(UUID(as_uuid=True), nullable=True, index=True)
     incoming_name = Column(String(255))
+    incoming_data = Column(JSON)        # full incoming extraction (apply on approval, no re-scrape)
 
-    # The existing startup it might duplicate
-    existing_id   = Column(UUID(as_uuid=True), index=True)
-    existing_name = Column(String(255))
+    # For field_update: {field: {old, new, incoming_source, incoming_extracted_at}}
+    proposed_changes = Column(JSON)
+    evidence         = Column(JSON)     # full per-signal scorecard (all signals separately)
+    risk_level       = Column(String(20), default="low", index=True)  # low | high | anomaly
+    confidence       = Column(Float)    # aggregate score (ordering only, not a gate)
+    llm_explanation  = Column(Text, nullable=True)  # nightly prose summary of evidence — NOT a verdict
 
-    confidence = Column(Float)          # weighted match score in [review, merge)
-    signals    = Column(JSON)           # per-signal breakdown for explainability
-    status     = Column(String(30), default="pending", index=True)
+    # Provenance of the incoming observation
+    source  = Column(String(200))
+    run_id  = Column(String(64), nullable=True)
+
+    status     = Column(String(30), default="pending", index=True)  # pending | approved | rejected
 
     created_at  = Column(DateTime, default=datetime.utcnow)
     resolved_at = Column(DateTime, nullable=True)
+
+
+class SuppressedMatch(Base):
+    """
+    Records human 'reject' decisions so the same thing is not re-flagged on
+    every twice-weekly sweep (Phase S-3b volume guardrail).
+
+    kind:
+      known_different — a (master_id, other_id) pair a human confirmed are
+                        different companies; the matcher must not flag them again.
+      rejected_value  — a (master_id, field, value) a human rejected; an
+                        identical future proposal is auto-suppressed.
+    """
+    __tablename__ = "suppressed_matches"
+
+    id   = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    kind = Column(String(30), index=True)
+
+    master_id = Column(UUID(as_uuid=True), index=True)
+    other_id  = Column(UUID(as_uuid=True), nullable=True, index=True)  # known_different
+    field     = Column(String(100), nullable=True)                     # rejected_value
+    value     = Column(Text, nullable=True)                            # rejected_value
+
+    created_at = Column(DateTime, default=datetime.utcnow)

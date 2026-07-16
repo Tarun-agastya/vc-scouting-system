@@ -1,41 +1,29 @@
 """
-Multi-signal entity matcher (Phase S-3).
+Data-stewardship entity matcher (Phase S-3b).
 
-Replaces the old name-only dedup (exact name+domain fingerprint, then a
-name-only fuzzy fallback) with a layered match function that combines several
-independent signals — fixing the two failure modes the old logic had:
+The matcher is an EVIDENCE-GATHERING machine, not a guessing machine. It never
+merges or overwrites — it classifies the identity relationship between an
+incoming startup and the existing masters, and returns a full per-signal
+evidence scorecard. `processing/storage.py` turns that report into a staged
+review for a human; nothing is auto-applied except recognizing an exact
+same-record fingerprint and no-op'ing when nothing changed.
 
-  1. Same startup renamed, same website  -> old logic MISSED (name-change
-     produces an unrelated fingerprint hash; the domain match was never
-     checked on its own). Now caught by the Layer-1 exact-domain signal.
-  2. Different startups sharing a name, no website -> old logic silently
-     MIS-MERGED (name-only fuzzy match, no other check). Now the weighted
-     score requires corroboration (location / founders / semantics), and
-     ambiguous cases go to human review instead of auto-merging.
+Key principles (see DATA_INTEGRITY_PLAN.md addendum §Phase S-3b):
+  - Run ALL layers regardless of early matches; aggregate into `evidence`.
+  - Pattern-based decision, not a single linear threshold — every signal is
+    stored separately and the outcome keys off signal *patterns*.
+  - Shared-domain trap fix: a multi-tenant domain (linkedin.com, medium.com,
+    github.io, …) is never treated as an identity signal; and a domain match
+    contradicted by all other signals is an `anomaly`, not a match.
+  - Hybrid blocking: Qdrant embedding shortlist, widened, with structured
+    signals (location, founded-year) demoting same-description competitors in
+    the score (soft — never a hard filter that could drop a sparse true dupe).
 
-Layered design (cost-ordered; each layer only runs if the previous is
-inconclusive):
+Outcomes (identity classification only — storage decides no_op vs staged_update):
+  exact_same_record | possible_duplicate | anomaly | no_match
 
-  Layer 1  Deterministic, certain, cheap:
-             - exact name+domain fingerprint     -> merge (confidence 1.0)
-             - exact registrable-domain match     -> merge (confidence 0.97)
-  Layer 2  Blocking (reuses Qdrant): embed the incoming record, retrieve the
-           top-N most-similar existing startups as candidates. Avoids an
-           all-pairs scan and sidesteps the "semantic neighbour = same entity"
-           false-positive trap by only *shortlisting* here, not deciding.
-  Layer 3  Weighted multi-signal score over the candidates:
-             name + embedding + location + founded-year + founder-overlap.
-             >= merge_threshold  -> merge
-             >= review_threshold -> human review (insert new + flag the pair)
-             else                -> new
-  Layer 4  (optional, settings.dedup_llm_judge) local qwen adjudicates the
-           review band before it reaches a human. Off by default.
-
-All weights/thresholds live in config/__init__.py (Settings) so matching can
-be calibrated against real data via .env with no code change.
-
-Degrades safely: if embedding/Qdrant blocking fails, falls back to the old
-name-only scan so ingestion never breaks because of a matcher error.
+Degrades safely: if embedding/Qdrant blocking fails, falls back to a name-only
+scan so ingestion never breaks because of a matcher error.
 """
 import logging
 from dataclasses import dataclass, field
@@ -52,12 +40,13 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class MatchResult:
-    decision: str                       # "merge" | "new" | "review"
-    matched_id: Optional[str] = None    # existing startup id for merge/review
-    matched_name: Optional[str] = None
-    confidence: float = 0.0
-    signals: dict = field(default_factory=dict)
+class MatchReport:
+    outcome: str                        # exact_same_record | possible_duplicate | anomaly | no_match
+    master_id: Optional[str] = None     # the existing master this concerns (None for no_match)
+    master_name: Optional[str] = None
+    confidence: float = 0.0             # aggregate score — ordering only, NOT a gate
+    risk_level: str = "none"            # low | high | anomaly | none
+    evidence: dict = field(default_factory=dict)   # full per-signal scorecard
     reason: str = ""
 
 
@@ -124,14 +113,13 @@ def _name_similarity(a_name: str, b_name: str) -> float:
     return fuzz.token_sort_ratio(na, nb) / 100.0
 
 
-def _score_pair(incoming: dict, existing_row, embedding_sim: float) -> tuple:
+def _score_pair(incoming: dict, existing_row, embedding_sim: float, domain_match: bool) -> tuple:
     """
-    Weighted multi-signal score for an (incoming, existing) pair.
-    Returns (score, signals_dict). embedding_sim is the cosine similarity
-    from the Qdrant blocking step (already 0.0–1.0).
+    Full evidence for an (incoming, existing) pair: every signal separately +
+    a weighted aggregate (used only for ordering/confidence, never as the sole
+    decision gate). embedding_sim is the Qdrant cosine similarity (0.0–1.0).
     """
     existing = existing_row.raw_data or {}
-    # Prefer structured columns on the row; fall back to raw_data.
     existing_view = {
         "city":         existing_row.city    or existing.get("city"),
         "country":      existing_row.country or existing.get("country"),
@@ -139,12 +127,12 @@ def _score_pair(incoming: dict, existing_row, embedding_sim: float) -> tuple:
         "founders":     existing.get("founders"),
     }
 
-    name_sim    = _name_similarity(incoming.get("name", ""), existing_row.name or "")
-    loc         = _location_match(incoming, existing_view)
-    year        = _founded_year_match(incoming.get("founded_year"), existing_view["founded_year"])
-    founders    = _founder_overlap(_founder_set(incoming.get("founders")),
-                                   _founder_set(existing_view["founders"]))
-    emb         = max(0.0, min(1.0, embedding_sim))
+    name_sim = _name_similarity(incoming.get("name", ""), existing_row.name or "")
+    loc      = _location_match(incoming, existing_view)
+    year     = _founded_year_match(incoming.get("founded_year"), existing_view["founded_year"])
+    founders = _founder_overlap(_founder_set(incoming.get("founders")),
+                                _founder_set(existing_view["founders"]))
+    emb      = max(0.0, min(1.0, embedding_sim))
 
     score = (
         settings.dedup_weight_name         * name_sim +
@@ -153,117 +141,53 @@ def _score_pair(incoming: dict, existing_row, embedding_sim: float) -> tuple:
         settings.dedup_weight_founded_year * year +
         settings.dedup_weight_founders     * founders
     )
-    signals = {
-        "name_similarity":  round(name_sim, 3),
-        "embedding_sim":    round(emb, 3),
-        "location_match":   round(loc, 3),
-        "founded_year":     round(year, 3),
-        "founder_overlap":  round(founders, 3),
+    evidence = {
+        "name_similarity": round(name_sim, 3),
+        "embedding_sim":   round(emb, 3),
+        "location_match":  round(loc, 3),
+        "founded_year":    round(year, 3),
+        "founder_overlap": round(founders, 3),
+        "domain_match":    1.0 if domain_match else 0.0,
+        "aggregate_score": round(score, 3),
     }
-    return score, signals
+    return score, evidence
 
 
-# ── Deterministic Layer-1 helpers ────────────────────────────────────────────
+# ── Domain helpers (blocklist-aware) ─────────────────────────────────────────
 
-def _exact_domain_match(website: str, db) -> Optional[object]:
+def _multitenant_domains() -> set:
+    return {d.strip().lower() for d in settings.dedup_multitenant_domains.split(",") if d.strip()}
+
+
+def _identity_domain(website: str) -> Optional[str]:
     """
-    Return an existing Startup whose website resolves to the same registrable
-    domain, or None. A shared non-empty domain is near-proof of same company —
-    this is the signal the old fingerprint bundled away and never checked alone,
-    which is why renames were missed.
+    Registrable domain usable as an IDENTITY signal, or None. Returns None for
+    empty websites and for multi-tenant/shared domains (linkedin.com, etc.) —
+    those are shared by many unrelated startups and must not imply same-company.
     """
-    from database.models import Startup
     domain = extract_domain(website)
     if not domain:
         return None
-    rows = db.query(Startup).filter(Startup.website.isnot(None)).all()
-    for row in rows:
-        if extract_domain(row.website) == domain:
-            return row
-    return None
+    if domain in _multitenant_domains():
+        return None
+    return domain
 
 
-# ── Public entry point ───────────────────────────────────────────────────────
-
-def find_match(startup: dict, db, incoming_vector: Optional[List[float]] = None) -> MatchResult:
-    """
-    Decide whether `startup` matches an existing record.
-
-    incoming_vector : the whole-record embedding of `startup` (reused from the
-      caller so we don't embed twice). If None, Layer-2 blocking is skipped and
-      we fall back to deterministic + a name-only scan.
-    """
-    name = (startup.get("name") or "").strip()
-    website = startup.get("website") or ""
-
-    # ── Layer 1a: exact name+domain fingerprint (trustworthy ONLY with a domain) ─
-    # A fingerprint over a name with no domain is just a name hash — two
-    # different companies sharing a name and having no website collide on it.
-    # So we only auto-merge on a fingerprint hit when a real domain backs it;
-    # otherwise the decision falls through to the multi-signal layers below.
-    from database.models import Startup
-    domain = extract_domain(website)
-    if domain:
-        fingerprint = generate_fingerprint(name, website)
-        if fingerprint:
-            row = db.query(Startup).filter(Startup.fingerprint == fingerprint).first()
-            if row:
-                return MatchResult("merge", str(row.id), row.name, 1.0,
-                                   {"exact_fingerprint": 1.0}, "exact name+domain fingerprint")
-
-    # ── Layer 1b: exact registrable-domain match (fixes the rename case) ─────
-    if website:
-        row = _exact_domain_match(website, db)
-        if row:
-            return MatchResult("merge", str(row.id), row.name, 0.97,
-                               {"exact_domain": 1.0},
-                               f"same domain '{extract_domain(website)}' as '{row.name}'")
-
-    # ── Layer 2: blocking via Qdrant (shortlist candidates) ──────────────────
-    candidates = _block_candidates(startup, incoming_vector, db)
-
-    # ── Layer 3: weighted multi-signal score over candidates ─────────────────
-    best_row, best_score, best_signals = None, 0.0, {}
-    for row, emb_sim in candidates:
-        score, signals = _score_pair(startup, row, emb_sim)
-        if score > best_score:
-            best_row, best_score, best_signals = row, score, signals
-
-    if best_row is None:
-        return MatchResult("new", None, None, 0.0, {}, "no candidates")
-
-    # ── Layer 4 (optional): local-LLM judge for the review band ──────────────
-    if (settings.dedup_review_threshold <= best_score < settings.dedup_merge_threshold
-            and settings.dedup_llm_judge):
-        verdict = _llm_judge(startup, best_row)
-        if verdict is True:
-            return MatchResult("merge", str(best_row.id), best_row.name, best_score,
-                               best_signals, "llm judge: same company")
-        if verdict is False:
-            return MatchResult("new", None, None, best_score, best_signals,
-                               "llm judge: different companies")
-        # verdict None -> fall through to human review
-
-    if best_score >= settings.dedup_merge_threshold:
-        return MatchResult("merge", str(best_row.id), best_row.name, round(best_score, 3),
-                           best_signals, "multi-signal score >= merge threshold")
-    if best_score >= settings.dedup_review_threshold:
-        return MatchResult("review", str(best_row.id), best_row.name, round(best_score, 3),
-                           best_signals, "multi-signal score in review band")
-    return MatchResult("new", None, None, round(best_score, 3), best_signals,
-                       "below review threshold")
-
+# ── Candidate blocking (hybrid: embedding shortlist ∪ identity-domain rows) ────
 
 def _block_candidates(startup: dict, incoming_vector, db) -> list:
     """
-    Return a shortlist of [(Startup row, embedding_similarity), ...] to score.
+    Shortlist of [(Startup row, embedding_similarity), ...] to score.
 
-    Primary path: Qdrant nearest-neighbour search on the incoming vector.
-    Fallback (embedding/Qdrant unavailable): name-only scan of all rows, with
-    embedding_similarity = 0.0 — preserves the old behaviour so ingestion never
-    breaks on a matcher error.
+    Primary: Qdrant nearest-neighbour on the incoming vector (widened top-N).
+    Union'd with: any existing row sharing the incoming identity-domain (so a
+    rename with the same website is always a candidate even if its description
+    drifted out of the embedding neighbourhood).
+    Fallback (embedding/Qdrant unavailable): name-only scan.
     """
     from database.models import Startup
+
+    candidates = {}  # id -> (row, emb_sim)
 
     if incoming_vector is not None:
         try:
@@ -271,55 +195,116 @@ def _block_candidates(startup: dict, incoming_vector, db) -> list:
             hits = qdrant_store.search_startups(
                 query_vector=incoming_vector, limit=settings.dedup_block_top_n
             )
-            out = []
             for h in hits:
                 row = db.query(Startup).filter(Startup.id == str(h.id)).first()
                 if row:
-                    out.append((row, float(h.score)))
-            if out:
-                return out
+                    candidates[str(row.id)] = (row, float(h.score))
         except Exception as exc:
             logger.warning(f"[Matcher] Qdrant blocking failed, falling back to name scan: {exc}")
 
-    # Fallback: name-only candidate scan (no embedding signal available)
+    # Union in identity-domain matches (rename safety)
+    idomain = _identity_domain(startup.get("website") or "")
+    if idomain:
+        for row in db.query(Startup).filter(Startup.website.isnot(None)).all():
+            if extract_domain(row.website) == idomain and str(row.id) not in candidates:
+                candidates[str(row.id)] = (row, 0.0)
+
+    if candidates:
+        return list(candidates.values())
+
+    # Fallback: name-only candidate scan
     name = (startup.get("name") or "").strip()
     if not name:
         return []
-    rows = db.query(Startup).filter(
-        Startup.normalized_name.isnot(None), Startup.normalized_name != ""
-    ).all()
     scored = []
-    for row in rows:
-        sim = _name_similarity(name, row.name or "")
-        if sim >= 0.5:  # only bother scoring plausible name matches
+    for row in db.query(Startup).filter(
+        Startup.normalized_name.isnot(None), Startup.normalized_name != ""
+    ).all():
+        if _name_similarity(name, row.name or "") >= 0.5:
             scored.append((row, 0.0))
     return scored
 
 
-def _llm_judge(startup: dict, existing_row) -> Optional[bool]:
+# ── Pattern-based classification (not a single linear threshold) ─────────────
+
+def _classify(evidence: dict, domain_match: bool) -> tuple:
     """
-    Ask the local reasoning model whether two records are the same company.
-    Returns True (same), False (different), or None (uncertain -> human review).
-    Acquires no lock here — callers on the ingestion path already hold the GPU
-    mutex via the controller. Never raises.
+    Decide (outcome, risk_level, reason) from signal *patterns*. Returns one of
+    possible_duplicate / anomaly / no_match (exact_same_record is handled
+    earlier by the fingerprint check).
     """
-    try:
-        from reasoning.qwen_client import qwen_client
-        a = f"{startup.get('name','')} — {startup.get('description','') or startup.get('one_liner','')} " \
-            f"({startup.get('city','')}, {startup.get('country','')})"
-        b = f"{existing_row.name} — {existing_row.description or existing_row.short_description or ''} " \
-            f"({existing_row.city or ''}, {existing_row.country or ''})"
-        prompt = (
-            "Are these two records the SAME company? Answer with exactly one word: "
-            "YES, NO, or UNSURE.\n\n"
-            f"Record A: {a}\nRecord B: {b}"
-        )
-        resp = (qwen_client.generate(prompt) or "").strip().upper()
-        if "YES" in resp:
-            return True
-        if "NO" in resp:
-            return False
-        return None
-    except Exception as exc:
-        logger.warning(f"[Matcher] LLM judge failed, deferring to human review: {exc}")
-        return None
+    STRONG = settings.dedup_strong_signal
+    GAP    = settings.dedup_anomaly_gap
+
+    name = evidence["name_similarity"]
+    emb  = evidence["embedding_sim"]
+    fnd  = evidence["founder_overlap"]
+    loc  = evidence["location_match"]
+    score = evidence["aggregate_score"]
+
+    corroborators = [name, emb, fnd, loc]
+    max_corrob = max(corroborators)
+    num_strong = sum(1 for c in corroborators if c >= STRONG)
+
+    if domain_match:
+        # Same real, non-shared domain but NOT an exact name+domain fingerprint.
+        # If nothing else agrees, it's the shared-domain trap → anomaly.
+        if max_corrob < GAP:
+            return "anomaly", "anomaly", "domain matches but no other signal corroborates (possible shared domain)"
+        return "possible_duplicate", "high", "same domain plus corroborating signals (likely rename)"
+
+    # No identity-domain signal — rely on the other evidence.
+    if fnd >= STRONG and (name >= STRONG or emb >= STRONG):
+        return "possible_duplicate", "high", "shared founder + strong name/description match"
+    if name >= STRONG and emb >= STRONG and loc >= 0.6:
+        return "possible_duplicate", "high", "strong name + description + location agreement"
+    if num_strong >= 2:
+        return "possible_duplicate", "low", "two or more moderately strong signals"
+    if score >= settings.dedup_review_threshold:
+        return "possible_duplicate", "low", "aggregate score in review band"
+    return "no_match", "none", "insufficient evidence"
+
+
+# ── Public entry point ───────────────────────────────────────────────────────
+
+def build_match_report(startup: dict, db, incoming_vector: Optional[List[float]] = None) -> MatchReport:
+    """
+    Gather evidence and classify the identity relationship of `startup` to the
+    existing masters. Never merges. See module docstring for outcomes.
+    """
+    name = (startup.get("name") or "").strip()
+    website = startup.get("website") or ""
+
+    from database.models import Startup
+
+    # ── Exact same-record: name + real, non-shared domain fingerprint ────────
+    idomain = _identity_domain(website)
+    if idomain:
+        fingerprint = generate_fingerprint(name, website)
+        if fingerprint:
+            row = db.query(Startup).filter(Startup.fingerprint == fingerprint).first()
+            if row:
+                _, ev = _score_pair(startup, row, 1.0, domain_match=True)
+                return MatchReport("exact_same_record", str(row.id), row.name, 1.0,
+                                   "low", ev, "exact name+domain fingerprint")
+
+    # ── Run all layers: block → score every candidate → best ─────────────────
+    candidates = _block_candidates(startup, incoming_vector, db)
+    best_row, best_score, best_ev, best_domain = None, -1.0, {}, False
+    for row, emb_sim in candidates:
+        dmatch = bool(idomain) and extract_domain(row.website or "") == idomain
+        score, ev = _score_pair(startup, row, emb_sim, domain_match=dmatch)
+        # Prefer the highest aggregate; a domain match is a strong tie-break.
+        rank = score + (0.5 if dmatch else 0.0)
+        if rank > best_score:
+            best_row, best_score, best_ev, best_domain = row, rank, ev, dmatch
+
+    if best_row is None:
+        return MatchReport("no_match", None, None, 0.0, "none", {}, "no candidates")
+
+    outcome, risk, reason = _classify(best_ev, best_domain)
+    if outcome == "no_match":
+        return MatchReport("no_match", None, None, best_ev.get("aggregate_score", 0.0),
+                           "none", best_ev, reason)
+    return MatchReport(outcome, str(best_row.id), best_row.name,
+                       best_ev.get("aggregate_score", 0.0), risk, best_ev, reason)

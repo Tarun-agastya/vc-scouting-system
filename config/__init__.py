@@ -48,7 +48,20 @@ class Settings(BaseSettings):
     dedup_weight_location: float = 0.15   # city/country agreement
     dedup_weight_founded_year: float = 0.10
     dedup_weight_founders: float = 0.15   # founder-name overlap
-    dedup_llm_judge: bool = False         # when True, qwen adjudicates review-band pairs
+    dedup_llm_judge: bool = False         # legacy inline judge — kept off; Layer 4 is now async explanation only
+
+    # Phase S-3b — data-stewardship matcher
+    # Multi-tenant / shared domains that must NOT be treated as an identity
+    # signal (many unrelated startups share them). Comma-separated in .env.
+    dedup_multitenant_domains: str = (
+        "linkedin.com,twitter.com,x.com,facebook.com,instagram.com,medium.com,"
+        "substack.com,beehiiv.com,notion.site,notion.so,github.io,github.com,"
+        "webflow.io,linktr.ee,youtube.com,crunchbase.com,angel.co,wefunder.com,"
+        "eu-startups.com,gmail.com,google.com"
+    )
+    # Pattern-decision thresholds (evidence patterns, not a single linear gate)
+    dedup_strong_signal: float = 0.80     # a per-signal value >= this counts as "strong"
+    dedup_anomaly_gap: float = 0.30       # domain strong but best other signal below this -> anomaly
 
     class Config:
         env_file = ".env"

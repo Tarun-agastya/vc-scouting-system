@@ -267,7 +267,7 @@ class NewsletterIngestor:
         )
 
         inserted = 0
-        deduped  = 0
+        staged   = 0
 
         for chunk in relevant:
             try:
@@ -279,17 +279,17 @@ class NewsletterIngestor:
                     if not startup.get("published_date") and published_date:
                         startup["published_date"] = published_date
 
-                    record_id, is_new = upsert_startup(
+                    record_id, status = upsert_startup(
                         startup,
                         source="newsletter",
                         source_url=source_url,
                         published_date=published_date,
                         provenance=provenance,
                     )
-                    if record_id and is_new:
+                    if status == "new_master":
                         inserted += 1
-                    elif record_id:
-                        deduped += 1
+                    elif status in ("staged_update", "staged_duplicate", "staged_anomaly"):
+                        staged += 1
 
             except Exception as exc:
                 logger.warning(
@@ -297,9 +297,9 @@ class NewsletterIngestor:
                 )
 
         logger.info(
-            f"[Gmail] {message_id}: {inserted} new, {deduped} merged into existing"
+            f"[Gmail] {message_id}: {inserted} new master(s), {staged} staged for review"
         )
-        return inserted + deduped
+        return inserted + staged
 
     def _parse_email_date(self, date_str: str) -> Optional[str]:
         """Parse RFC 2822 email Date header into an ISO 8601 date string."""
