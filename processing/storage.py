@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Optional
 
 from processing.deduplicator import (
-    fuzzy_match_existing,
+    extract_domain,
     generate_fingerprint,
     name_to_stable_uuid,
     normalize_company_name,
@@ -93,10 +93,15 @@ def upsert_startup(
         return None, False
 
     website = startup.get("website") or ""
-    fingerprint = generate_fingerprint(name, website)
-    stable_id = name_to_stable_uuid(name, website)
+    domain = extract_domain(website)
+    # A fingerprint is only a reliable identity when a real domain backs it.
+    # For no-website records we store NULL (Postgres allows repeated NULLs under
+    # the UNIQUE constraint) and rely on the multi-signal matcher instead — this
+    # is what lets two different same-named companies with no website coexist.
+    fingerprint = generate_fingerprint(name, website) if domain else None
+    stable_id = name_to_stable_uuid(name, website)  # deterministic candidate id
 
-    if not fingerprint or not stable_id:
+    if not stable_id:
         return None, False
 
     source_name = (provenance or {}).get("source_name") or _resolve_source_name(source_url)
@@ -117,27 +122,24 @@ def upsert_startup(
 
     db = SessionLocal()
     try:
-        existing = (
-            db.query(Startup).filter(Startup.fingerprint == fingerprint).first()
+        # Embed the whole record once — reused for both the matcher's blocking
+        # step and the final Qdrant sync below (avoids embedding twice).
+        embed_text = embedder.build_startup_text(startup)
+        incoming_vector = embedder.embed(embed_text)
+
+        # Multi-signal match decision (Phase S-3): merge / review / new.
+        from processing.matcher import find_match
+        match = find_match(startup, db, incoming_vector)
+        logger.info(
+            f"[Storage] Match '{name}': {match.decision} "
+            f"(conf={match.confidence}, {match.reason})"
         )
 
-        # Phase 2 fallback: fuzzy name match for variants with a different
-        # domain (or no website).  Only runs when fingerprint yields nothing.
-        if not existing:
-            fuzzy = fuzzy_match_existing(name, db)
-            if fuzzy:
-                fuzzy_id, fuzzy_name, score = fuzzy
-                existing = (
-                    db.query(Startup)
-                    .filter(Startup.id == fuzzy_id)
-                    .first()
-                )
-                logger.info(
-                    f"[Storage] Fuzzy match '{name}' → '{fuzzy_name}' "
-                    f"(score={score}) — treating as same startup"
-                )
+        existing = None
+        if match.decision in ("merge", "review") and match.matched_id:
+            existing = db.query(Startup).filter(Startup.id == match.matched_id).first()
 
-        if existing:
+        if match.decision == "merge" and existing:
             # ── Update existing record ────────────────────────────────────────
             # Evaluate rescore triggers BEFORE mutating source_history so
             # should_rescore() sees the pre-mutation URL set correctly.
@@ -164,8 +166,16 @@ def upsert_startup(
             contact_raw = startup.get("contact_info") or ""
             linkedin_val = contact_raw if "linkedin.com" in contact_raw else None
 
+            # The deterministic stable_id is name-derived, so two *different*
+            # same-named no-website companies would collide on it. If it's
+            # already taken by a different row, mint a fresh id.
+            insert_id = stable_id
+            if db.query(Startup).filter(Startup.id == stable_id).first() is not None:
+                import uuid as _uuid
+                insert_id = str(_uuid.uuid4())
+
             new_startup = Startup(
-                id=stable_id,
+                id=insert_id,
                 name=name,
                 normalized_name=normalize_company_name(name),
                 fingerprint=fingerprint,
@@ -192,11 +202,16 @@ def upsert_startup(
             )
             db.add(new_startup)
             db.commit()
-            record_id     = stable_id
+            record_id     = insert_id
             active_record = new_startup
             do_score      = True
             is_new        = True
             logger.debug(f"[Storage] Inserted new record: {name}")
+
+            # Uncertain match: keep the freshly-inserted startup (never lost),
+            # but flag the possible-duplicate pair for human resolution.
+            if match.decision == "review" and existing is not None:
+                _create_review(db, new_startup, existing, match)
 
         # ── Scoring ───────────────────────────────────────────────────────────
         if do_score:
@@ -215,8 +230,7 @@ def upsert_startup(
             )
 
         # ── Sync to Qdrant with stable ID ─────────────────────────────────────
-        embed_text = embedder.build_startup_text(startup)
-        vector = embedder.embed(embed_text)
+        vector = incoming_vector  # already computed above for the matcher
 
         qdrant_payload = {
             **startup,
@@ -242,6 +256,34 @@ def upsert_startup(
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
+
+def _create_review(db, incoming_row, existing_row, match) -> None:
+    """
+    Record an uncertain-match pair (Phase S-3) for human resolution in the
+    dashboard. Never raises — a review-logging failure must not fail the
+    upsert that already succeeded.
+    """
+    try:
+        from database.models import DuplicateReview
+        review = DuplicateReview(
+            incoming_id=incoming_row.id,
+            incoming_name=incoming_row.name,
+            existing_id=existing_row.id,
+            existing_name=existing_row.name,
+            confidence=match.confidence,
+            signals=match.signals,
+            status="pending",
+        )
+        db.add(review)
+        db.commit()
+        logger.info(
+            f"[Storage] Flagged possible duplicate: '{incoming_row.name}' ~ "
+            f"'{existing_row.name}' (conf={match.confidence})"
+        )
+    except Exception as exc:
+        db.rollback()
+        logger.error(f"[Storage] Failed to record duplicate review: {exc}")
+
 
 def _fill_empty_fields(existing, new_data: dict) -> None:
     """

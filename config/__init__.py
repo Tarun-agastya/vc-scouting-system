@@ -37,6 +37,19 @@ class Settings(BaseSettings):
     chunk_queue_size: int = 20   # Max chunks buffered between chunker and Qwen workers
     storage_queue_size: int = 50 # Max startup dicts buffered before storage
 
+    # Deduplication / entity matching (Phase S-3 — multi-signal matcher)
+    # All tunable via .env so matching behaviour can be calibrated against real
+    # data without a code change. Weights should sum to ~1.0.
+    dedup_block_top_n: int = 10           # candidates pulled from Qdrant for scoring
+    dedup_merge_threshold: float = 0.82   # weighted score >= this  -> auto-merge
+    dedup_review_threshold: float = 0.55  # in [review, merge)       -> flag for human review
+    dedup_weight_name: float = 0.30       # name string similarity
+    dedup_weight_embedding: float = 0.30  # whole-record embedding (semantic) similarity
+    dedup_weight_location: float = 0.15   # city/country agreement
+    dedup_weight_founded_year: float = 0.10
+    dedup_weight_founders: float = 0.15   # founder-name overlap
+    dedup_llm_judge: bool = False         # when True, qwen adjudicates review-band pairs
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

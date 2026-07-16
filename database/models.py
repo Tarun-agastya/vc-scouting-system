@@ -169,3 +169,36 @@ class NewsletterEntry(Base):
     processed = Column(Boolean, default=False)
 
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class DuplicateReview(Base):
+    """
+    A pair flagged by the multi-signal matcher (Phase S-3) as a *possible*
+    duplicate that scored in the uncertain band — not confident enough to
+    auto-merge, not different enough to ignore. The incoming startup is still
+    inserted (never lost / always searchable); this row records the ambiguity
+    for a human to resolve in the team dashboard.
+
+    status transitions:
+      pending             — awaiting human decision
+      confirmed_same      — human said "same company" -> merge the two rows
+      confirmed_different — human said "different" -> keep both, suppress future re-flagging
+    """
+    __tablename__ = "duplicate_reviews"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # The freshly-inserted startup that triggered the review
+    incoming_id   = Column(UUID(as_uuid=True), index=True)
+    incoming_name = Column(String(255))
+
+    # The existing startup it might duplicate
+    existing_id   = Column(UUID(as_uuid=True), index=True)
+    existing_name = Column(String(255))
+
+    confidence = Column(Float)          # weighted match score in [review, merge)
+    signals    = Column(JSON)           # per-signal breakdown for explainability
+    status     = Column(String(30), default="pending", index=True)
+
+    created_at  = Column(DateTime, default=datetime.utcnow)
+    resolved_at = Column(DateTime, nullable=True)
