@@ -14,64 +14,43 @@ A chunk passes when it scores ≥ MIN_SCORE across four signal categories:
 """
 import re
 
-# ── Signal Patterns ───────────────────────────────────────────────────────────
+# ── Compiled-pattern cache (rebuilt only when config/tuning.yaml changes) ──────
+# The keyword groups + thresholds live in config/tuning.yaml (Phase S-2), read
+# via config.tuning_loader. Regexes are compiled once and reused; they're only
+# recompiled when the file's mtime changes, so this per-chunk hot path stays fast.
 
-STARTUP_SIGNALS = re.compile(
-    r"\b("
-    r"startup|start-up|founded|co-founded|founder|"
-    r"ceo|cto|coo|cpo|managing\s+director|geschäftsführer|"
-    r"raised|funding|funded|investment|investor|venture|"
-    r"seed|series\s+[a-c]|pre-seed|post-seed|"
-    r"scale-up|scaleup|unicorn|soonicorn|"
-    r"accelerat|incubat|portfolio|"
-    r"spin-?off|spin-?out|"
-    r"pitch|traction|mrr|arr|runway|exit|ipo|"
-    r"gmbh|ag\b|ug\b|ltd|inc\b|sas|bv\b|s\.a\."
-    r")\b",
-    re.IGNORECASE,
-)
+_cache_mtime = object()          # sentinel: forces a build on first call
+_compiled: dict = {}
+_min_score = 2
+_min_words = 25
 
-GEO_SIGNALS = re.compile(
-    r"\b("
-    r"germany|deutschland|german|"
-    r"austria|österreich|austrian|"
-    r"switzerland|schweiz|swiss|"
-    r"munich|münchen|berlin|hamburg|frankfurt|cologne|köln|"
-    r"stuttgart|augsburg|nuremberg|nürnberg|düsseldorf|"
-    r"vienna|wien|graz|salzburg|linz|"
-    r"zurich|zürich|basel|geneva|genf|bern|"
-    r"europe|european|dach|eu\b"
-    r")\b",
-    re.IGNORECASE,
-)
 
-TECH_SIGNALS = re.compile(
-    r"\b("
-    r"platform|software|saas|paas|api|sdk|"
-    r"ai\b|ml\b|llm\b|deep\s*learning|machine\s*learning|"
-    r"algorithm|autonomous|automation|"
-    r"cloud|data|analytics|dashboard|"
-    r"sensor|hardware|robot|drone|iot\b|"
-    r"marketplace|fintech|climatetech|proptech|insurtech|"
-    r"b2b|b2c|b2g|enterprise|"
-    r"product|solution|technology|digital"
-    r")\b",
-    re.IGNORECASE,
-)
+def _build_patterns(cfg: dict) -> None:
+    global _compiled, _min_score, _min_words
+    signals = cfg.get("signals") or {}
+    compiled = {}
+    for group, terms in signals.items():
+        if not terms:
+            continue
+        body = "|".join(str(t) for t in terms)
+        try:
+            compiled[group] = re.compile(rf"\b(?:{body})\b", re.IGNORECASE)
+        except re.error:
+            # A bad regex fragment shouldn't kill the whole filter — skip the group.
+            continue
+    _compiled = compiled
+    _min_score = int(cfg.get("min_score", 2))
+    _min_words = int(cfg.get("min_words", 25))
 
-COMPANY_SIGNALS = re.compile(
-    r"("
-    r"GmbH|AG\b|UG\b|Ltd\.?|Inc\.?|S\.A\.S|B\.V\.|"
-    r"\bcompan(?:y|ies)\b|\bfirm\b|\benterprise\b|\bventure\b|"
-    r"\bteam\b|\bour\s+mission\b|\bwe\s+(?:are|build|help|enable)\b"
-    r")",
-    re.IGNORECASE,
-)
 
-# ── Thresholds ────────────────────────────────────────────────────────────────
-
-MIN_SCORE = 2    # must match at least 2 of 4 signal categories
-MIN_WORDS = 25   # skip navigation bars, breadcrumbs, cookie banners
+def _ensure_current() -> None:
+    """Reload compiled patterns iff config/tuning.yaml changed since last build."""
+    global _cache_mtime
+    from config.tuning_loader import get_candidate_filter_config
+    cfg = get_candidate_filter_config()
+    if cfg.get("_mtime") != _cache_mtime or not _compiled:
+        _build_patterns(cfg)
+        _cache_mtime = cfg.get("_mtime")
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -80,26 +59,14 @@ def is_relevant(chunk: str) -> bool:
     """
     Return True if *chunk* is likely to contain startup mentions.
 
-    Scoring (each category contributes at most +1):
-      +1  STARTUP_SIGNALS  — funding, founding events, role titles
-      +1  GEO_SIGNALS      — European / DACH geographies
-      +1  TECH_SIGNALS     — technology and product vocabulary
-      +1  COMPANY_SIGNALS  — explicit entity markers
-
-    Chunks with fewer than MIN_WORDS words are always rejected regardless
-    of signal score (they are usually UI chrome, not content).
+    Each keyword group (startup / geo / tech / company, defined in
+    config/tuning.yaml) contributes at most +1. A chunk passes when it scores
+    >= min_score AND has >= min_words words. Both thresholds are configurable.
     """
-    if len(chunk.split()) < MIN_WORDS:
+    _ensure_current()
+
+    if len(chunk.split()) < _min_words:
         return False
 
-    score = 0
-    if STARTUP_SIGNALS.search(chunk):
-        score += 1
-    if GEO_SIGNALS.search(chunk):
-        score += 1
-    if TECH_SIGNALS.search(chunk):
-        score += 1
-    if COMPANY_SIGNALS.search(chunk):
-        score += 1
-
-    return score >= MIN_SCORE
+    score = sum(1 for pat in _compiled.values() if pat.search(chunk))
+    return score >= _min_score

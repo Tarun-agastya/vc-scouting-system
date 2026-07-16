@@ -45,44 +45,30 @@ logger = logging.getLogger(__name__)
 # ── Schema version — bump when formula changes to invalidate cached scores ───
 SCHEMA_VERSION = 1
 
-# ── Source-type weight tables ─────────────────────────────────────────────────
+# ── Source-type weight tables (Phase S-2: sourced from config/tuning.yaml) ────
+# These were hardcoded; they now come from config so they can be tuned without
+# a code change. The tuning loader carries built-in defaults identical to the
+# original values, so behaviour is unchanged when the file is absent/unedited.
 
-# Category A step 1: best source-type score
-_SOURCE_TYPE_SCORE: Dict[str, int] = {
-    "accelerator":            20,
-    "incubator":              20,
-    "university_hub":         20,
-    "startup_network":        12,
-    "intelligence_platform":  12,
-    "newsletter":              8,
-    "rss":                     4,
-    "general":                 4,
-}
+def _scoring():
+    from config.tuning_loader import get_scoring_config
+    return get_scoring_config()
 
-# Source confidence base (how trustworthy is the primary source?)
-_SOURCE_CONFIDENCE_BASE: Dict[str, int] = {
-    "accelerator":            45,
-    "incubator":              45,
-    "university_hub":         45,
-    "startup_network":        30,
-    "intelligence_platform":  30,
-    "newsletter":             20,
-    "rss":                    10,
-    "general":                10,
-}
+def _source_type_score() -> Dict[str, int]:
+    return _scoring()["source_type_score"]
 
-# Diversity bonus indexed by min(unique_sources, 4)
-_DIVERSITY_BONUS:      List[int] = [0,  0,  6, 10, 15]
-_CONF_DIVERSITY_BONUS: List[int] = [0,  0, 15, 25, 30]
+def _source_confidence_base() -> Dict[str, int]:
+    return _scoring()["source_confidence_base"]
 
-# Score tier boundaries — checked in descending order
-SCORE_TIERS = [
-    (81, "PRIORITY"),
-    (61, "HIGH_QUALITY_LEAD"),
-    (41, "INTERESTING"),
-    (21, "EARLY_DISCOVERY"),
-    (0,  "WEAK_SIGNAL"),
-]
+def _diversity_bonus() -> List[int]:
+    return _scoring()["diversity_bonus"]
+
+def _conf_diversity_bonus() -> List[int]:
+    return _scoring()["conf_diversity_bonus"]
+
+def _score_tiers():
+    # normalize to a list of (int threshold, str label) tuples, descending
+    return [(int(t[0]), str(t[1])) for t in _scoring()["tiers"]]
 
 
 # ── Return type ───────────────────────────────────────────────────────────────
@@ -121,7 +107,7 @@ def compute_enrichment_score(record: "Startup") -> ScoringResult:
 
 def tier_label(score: int) -> str:
     """Map a raw integer score to its tier label string."""
-    for threshold, label in SCORE_TIERS:
+    for threshold, label in _score_tiers():
         if score >= threshold:
             return label
     return "WEAK_SIGNAL"
@@ -163,12 +149,13 @@ def _compute(record: "Startup") -> ScoringResult:
     unique_sources = max(len(unique_urls), 1)  # floor at 1 (current source counts)
 
     # ── Category A: Source Quality & Diversity (max 35) ──────────────────────
+    source_type_score = _source_type_score()
     best_type_score = max(
-        (_SOURCE_TYPE_SCORE.get(st, 4) for st in source_types), default=4
+        (source_type_score.get(st, 4) for st in source_types), default=4
     )
     div_idx   = min(unique_sources, 4)
-    div_bonus = _DIVERSITY_BONUS[div_idx]
-    best_type = max(source_types, key=lambda st: _SOURCE_TYPE_SCORE.get(st, 4))
+    div_bonus = _diversity_bonus()[div_idx]
+    best_type = max(source_types, key=lambda st: source_type_score.get(st, 4))
     cat_a_score = min(best_type_score + div_bonus, 35)
 
     cat_a: Dict[str, Any] = {
@@ -266,10 +253,11 @@ def _compute(record: "Startup") -> ScoringResult:
     enrichment_score = cat_a_score + cat_b_score + cat_c_score + cat_d_score
 
     # ── Source Confidence ─────────────────────────────────────────────────────
+    source_confidence_base = _source_confidence_base()
     best_conf_base = max(
-        (_SOURCE_CONFIDENCE_BASE.get(st, 10) for st in source_types), default=10
+        (source_confidence_base.get(st, 10) for st in source_types), default=10
     )
-    conf_div_bonus = _CONF_DIVERSITY_BONUS[div_idx]
+    conf_div_bonus = _conf_diversity_bonus()[div_idx]
 
     non_null_count = sum([
         has_website, has_desc, has_industry, has_location,

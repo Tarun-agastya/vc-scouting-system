@@ -1,0 +1,196 @@
+# ══════════════════════════════════════════════════════════════════════════
+# VC Scouting — Tuning Knobs (Phase S-2)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Business rules that used to be hardcoded in Python. Edit here to change what
+# the pipeline extracts, what it pre-filters, and how it scores — no code change.
+# Re-read fresh whenever the file changes (cached by modification time, so
+# per-chunk reads stay fast). A broken edit falls back to the last good version,
+# then to built-in defaults — the pipeline never crashes on a bad edit here.
+#
+# ── Sections ─────────────────────────────────────────────────────────────
+#   extraction        — what the LLM should INCLUDE / EXCLUDE when extracting
+#   candidate_filter  — the cheap pre-LLM relevance filter (keywords + thresholds)
+#   scoring           — source-quality weights, diversity bonuses, tier cutoffs
+# ══════════════════════════════════════════════════════════════════════════
+
+extraction:
+  # One sentence describing what counts as a target company.
+  include: >-
+    any company founded in the past 20 years operating in technology, software,
+    AI, hardware, fintech, climatetech, deeptech, proptech, logistics, or B2B SaaS
+    — regardless of funding stage or size. VC-backed companies, unicorns, and
+    growth-stage companies are all valid targets.
+  # Bullet rules for what to leave out. Add/remove lines to change policy
+  # (e.g. delete the medicine/biotech line to start tracking healthtech).
+  exclude:
+    - "Traditional incumbents: established non-tech corporations such as car makers, banks, industrial conglomerates (e.g. BMW, Deutsche Bank, Siemens, McKinsey, SAP if founded before 2000)."
+    - "VC firms, investment funds, accelerators, media outlets."
+    - "Companies in medicine, biotech, e-commerce, or food retail (exception: packaging technology)."
+
+
+candidate_filter:
+  # A text chunk must match at least `min_score` of the 4 signal groups AND
+  # have at least `min_words` words to be sent to the LLM.
+  min_score: 2
+  min_words: 25
+  # Each group is a list of terms/regex-fragments joined into one alternation
+  # and matched case-insensitively with word boundaries. Plain words work fine;
+  # advanced entries (e.g. "series\\s+[a-c]") are matched as regex.
+  signals:
+    startup:
+      - startup
+      - start-up
+      - founded
+      - co-founded
+      - founder
+      - ceo
+      - cto
+      - coo
+      - cpo
+      - managing\s+director
+      - geschäftsführer
+      - raised
+      - funding
+      - funded
+      - investment
+      - investor
+      - venture
+      - seed
+      - series\s+[a-c]
+      - pre-seed
+      - post-seed
+      - scale-up
+      - scaleup
+      - unicorn
+      - soonicorn
+      - accelerat
+      - incubat
+      - portfolio
+      - spin-?off
+      - spin-?out
+      - pitch
+      - traction
+      - mrr
+      - arr
+      - runway
+      - exit
+      - ipo
+    geo:
+      - germany
+      - deutschland
+      - german
+      - austria
+      - österreich
+      - austrian
+      - switzerland
+      - schweiz
+      - swiss
+      - munich
+      - münchen
+      - berlin
+      - hamburg
+      - frankfurt
+      - cologne
+      - köln
+      - stuttgart
+      - augsburg
+      - nuremberg
+      - nürnberg
+      - düsseldorf
+      - vienna
+      - wien
+      - graz
+      - salzburg
+      - linz
+      - zurich
+      - zürich
+      - basel
+      - geneva
+      - genf
+      - bern
+      - europe
+      - european
+      - dach
+    tech:
+      - platform
+      - software
+      - saas
+      - paas
+      - api
+      - sdk
+      - ai
+      - ml
+      - llm
+      - deep\s*learning
+      - machine\s*learning
+      - algorithm
+      - autonomous
+      - automation
+      - cloud
+      - data
+      - analytics
+      - dashboard
+      - sensor
+      - hardware
+      - robot
+      - drone
+      - iot
+      - marketplace
+      - fintech
+      - climatetech
+      - proptech
+      - insurtech
+      - b2b
+      - b2c
+      - b2g
+      - enterprise
+      - product
+      - solution
+      - technology
+      - digital
+    company:
+      - GmbH
+      - AG
+      - UG
+      - Ltd
+      - Inc
+      - company
+      - companies
+      - firm
+      - enterprise
+      - venture
+      - team
+
+
+scoring:
+  # Best source-type contribution (Category A). Unknown types default to 4.
+  source_type_score:
+    accelerator: 20
+    incubator: 20
+    university_hub: 20
+    startup_network: 12
+    intelligence_platform: 12
+    newsletter: 8
+    rss: 4
+    general: 4
+  # Base trust of the primary source (source_confidence). Unknown default 10.
+  source_confidence_base:
+    accelerator: 45
+    incubator: 45
+    university_hub: 45
+    startup_network: 30
+    intelligence_platform: 30
+    newsletter: 20
+    rss: 10
+    general: 10
+  # Bonus indexed by min(unique_sources, 4): [0 srcs, 1, 2, 3, 4+]
+  diversity_bonus:      [0, 0, 6, 10, 15]
+  conf_diversity_bonus: [0, 0, 15, 25, 30]
+  # Tier cutoffs, highest first: [min_score, label]
+  tiers:
+    - [81, PRIORITY]
+    - [61, HIGH_QUALITY_LEAD]
+    - [41, INTERESTING]
+    - [21, EARLY_DISCOVERY]
+    - [0, WEAK_SIGNAL]

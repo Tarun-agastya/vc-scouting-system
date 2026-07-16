@@ -20,12 +20,10 @@ Return ONLY valid JSON. No markdown fences, no explanation, no commentary."""
 
 EXTRACTION_PROMPT = """Extract every technology startup or scale-up mentioned in the text below.
 
-INCLUDE: any company founded in the past 20 years operating in technology, software, AI, hardware, fintech, climatetech, deeptech, proptech, logistics, or B2B SaaS — regardless of funding stage or size. VC-backed companies, unicorns, and growth-stage companies are all valid targets.
+INCLUDE: {include_rules}
 
 EXCLUDE:
-- Traditional incumbents: established non-tech corporations such as car makers, banks, industrial conglomerates (e.g. BMW, Deutsche Bank, Siemens, McKinsey, SAP if founded before 2000).
-- VC firms, investment funds, accelerators, media outlets.
-- Companies in medicine, biotech, e-commerce, or food retail (exception: packaging technology).
+{exclude_rules}
 
 Field instructions:
 - one_liner: exactly 1 sentence — what the company does and who it serves. This is the first thing a VC reads to decide if they are interested. Be specific, never generic.

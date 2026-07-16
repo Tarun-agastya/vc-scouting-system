@@ -124,8 +124,15 @@ class QwenClient:
         so the caller (worker_queue) can count the failure and move on.
         """
         from reasoning.prompts import EXTRACTION_PROMPT, SYSTEM_EXTRACTOR
+        from config.tuning_loader import get_extraction_rules
 
-        prompt = EXTRACTION_PROMPT.format(text=text)
+        rules = get_extraction_rules()
+        exclude_rules = "\n".join(f"- {line}" for line in (rules.get("exclude") or []))
+        prompt = EXTRACTION_PROMPT.format(
+            text=text,
+            include_rules=rules.get("include", ""),
+            exclude_rules=exclude_rules,
+        )
         messages = [
             {"role": "system", "content": SYSTEM_EXTRACTOR},
             {"role": "user",   "content": prompt},
