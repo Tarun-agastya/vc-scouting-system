@@ -58,3 +58,9 @@ Thumbs.db
 # ── Docker Volumes (if mounted locally) ──────────────────────────────────────
 postgres_data/
 qdrant_data/
+
+# ── Validation run outputs (regenerable artifacts; harness code stays tracked) ─
+validation/*/
+
+# ── Runtime logs (launchd services write here) ───────────────────────────────
+logs/
