@@ -60,6 +60,16 @@ async def lifespan(app: FastAPI):
                 return
             await scout_controller.run_newsletters(max_messages=50)
 
+        async def _scheduled_llm_explain():
+            """
+            Nightly: the local 14B model writes a plain-language explanation for
+            each pending duplicate/field-update review (never a verdict). Runs
+            one at a time under the GPU mutex so it never fights ingestion.
+            Degrades cleanly if Ollama is down.
+            """
+            from processing.review_explainer import explain_pending_reviews
+            await explain_pending_reviews(limit=30)
+
         scheduler = AsyncIOScheduler()
 
         # Full sweep: Monday + Thursday at 05:00 (twice a week, per the 25 June
@@ -81,10 +91,19 @@ async def lifespan(app: FastAPI):
             replace_existing=True,
         )
 
+        # LLM review explanations: nightly at 02:00 (quiet hours, no sweep then).
+        scheduler.add_job(
+            func=_scheduled_llm_explain,
+            trigger=CronTrigger(hour=2, minute=0),
+            id="llm_explain",
+            replace_existing=True,
+        )
+
         scheduler.start()
         app.state.scheduler = scheduler
         logger.info(
-            "Background scheduler started (full sweep Mon+Thu 05:00, Gmail top-up daily 13:00)"
+            "Background scheduler started (full sweep Mon+Thu 05:00, Gmail top-up daily 13:00, "
+            "LLM review explanations nightly 02:00)"
         )
     except Exception as exc:
         logger.warning(f"Scheduler could not start: {exc}")
