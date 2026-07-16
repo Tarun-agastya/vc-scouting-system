@@ -63,7 +63,11 @@ These ride along with work already scheduled, so they ship by 15 July at no adde
 
 **Trigger to revisit:** first check-in after the owner returns from vacation, once Phase G's unattended operation has a month of real evidence behind it.
 
-### Backlog — Phase S-3: Multi-signal deduplication *(deferred until after the vacation, ~2–3 days)*
+### Phase S-3: Multi-signal deduplication — **IN PROGRESS (promoted from backlog 16 July)**
+
+> **Status (16 July):** Core matcher **built, integrated, and tested** — layers 1–4 shipped in `processing/matcher.py` + wired into `processing/storage.py::upsert_startup`. Both original failure modes verified fixed end-to-end. **Remaining:** review-resolution API + surfacing the `duplicate_reviews` queue in the team dashboard (§Phase G.3); optional calibration of weights/thresholds once a month of real data exists. Decision to implement now (not defer) taken because the 15 July review has passed, leaving runway before the vacation to harden a core change properly.
+>
+> **Shipped:** `processing/matcher.py` (layered `find_match`), `DuplicateReview` table, tunable weights/thresholds in `config/Settings` (all `.env`-overridable), optional local-qwen judge (`dedup_llm_judge`, off by default). The old name-only fingerprint is no longer trusted or stored without a real domain; distinct ids are minted on name-collision so different same-named no-website companies coexist.
 
 **Origin:** raised in a 15 July working session on how `processing/deduplicator.py` actually matches startups. Current logic is two-tier: (1) exact fingerprint = `sha256(normalized_name + domain)`, (2) fallback fuzzy match on **name only** (rapidfuzz `token_sort_ratio`, threshold 88) when no website is on record. Tested live against realistic name variants — confirmed two real failure modes, one of which is a data-corruption risk, not just a missed merge:
 
@@ -85,9 +89,10 @@ These ride along with work already scheduled, so they ship by 15 July at no adde
 
 **Graph (the eventual evolution):** once founders/investors/tech-stacks make the data genuinely networked, add a "shared-neighbor" term to the layer-3 score and grow toward the graph approach incrementally — no rewrite. The whole design reuses infra already running (Qdrant for blocking, local Qwen for the judge); it's using what's there more intelligently, not a new stack.
 
-**Why deferred:** this changes core matching behavior for every ingestion run — exactly the kind of change that shouldn't be rushed right before the 15 July demo or the unattended vacation month. The current two-tier system is a reasonable, well-tested baseline; this is a genuine upgrade, not an emergency fix.
-
-**Trigger to revisit:** same checkpoint as Phase S-2 — first check-in after the owner returns, once a month of real ingestion data exists to validate against (essential for calibrating the layer-3 embedding-similarity threshold and layer weights, which need real examples, not guessed defaults).
+**Remaining work (next increments):**
+1. **Review-resolution API + dashboard** — `GET /duplicates` (list pending pairs) and a resolve action: "confirmed same" → merge the two rows (reuse `scripts/dedup_sweep.py`'s merge logic), "confirmed different" → mark resolved and suppress future re-flagging of that pair. Surfaces in the team dashboard (§Phase G.3) as a short review queue.
+2. **Calibration** — once a month of real ingestion data exists, tune `dedup_*` weights/thresholds against real examples (the Layer-3 embedding threshold especially benefits from real calibration rather than the current sensible defaults).
+3. **Graph evolution (later)** — add a "shared-neighbour" term to the Layer-3 score once founders/investors/tech-stacks make the data genuinely relational; grow toward graph ER incrementally, no rewrite.
 
 **Research references (for whoever implements this):**
 - [An Investigation of LLMs for Entity Matching (arXiv 2405.16884)](https://arxiv.org/pdf/2405.16884) — the "pairwise accuracy has plateaued, invest in the pipeline" finding
