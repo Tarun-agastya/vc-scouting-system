@@ -208,6 +208,22 @@ sudo shutdown -r now
 ```
 Wait for the Mac to come back, log in with nobody touching a terminal, then run the verification commands above. This exact test caught the Docker container issue described above — don't skip it.
 
+## Automated tests
+
+An integration test suite lives in `tests/` (pytest). It runs against the **live** Postgres + Qdrant + Ollama so it exercises the real wiring, not mocks. All test data is namespaced with a `PYTEST` prefix and purged before and after every test — the real startups are never touched.
+
+```bash
+# from the project root, with Docker + Ollama running:
+python3 -m pytest            # run everything (~5s, ~34 tests)
+python3 -m pytest -v         # verbose, one line per test
+python3 -m pytest tests/test_storage_staging.py   # one module
+python3 -m pytest -k dedup   # tests matching a keyword
+```
+
+Coverage: identity functions (`test_deduplicator`), the matcher's classification incl. the shared-domain blocklist (`test_matcher`), the staging outcomes new/no_op/staged_update/duplicate/anomaly (`test_storage_staging`), review approve/reject + suppression (`test_reviews`), search/filter/edit/delete (`test_scout_api`), the dynamic source registry (`test_sources`), the tuning loader + hot-reload + safe-fallback (`test_tuning`), and the scorer tiers (`test_scorer`).
+
+**Run the suite after any change to matching, storage, scoring, or the config loaders.** Requires the services up (`docker ps`, `ollama` reachable); if Ollama is down the embedding-dependent tests will error rather than fail silently.
+
 ## Troubleshooting
 
 | Symptom | Check | Fix |
