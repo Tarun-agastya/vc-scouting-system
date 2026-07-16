@@ -148,41 +148,196 @@ async def add_startup(
 
 @router.get("/startup/{startup_id}")
 async def get_startup(startup_id: str, db: Session = Depends(get_db)):
-    """Retrieve a single startup by ID."""
-    startup = db.query(Startup).filter(Startup.id == startup_id).first()
-    if not startup:
+    """Retrieve a single startup by ID (full record, for the detail/edit view)."""
+    s = db.query(Startup).filter(Startup.id == startup_id).first()
+    if not s:
         raise HTTPException(status_code=404, detail="Startup not found")
     return {
-        "id": str(startup.id),
-        "name": startup.name,
-        "description": startup.description,
-        "industry": startup.industry,
-        "country": startup.country,
-        "city": startup.city,
-        "funding_stage": startup.funding_stage,
-        "website": startup.website,
-        "ai_summary": startup.ai_summary,
-        "source": startup.source,
-        "created_at": startup.created_at,
+        "id": str(s.id),
+        "name": s.name,
+        "short_description": s.short_description,
+        "description": s.description,
+        "website": s.website,
+        "industry": s.industry,
+        "sub_industry": s.sub_industry,
+        "tech_cluster": s.tech_cluster,
+        "country": s.country,
+        "city": s.city,
+        "address": s.address,
+        "funding_stage": s.funding_stage,
+        "founded_year": s.founded_year,
+        "employee_count": s.employee_count,
+        "contact_info": s.contact_info,
+        "linkedin": s.linkedin,
+        "tags": s.tags or [],
+        "ai_summary": s.ai_summary,
+        "enrichment_score": s.enrichment_score,
+        "score_tier": s.score_tier,
+        "source": s.source,
+        "source_history": s.source_history or [],
+        "extracted_at": s.extracted_at,
+        "created_at": s.created_at,
+        "updated_at": s.updated_at,
     }
+
+
+@router.patch("/startup/{startup_id}")
+async def edit_startup(startup_id: str, changes: dict, db: Session = Depends(get_db)):
+    """
+    Apply a manual staff edit directly to a startup (data-stewardship: a human
+    editing IS the reviewer, so this applies immediately — unlike the pipeline,
+    which stages). Records the edit in source_history and re-indexes Qdrant.
+    Only whitelisted fields may be changed.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+    from datetime import datetime
+
+    s = db.query(Startup).filter(Startup.id == startup_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Startup not found")
+
+    editable = {
+        "name", "short_description", "description", "website", "industry",
+        "sub_industry", "tech_cluster", "country", "city", "address",
+        "funding_stage", "founded_year", "employee_count", "contact_info",
+        "linkedin", "tags",
+    }
+    applied = {}
+    for field, value in (changes or {}).items():
+        if field not in editable:
+            continue
+        setattr(s, field, value)
+        applied[field] = value
+
+    if not applied:
+        raise HTTPException(status_code=422, detail="No editable fields supplied")
+
+    # Audit the manual edit in source_history
+    history = list(s.source_history or [])
+    history.append({
+        "source": "manual-edit",
+        "source_name": "Team edit (dashboard)",
+        "fields": list(applied.keys()),
+        "extracted_at": datetime.utcnow().isoformat(),
+    })
+    s.source_history = history
+    flag_modified(s, "source_history")
+    s.updated_at = datetime.utcnow()
+    db.commit()
+
+    # Re-index in Qdrant so search reflects the edit
+    try:
+        from api.routes.reviews import _reindex
+        _reindex(db, s)
+    except Exception as exc:
+        logger.warning(f"[Scout] Re-index after edit failed for {startup_id}: {exc}")
+
+    return {"status": "ok", "id": startup_id, "applied": applied}
+
+
+@router.delete("/startup/{startup_id}")
+async def delete_startup(startup_id: str, confirm: bool = False, db: Session = Depends(get_db)):
+    """
+    Permanently delete a startup from PostgreSQL and Qdrant (manual, staff-driven).
+
+    Safety: without ?confirm=true this returns the record for review instead of
+    deleting. With confirm=true it removes the row + its Qdrant point, cleans up
+    any related review/suppression rows, and logs the deletion.
+    """
+    from database.models import DuplicateReview, SuppressedMatch
+    from vector_db.qdrant_store import qdrant_store
+
+    s = db.query(Startup).filter(Startup.id == startup_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Startup not found")
+
+    if not confirm:
+        return {
+            "status": "confirm_required",
+            "message": "Pass ?confirm=true to permanently delete this startup.",
+            "startup": {"id": str(s.id), "name": s.name, "website": s.website,
+                        "industry": s.industry, "country": s.country},
+        }
+
+    name = s.name
+    # Clean up orphaned reviews / suppressions referencing this record
+    db.query(DuplicateReview).filter(
+        (DuplicateReview.master_id == startup_id) | (DuplicateReview.incoming_id == startup_id)
+    ).delete(synchronize_session=False)
+    db.query(SuppressedMatch).filter(
+        (SuppressedMatch.master_id == startup_id) | (SuppressedMatch.other_id == startup_id)
+    ).delete(synchronize_session=False)
+
+    db.delete(s)
+    db.commit()
+
+    try:
+        qdrant_store.delete_startup(startup_id)
+    except Exception as exc:
+        logger.warning(f"[Scout] Qdrant delete failed for {startup_id}: {exc}")
+
+    logger.info(f"[Scout] DELETED startup '{name}' ({startup_id}) — manual/staff action")
+    return {"status": "deleted", "id": startup_id, "name": name}
 
 
 @router.get("/list")
 async def list_startups(
-    limit: int = 50,
-    offset: int = 0,
+    q: Optional[str] = None,               # keyword: name / summary / description / tags
     industry: Optional[str] = None,
     country: Optional[str] = None,
+    city: Optional[str] = None,
+    tech_cluster: Optional[str] = None,
+    employee_count: Optional[str] = None,
+    funding_stage: Optional[str] = None,
+    score_tier: Optional[str] = None,
+    source: Optional[str] = None,
+    founded_year_min: Optional[int] = None,
+    founded_year_max: Optional[int] = None,
+    sort: str = "created_at",              # created_at | extracted_at | name | score
+    order: str = "desc",                   # asc | desc
+    limit: int = 50,
+    offset: int = 0,
     db: Session = Depends(get_db),
 ):
-    """List startups from PostgreSQL with optional filters."""
+    """
+    Browse/search startups with rich filters + keyword search (Phase D).
+    Powers the team dashboard's Browse & Search page. Keyword `q` matches
+    name / short_description / description / tags (case-insensitive).
+    """
+    from sqlalchemy import or_, cast, String
+
     query = db.query(Startup)
-    if industry:
-        query = query.filter(Startup.industry.ilike(f"%{industry}%"))
-    if country:
-        query = query.filter(Startup.country.ilike(f"%{country}%"))
+
+    if q:
+        like = f"%{q}%"
+        query = query.filter(or_(
+            Startup.name.ilike(like),
+            Startup.short_description.ilike(like),
+            Startup.description.ilike(like),
+            cast(Startup.tags, String).ilike(like),
+        ))
+    if industry:       query = query.filter(Startup.industry.ilike(f"%{industry}%"))
+    if country:        query = query.filter(Startup.country.ilike(f"%{country}%"))
+    if city:           query = query.filter(Startup.city.ilike(f"%{city}%"))
+    if tech_cluster:   query = query.filter(Startup.tech_cluster.ilike(f"%{tech_cluster}%"))
+    if employee_count: query = query.filter(Startup.employee_count == employee_count)
+    if funding_stage:  query = query.filter(Startup.funding_stage.ilike(f"%{funding_stage}%"))
+    if score_tier:     query = query.filter(Startup.score_tier == score_tier)
+    if source:         query = query.filter(Startup.source.ilike(f"%{source}%"))
+    if founded_year_min is not None: query = query.filter(Startup.founded_year >= founded_year_min)
+    if founded_year_max is not None: query = query.filter(Startup.founded_year <= founded_year_max)
+
     total = query.count()
-    startups = query.order_by(Startup.created_at.desc()).offset(offset).limit(limit).all()
+
+    sort_col = {
+        "created_at": Startup.created_at,
+        "extracted_at": Startup.extracted_at,
+        "name": Startup.name,
+        "score": Startup.enrichment_score,
+    }.get(sort, Startup.created_at)
+    sort_col = sort_col.asc() if order == "asc" else sort_col.desc()
+
+    startups = query.order_by(sort_col).offset(offset).limit(limit).all()
 
     return {
         "total": total,
@@ -192,11 +347,17 @@ async def list_startups(
             {
                 "id": str(s.id),
                 "name": s.name,
+                "short_description": s.short_description,
                 "industry": s.industry,
+                "tech_cluster": s.tech_cluster,
                 "country": s.country,
                 "city": s.city,
                 "funding_stage": s.funding_stage,
+                "employee_count": s.employee_count,
+                "score_tier": s.score_tier,
+                "enrichment_score": s.enrichment_score,
                 "source": s.source,
+                "extracted_at": s.extracted_at,
             }
             for s in startups
         ],
