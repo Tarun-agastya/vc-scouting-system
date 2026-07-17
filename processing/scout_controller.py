@@ -30,7 +30,7 @@ import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,26 @@ class RunRecord:
     error:      Optional[str] = None
     metrics:    dict = field(default_factory=dict)
 
+    # Live progress (UI-3): the in-flight PipelineMetrics for a running web
+    # scrape, so /ingestion/status can show ticking counters mid-run instead
+    # of only after the run finishes. thread-safe (PipelineMetrics.inc() is
+    # lock-guarded); never serialized directly — see to_dict().
+    live_metrics: Any = field(default=None, repr=False)
+
+    # Batch progress: sources within the same sweep (run_all / accelerators /
+    # universities) share one batch_id and an incrementing index, so the UI
+    # can show "source 3 of 19". None for standalone/targeted runs.
+    batch_id:    Optional[str] = None
+    batch_index: Optional[int] = None
+    batch_total: Optional[int] = None
+
     def to_dict(self) -> dict:
+        # While running, prefer the live in-flight counters over the (still
+        # empty) final `metrics` dict, which is only populated once work()
+        # returns. Once finished, self.metrics holds the final values.
+        metrics = self.metrics
+        if self.status == "running" and self.live_metrics is not None:
+            metrics = _metrics_to_dict(self.live_metrics)
         return {
             "run_id":     self.run_id,
             "kind":       self.kind,
@@ -66,7 +85,10 @@ class RunRecord:
             "started_at": self.started_at,
             "ended_at":   self.ended_at,
             "error":      self.error,
-            "metrics":    self.metrics,
+            "metrics":    metrics,
+            "batch_id":    self.batch_id,
+            "batch_index": self.batch_index,
+            "batch_total": self.batch_total,
         }
 
 
@@ -146,8 +168,16 @@ class ScoutController:
 
     # ── Run bookkeeping ────────────────────────────────────────────────────────
 
-    def _new_run(self, kind: str, source: str) -> RunRecord:
-        rec = RunRecord(run_id=str(uuid4()), kind=kind, source=source)
+    def _new_run(
+        self, kind: str, source: str, *,
+        batch_id: Optional[str] = None,
+        batch_index: Optional[int] = None,
+        batch_total: Optional[int] = None,
+    ) -> RunRecord:
+        rec = RunRecord(
+            run_id=str(uuid4()), kind=kind, source=source,
+            batch_id=batch_id, batch_index=batch_index, batch_total=batch_total,
+        )
         self._runs[rec.run_id] = rec
         while len(self._runs) > _MAX_HISTORY:
             self._runs.popitem(last=False)
@@ -201,10 +231,18 @@ class ScoutController:
         )
         return {}
 
-    async def _work_web(self, url: str, source_type: str) -> dict:
+    async def _work_web(self, url: str, source_type: str, rec: RunRecord) -> dict:
         from ingestion.web_scraper import web_scraper
-        metrics = await web_scraper.scrape_source(url, source_type)
-        return _metrics_to_dict(metrics)
+        from ingestion.worker_queue import PipelineMetrics
+
+        # Create the metrics object here (not inside scrape_source) and attach
+        # it to the run record BEFORE the scrape starts, so /ingestion/status
+        # can read live counters (pages/chunks/startups) while it's running —
+        # not just after it finishes.
+        live = PipelineMetrics()
+        rec.live_metrics = live
+        result = await web_scraper.scrape_source(url, source_type, metrics=live)
+        return _metrics_to_dict(result)
 
     async def _work_newsletters(self, max_messages: int) -> dict:
         from ingestion.newsletter_ingestor import newsletter_ingestor
@@ -216,58 +254,90 @@ class ScoutController:
 
     # ── Public run methods (each = one mutex-guarded record) ─────────────────────
 
-    async def run_rss(self, max_entries: int = 50) -> RunRecord:
-        rec = self._new_run("rss", "rss-feeds")
+    async def run_rss(
+        self, max_entries: int = 50, *,
+        batch_id: Optional[str] = None, batch_index: Optional[int] = None, batch_total: Optional[int] = None,
+    ) -> RunRecord:
+        rec = self._new_run("rss", "rss-feeds", batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
         return await self._execute(rec, lambda: self._work_rss(max_entries))
 
-    async def run_newsletters(self, max_messages: int = 50) -> RunRecord:
-        rec = self._new_run("newsletter", "gmail-newsletters")
+    async def run_newsletters(
+        self, max_messages: int = 50, *,
+        batch_id: Optional[str] = None, batch_index: Optional[int] = None, batch_total: Optional[int] = None,
+    ) -> RunRecord:
+        rec = self._new_run("newsletter", "gmail-newsletters",
+                            batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
         return await self._execute(rec, lambda: self._work_newsletters(max_messages))
 
     async def run_web_source(
-        self, url: str, source_type: str = "general", label: Optional[str] = None
+        self, url: str, source_type: str = "general", label: Optional[str] = None, *,
+        batch_id: Optional[str] = None, batch_index: Optional[int] = None, batch_total: Optional[int] = None,
     ) -> RunRecord:
-        rec = self._new_run("web", label or url)
-        return await self._execute(rec, lambda: self._work_web(url, source_type))
+        rec = self._new_run("web", label or url,
+                            batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
+        return await self._execute(rec, lambda: self._work_web(url, source_type, rec))
+
+    @staticmethod
+    def _high_priority_split():
+        """HIGH-priority sources split into (accelerators/other, university hubs)."""
+        from config.source_registry import get_high_priority_sources, SourceType
+        sources = get_high_priority_sources()
+        accel = [s for s in sources if s.source_type != SourceType.UNIVERSITY_HUB]
+        uni = [s for s in sources if s.source_type == SourceType.UNIVERSITY_HUB]
+        return accel, uni
 
     async def run_accelerators(self) -> list:
         """Run every HIGH-priority non-university source sequentially."""
-        from config.source_registry import get_high_priority_sources, SourceType
-        sources = [
-            s for s in get_high_priority_sources()
-            if s.source_type != SourceType.UNIVERSITY_HUB
-        ]
+        accel, _ = self._high_priority_split()
+        bid, total = str(uuid4()), len(accel)
         results = []
-        for s in sources:
-            results.append(
-                await self.run_web_source(s.primary_url, s.source_type.value, label=s.source_name)
-            )
+        for i, s in enumerate(accel, start=1):
+            results.append(await self.run_web_source(
+                s.primary_url, s.source_type.value, label=s.source_name,
+                batch_id=bid, batch_index=i, batch_total=total,
+            ))
         return results
 
     async def run_universities(self) -> list:
         """Run every HIGH-priority university-hub source sequentially."""
-        from config.source_registry import get_high_priority_sources, SourceType
-        sources = [
-            s for s in get_high_priority_sources()
-            if s.source_type == SourceType.UNIVERSITY_HUB
-        ]
+        _, uni = self._high_priority_split()
+        bid, total = str(uuid4()), len(uni)
         results = []
-        for s in sources:
-            results.append(
-                await self.run_web_source(s.primary_url, s.source_type.value, label=s.source_name)
-            )
+        for i, s in enumerate(uni, start=1):
+            results.append(await self.run_web_source(
+                s.primary_url, s.source_type.value, label=s.source_name,
+                batch_id=bid, batch_index=i, batch_total=total,
+            ))
         return results
 
     async def run_all(self) -> None:
         """
         The 'big sweep' — RSS, then accelerators, then universities, then
         newsletters.  Sources are staggered by virtue of running sequentially,
-        each acquiring the mutex in turn so heavy jobs never overlap.
+        each acquiring the mutex in turn so heavy jobs never overlap. All
+        phases share one batch_id + a single running index/total across the
+        whole sweep, so the UI can show "source N of TOTAL" end-to-end.
         """
-        await self.run_rss()
-        await self.run_accelerators()
-        await self.run_universities()
-        await self.run_newsletters()
+        accel, uni = self._high_priority_split()
+        bid = str(uuid4())
+        total = 1 + len(accel) + len(uni) + 1  # rss + accelerators + universities + newsletters
+        i = 1
+
+        await self.run_rss(batch_id=bid, batch_index=i, batch_total=total)
+        i += 1
+        for s in accel:
+            await self.run_web_source(
+                s.primary_url, s.source_type.value, label=s.source_name,
+                batch_id=bid, batch_index=i, batch_total=total,
+            )
+            i += 1
+        for s in uni:
+            await self.run_web_source(
+                s.primary_url, s.source_type.value, label=s.source_name,
+                batch_id=bid, batch_index=i, batch_total=total,
+            )
+            i += 1
+        await self.run_newsletters(batch_id=bid, batch_index=i, batch_total=total)
 
     # ── Targeted command surface (the agent's lever) ─────────────────────────────
 
@@ -302,10 +372,10 @@ class ScoutController:
             src = self._find_registry_source(source_id)  # raises ValueError if unknown
             target_url, target_type = src.primary_url, src.source_type.value
             rec = self._new_run("web", src.source_name)
-            work = lambda: self._work_web(target_url, target_type)
+            work = lambda: self._work_web(target_url, target_type, rec)
         elif url:
             rec = self._new_run("web", url)
-            work = lambda: self._work_web(url, source_type)
+            work = lambda: self._work_web(url, source_type, rec)
         else:
             raise ValueError(
                 "targeted run requires kind='rss'|'newsletter', a source_id, or a url"

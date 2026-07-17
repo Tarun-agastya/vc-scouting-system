@@ -122,6 +122,7 @@ class WebScraper:
         max_pages: int = 10,
         *,
         validation_session=None,
+        metrics=None,
         # url_priority_map: dict = None  # extension point: future priority crawling
     ):
         """
@@ -135,6 +136,11 @@ class WebScraper:
         Scraping and Qwen extraction run concurrently.  Back-pressure from
         bounded queues prevents memory explosions when Qwen falls behind.
 
+        metrics : optional pre-created PipelineMetrics. Pass one in when a
+          caller (e.g. ScoutController, for live dashboard progress) needs to
+          read counters WHILE the run is in flight, not just after it returns.
+          When omitted, a fresh one is created — unchanged default behaviour.
+
         Returns PipelineMetrics for the completed run (callers may ignore it).
         """
         import time
@@ -146,7 +152,7 @@ class WebScraper:
             storage_worker_task,
         )
 
-        metrics = PipelineMetrics()
+        metrics = metrics if metrics is not None else PipelineMetrics()
         t0 = time.time()
         num_workers = settings.max_qwen_workers
 
