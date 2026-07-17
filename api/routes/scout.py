@@ -41,13 +41,26 @@ async def search_startups(request: ScoutRequest, db: Session = Depends(get_db)):
     """
     Semantic search over the startup database.
     Returns AI-synthesized investor report + raw startup list.
+
+    Both the embedding call and the reasoning-model synthesis are synchronous
+    (blocking) Ollama calls — dispatched via run_in_executor so they never
+    block FastAPI's event loop (previously a single search request would
+    freeze the ENTIRE API — every other request, including simple keyword
+    search and ingestion-status polling — for up to 120s). The synthesis
+    call additionally acquires the GPU mutex so it never fights a concurrent
+    ingestion run for the same Ollama backend — it politely waits its turn
+    instead of racing and timing out.
     """
+    import asyncio
     from embeddings.embedder import embedder
     from vector_db.qdrant_store import qdrant_store
     from reasoning.qwen_client import qwen_client
+    from processing.scout_controller import scout_controller
+
+    loop = asyncio.get_event_loop()
 
     try:
-        query_vector = embedder.embed(request.query)
+        query_vector = await loop.run_in_executor(None, embedder.embed, request.query)
 
         filters: dict = {}
         if request.country:
@@ -66,7 +79,10 @@ async def search_startups(request: ScoutRequest, db: Session = Depends(get_db)):
         startups = [r.payload for r in results]
 
         if startups:
-            ai_analysis = qwen_client.synthesize_scout_results(request.query, startups)
+            async with scout_controller.gpu_mutex:
+                ai_analysis = await loop.run_in_executor(
+                    None, qwen_client.synthesize_scout_results, request.query, startups
+                )
         else:
             ai_analysis = (
                 "No matching startups found in the database. "
