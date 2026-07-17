@@ -1,0 +1,7 @@
+<!-- PLACEHOLDER — replace with the official GreenTech Hub mark (same filename).
+     Keep a square viewBox so the sidebar/favicon sizing stays correct.
+     A matching logo-black.svg is used on light backgrounds. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" role="img" aria-label="GreenTech Hub">
+  <rect width="100" height="100" rx="18" fill="#D3E85B"/>
+  <path d="M22 26h56v14H45c-9 0-14 6-14 13s5 13 14 13h33v14H22V26z" fill="#0B0B0C" opacity=".92"/>
+</svg>

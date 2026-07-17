@@ -1,8 +1,11 @@
+import os
 import logging
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from api.routes import scout, matchmaking, ingestion, sources, reviews
 from database.connection import init_db
 
@@ -151,3 +154,23 @@ async def health():
     except Exception:
         count = -1
     return {"status": "ok", "startups_in_db": count}
+
+
+# ── Team dashboard (static SPA) ───────────────────────────────────────────────
+# Served by this same process so there is no second service, no CORS, and it is
+# reachable on the office LAN the moment the API is up. Mounted AFTER the API
+# routers so a static path can never shadow an endpoint.
+_UI_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ui", "static"
+)
+if os.path.isdir(_UI_DIR):
+    app.mount("/dashboard", StaticFiles(directory=_UI_DIR, html=True), name="dashboard")
+    logger.info("Team dashboard mounted at /dashboard")
+else:
+    logger.warning(f"Dashboard directory not found at {_UI_DIR} — /dashboard disabled")
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    """Root previously 404'd — send people to the dashboard."""
+    return RedirectResponse(url="/dashboard/")

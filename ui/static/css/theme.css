@@ -1,0 +1,94 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   SCOUT — Brand theme tokens (GreenTech Hub)
+   ══════════════════════════════════════════════════════════════════════════
+   The ONLY place brand values live. Change --brand-lime here and the whole
+   dashboard recolours. Supports light + dark; dark is the default product
+   look (the logo's black/lime pairing), light is available via the toggle.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Brand ─────────────────────────────────────────────────────────────
+     --brand-lime is sampled from the logo. Swap for the official hex when
+     confirmed; nothing else needs to change. */
+  --brand-lime:      #D3E85B;
+  --brand-lime-dim:  #b9cc4a;
+  --brand-lime-glow: rgba(211, 232, 91, 0.16);
+  --brand-black:     #0B0B0C;
+
+  /* ── Semantic (risk markers must stay distinguishable from brand lime) ── */
+  --danger:   #FF5C5C;   /* 🔴 conflict */
+  --warning:  #FFB020;   /* ⚠️ anomaly  */
+  --info:     #5BC0EB;
+  --success:  var(--brand-lime);
+
+  /* ── Type ──────────────────────────────────────────────────────────────
+     System stack: zero network requests, must work offline on the Mac mini. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
+               "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+
+  /* ── Scale ─────────────────────────────────────────────────────────────── */
+  --radius:    10px;
+  --radius-sm: 6px;
+  --radius-lg: 16px;
+  --gap:       16px;
+  --sidebar-w: 232px;
+  --topbar-h:  60px;
+
+  --shadow:    0 1px 2px rgba(0,0,0,.28), 0 8px 24px rgba(0,0,0,.18);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.22);
+
+  --speed: 140ms;
+}
+
+/* ── Dark (default) ─────────────────────────────────────────────────────── */
+:root, :root[data-theme="dark"] {
+  --paper:      #0B0B0C;   /* app background      */
+  --surface:    #141416;   /* cards / panels      */
+  --surface-2:  #1C1C1F;   /* raised / hover      */
+  --border:     #2A2A2E;
+  --border-2:   #3A3A40;
+
+  --ink:        #F4F4F5;   /* primary text        */
+  --ink-2:      #A9A9B2;   /* secondary text      */
+  --ink-3:      #6E6E78;   /* muted / hints       */
+
+  --on-brand:   #0B0B0C;   /* text ON lime        */
+  --focus:      var(--brand-lime);
+}
+
+/* ── Light ──────────────────────────────────────────────────────────────── */
+:root[data-theme="light"] {
+  --paper:      #FFFFFF;
+  --surface:    #FFFFFF;
+  --surface-2:  #F5F6F4;
+  --border:     #E3E5E0;
+  --border-2:   #CDD0C8;
+
+  --ink:        #0B0B0C;
+  --ink-2:      #55575B;
+  --ink-3:      #85878C;
+
+  --on-brand:   #0B0B0C;
+  --focus:      #6E8B00;
+
+  --shadow:    0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.06);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.05);
+}
+
+/* Respect the OS preference when the user hasn't chosen explicitly. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --paper: #FFFFFF; --surface: #FFFFFF; --surface-2: #F5F6F4;
+    --border: #E3E5E0; --border-2: #CDD0C8;
+    --ink: #0B0B0C; --ink-2: #55575B; --ink-3: #85878C;
+    --focus: #6E8B00;
+    --shadow: 0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.06);
+    --shadow-sm: 0 1px 2px rgba(0,0,0,.05);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --speed: 0ms; }
+  * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
