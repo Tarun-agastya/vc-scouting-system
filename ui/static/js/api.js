@@ -115,10 +115,11 @@ export const fmt = {
   text: (v, fallback = "—") => (v === null || v === undefined || v === "" ? fallback : String(v)),
 };
 
-/** Escape untrusted strings before injecting into innerHTML. */
-export function esc(v) {
-  if (v === null || v === undefined) return "";
-  return String(v)
+/** Escape untrusted strings before injecting into innerHTML. Optional fallback
+ *  text (itself escaped) is used when v is null/undefined/empty string. */
+export function esc(v, fallback = "") {
+  const s = (v === null || v === undefined || v === "") ? fallback : String(v);
+  return s
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }

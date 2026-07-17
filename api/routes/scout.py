@@ -173,6 +173,8 @@ async def get_startup(startup_id: str, db: Session = Depends(get_db)):
         "ai_summary": s.ai_summary,
         "enrichment_score": s.enrichment_score,
         "score_tier": s.score_tier,
+        "source_confidence": s.source_confidence,
+        "score_breakdown": s.score_breakdown,
         "source": s.source,
         "source_history": s.source_history or [],
         "extracted_at": s.extracted_at,
