@@ -358,6 +358,7 @@ async def list_startups(
                 "enrichment_score": s.enrichment_score,
                 "source": s.source,
                 "extracted_at": s.extracted_at,
+                "created_at": s.created_at,
             }
             for s in startups
         ],
