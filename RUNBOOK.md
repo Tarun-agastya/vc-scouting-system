@@ -164,24 +164,27 @@ All RSS feeds, web sources, newsletter senders, and Gmail search terms live in `
 
 ## Unattended operation (Mac mini, runs for weeks with nobody there)
 
-The system is designed to survive reboots, crashes, and long absences with zero manual intervention. Three things make this work, all installed as `launchd` agents (templates version-controlled in `launchd/` — reinstall with the commands below if the machine is ever rebuilt):
+The system is designed to survive reboots, crashes, and long absences with zero manual intervention. Two things make this work, both installed as `launchd` agents (templates version-controlled in `launchd/` — reinstall with the commands below if the machine is ever rebuilt):
 
 | Agent | What it does |
 |---|---|
 | `com.vcscouting.dockerstack` | Runs once at every login: waits (up to 3 min) for the Docker daemon to be ready, then `docker compose up -d`. **This exists because Docker Desktop's own container restart-on-reboot was found to be unreliable** in a real reboot test — containers were left in an "Exited (255)" state after a full macOS restart and did not resume on their own even with `restart: unless-stopped`. Logs to `logs/docker_stack.log`. |
-| `com.vcscouting.api` | Runs the FastAPI server + scheduler. `RunAtLoad` + `KeepAlive` — if it ever crashes (e.g. because Postgres wasn't ready yet at boot), it retries every 10s until it succeeds. Logs to `logs/api.log` (uvicorn access logs) and `logs/api.error.log` (application logs — Python's `logging` module writes to stderr by default). |
-| `com.vcscouting.dashboard` | Runs the Streamlit team dashboard / Review Inbox (`ui/app.py`) on `0.0.0.0:8501`, `RunAtLoad` + `KeepAlive`. Staff open `http://<mac-mini-LAN-IP>:8501` in a browser on the office network. Logs to `logs/dashboard.log`. |
+| `com.vcscouting.api` | Runs the FastAPI server + scheduler **and serves the team dashboard** (see below) from the same process. `RunAtLoad` + `KeepAlive` — if it ever crashes (e.g. because Postgres wasn't ready yet at boot), it retries every 10s until it succeeds. Logs to `logs/api.log` (uvicorn access logs) and `logs/api.error.log` (application logs — Python's `logging` module writes to stderr by default). |
 | Ollama.app | Already auto-starts at login as a standard macOS app — no custom agent needed. |
 
-## Team dashboard — Review Inbox (Phase S-3b)
+There used to be a third agent (`com.vcscouting.dashboard`, a Streamlit app on port 8501) — it's retired. The dashboard is now a static HTML/CSS/JS app (`ui/static/`) served by the API itself via FastAPI's `StaticFiles`, so it needs no separate service, no separate port, and no separate deploy step: it's live the moment `com.vcscouting.api` is up.
 
-The pipeline never changes existing startup data on its own. Every field change and every possible-duplicate is **staged** for a human. Team members (Fabian/Stefan) resolve them in the browser:
+## Team dashboard (Phase UI)
 
-- **URL:** `http://<mac-mini-LAN-IP>:8501` (find the IP with `ipconfig getifaddr en0`). Office Wi-Fi only — stays fully local.
-- **Markers:** 🔴 conflict (a populated field would change) · 🟡 new info (fills a blank) · ⚠️ anomaly (e.g. a shared domain like linkedin.com with nothing else matching).
-- **Actions:** *Approve* applies the change to the master (or merges a duplicate); *Reject* discards it **and remembers the decision** so the same thing isn't re-flagged on the next sweep.
-- **AI explanation:** a nightly job (02:00) has the local 14B model write a plain-language summary of the evidence for each item — guidance only, never a decision.
-- **Run it manually** (dev): `python3 -m streamlit run ui/app.py --server.address 0.0.0.0 --server.port 8501`. It talks to the API at `http://localhost:8000` (override with `SCOUT_API_BASE`).
+Custom-built (no Streamlit, no build step — plain HTML/CSS/JS so there's nothing to compile and nothing to break unattended) branded dashboard with 5 pages: **Overview** (KPIs, charts, activity), **Browse & Search** (keyword + semantic search, filters, edit, delete, CSV export), **Review Inbox** (the data-stewardship staging queue — see below), **Ingestion** (trigger any job, watch it run live with ticking counters), **Sources** (add/remove RSS feeds and web sources — no code, no YAML editing).
+
+- **URL:** `http://<mac-mini-LAN-IP>:8000/dashboard` (find the IP with `ipconfig getifaddr en0`; `http://<IP>:8000/` also redirects there). Office Wi-Fi only — stays fully local, same-origin to the API (no CORS, no separate base-URL config).
+- **⌘K** opens a command palette to jump to any page or run a quick action (full sweep, theme toggle) without the mouse.
+- **Light/dark theme**, persisted per-browser, defaults to the OS preference.
+- **Review Inbox:** the pipeline never changes existing startup data on its own. Every field change and every possible-duplicate is **staged** for a human. Markers: 🔴 conflict (a populated field would change) · 🟡 new info (fills a blank) · ⚠️ anomaly (e.g. a shared domain like linkedin.com with nothing else matching). *Approve* applies the change to the master (or merges a duplicate); *Reject* discards it **and remembers the decision** so the same thing isn't re-flagged on the next sweep. Keyboard shortcuts: `j`/`k` navigate, `a` approve, `r` reject. A nightly job (02:00) has the local 14B model write a plain-language explanation of the evidence for each item — guidance only, never a decision.
+- **Ingestion page:** trigger a full sweep, RSS, newsletters, accelerators, universities, or one specific source. While a run is active, counters (pages crawled, chunks, startups found) tick live — polled every 2s from `/ingestion/status`, which now exposes the in-flight `PipelineMetrics` object, not just the final result.
+- **Sources page:** the "Add source" form writes straight into `config/sources.yaml` via the existing `/sources` API — the next scheduled run (or a manual "Run now" from the same page) picks it up with no restart.
+- **Development:** no build step — edit files under `ui/static/` and reload the browser. `ui/static/js/api.js` calls the API same-origin (empty base URL) since it's always served by the same FastAPI process — there's no separate host to configure.
 
 Also required for full unattended survival (system settings, not code):
 - **No sleep**: `sudo pmset -c sleep 0 displaysleep 0 disksleep 0`

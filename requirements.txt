@@ -46,9 +46,5 @@ apscheduler==3.10.4
 pyyaml==6.0.1
 ruamel.yaml==0.19.1
 
-# ── Team dashboard / Review Inbox (ui/app.py) ────────────────────────────────
-streamlit==1.50.0
-requests==2.31.0
-
 # ── Testing ──────────────────────────────────────────────────────────────────
 pytest==8.4.2

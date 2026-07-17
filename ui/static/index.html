@@ -72,6 +72,18 @@
                 style="display:none">☰</button>
         <div class="topbar__title" id="topbar-title">Overview</div>
         <div class="topbar__right">
+          <button class="btn btn--ghost btn--sm" id="palette-btn" title="Command palette (⌘K)" aria-label="Open command palette">
+            <svg class="btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>
+            </svg>
+            <span class="dim mono hidden-mobile" style="font-size:11px">⌘K</span>
+          </button>
+          <button class="btn btn--ghost btn--sm" id="refresh-btn" title="Refresh this page" aria-label="Refresh">
+            <svg class="btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115-6.7L21 8"/>
+              <path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15 6.7L3 16"/>
+            </svg>
+          </button>
           <button class="btn btn--ghost btn--sm" id="theme-btn" title="Toggle theme" aria-label="Toggle theme">
             <svg class="btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>
@@ -85,6 +97,14 @@
   </div>
 
   <div class="toasts" id="toasts"></div>
+
+  <div class="palette-overlay hidden" id="palette-overlay">
+    <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+      <input class="palette__input" id="palette-input" type="text"
+             placeholder="Jump to a page or run a command…" autocomplete="off">
+      <div class="palette__list" id="palette-list"></div>
+    </div>
+  </div>
 
   <script type="module" src="js/app.js"></script>
 </body>

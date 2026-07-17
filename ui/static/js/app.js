@@ -4,7 +4,8 @@
    ══════════════════════════════════════════════════════════════════════════ */
 
 import { api } from "./api.js";
-import { register, startRouter, poll } from "./router.js";
+import { register, startRouter, poll, navigate } from "./router.js";
+import { initPalette } from "./palette.js";
 
 import overview from "./views/overview.js";
 import browse from "./views/browse.js";
@@ -42,6 +43,14 @@ register("browse", browse);
 register("reviews", reviews);
 register("ingestion", ingestion);
 register("sources", sources);
+
+/* ── Command palette + manual refresh ─────────────────────────────────────
+   Refresh re-navigates to the current hash; router.navigate() force-resolves
+   even when the hash is unchanged, so this re-mounts the active view. */
+initPalette(api);
+document.getElementById("refresh-btn").addEventListener("click", () => {
+  navigate(location.hash || "#/overview");
+});
 
 startRouter();
 

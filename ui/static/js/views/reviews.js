@@ -59,7 +59,7 @@ export default {
             <span class="dim" style="margin-left:auto;font-size:12px">j/k navigate · a approve · r reject</span>
           </div>
         </div>
-        <div class="grid-2" id="inbox-grid" style="align-items:start;grid-template-columns:340px 1fr">
+        <div class="inbox-grid" id="inbox-grid" style="align-items:start">
           <div class="card" id="review-list" style="padding:0;max-height:70vh;overflow-y:auto"></div>
           <div class="card" id="review-detail"></div>
         </div>
