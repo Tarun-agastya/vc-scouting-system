@@ -19,7 +19,30 @@ const COLUMNS = [
   ["employee_count", "Employees", false],
   ["score_tier", "Tier", true],
   ["enrichment_score", "Score", true],
+  ["verification_status", "Verified", false],
+  ["source_url", "Source", false],
 ];
+
+/** "https://www.munich-startup.de/en/x" -> "munich-startup.de" (falls back to the coarse source type). */
+function sourceLabel(sourceUrl, source) {
+  if (sourceUrl) {
+    try {
+      const host = new URL(sourceUrl).hostname;
+      return host.startsWith("www.") ? host.slice(4) : host;
+    } catch { /* not a valid URL */ }
+  }
+  return source || "—";
+}
+
+/* Phase H-3: trust-state badge — unverified (neutral) / verified (lime) /
+   flagged (red), so a wrong-data record is visible right in the table,
+   not just in the detail drawer. */
+function verificationBadge(status) {
+  const s = status || "unverified";
+  const cls = s === "verified" ? "chip--brand" : s === "flagged" ? "chip--danger" : "";
+  const label = s === "verified" ? "✓ verified" : s === "flagged" ? "🚩 flagged" : "⚠ unverified";
+  return `<span class="chip ${cls}">${label}</span>`;
+}
 
 const EDITABLE_FIELDS = [
   ["name", "Name", "text"], ["website", "Website", "text"],
@@ -50,7 +73,7 @@ function csvEscape(v) {
 function downloadCsv(rows) {
   if (!rows.length) { toast("Nothing to export", "error"); return; }
   const cols = ["name", "industry", "tech_cluster", "country", "city", "funding_stage",
-                "employee_count", "score_tier", "enrichment_score", "source"];
+                "employee_count", "score_tier", "enrichment_score", "source", "source_url", "verification_status"];
   const lines = [cols.join(",")];
   for (const r of rows) lines.push(cols.map((c) => csvEscape(r[c])).join(","));
   const blob = new Blob([lines.join("\n")], { type: "text/csv" });
@@ -68,12 +91,13 @@ export default {
     const state = {
       mode: "keyword",           // "keyword" | "semantic"
       q: "",
-      filters: { industry: "", country: "", city: "", tech_cluster: "", funding_stage: "", score_tier: "", employee_count: "" },
+      filters: { industry: "", country: "", city: "", tech_cluster: "", funding_stage: "", score_tier: "", employee_count: "", verification_status: "", source_url: "" },
       sort: "created_at", order: "desc",
       limit: 50, offset: 0,
       expandedId: null,
       lastRows: [], lastTotal: 0,
       aiAnalysis: null,
+      sourceSites: null,   // [{label, count}] — fetched once, populates the source-website filter
     };
 
     el.innerHTML = `
@@ -111,6 +135,16 @@ export default {
                 `<option value="${t}" ${state.filters.score_tier === t ? "selected" : ""}>${t.replace(/_/g, " ")}</option>`).join("")}
             </select>
             <input class="input" style="max-width:110px" id="f-employee_count" placeholder="Employees" value="${esc(state.filters.employee_count)}">
+            <select class="select" style="max-width:150px" id="f-verification_status">
+              <option value="">Any verification</option>
+              ${["unverified", "verified", "flagged"].map((s) =>
+                `<option value="${s}" ${state.filters.verification_status === s ? "selected" : ""}>${s}</option>`).join("")}
+            </select>
+            <select class="select" style="max-width:200px" id="f-source_url" title="Filter to startups extracted from one source website — useful for a manual verification pass, site by site">
+              <option value="">${state.sourceSites ? "All source websites" : "Loading sources…"}</option>
+              ${(state.sourceSites || []).map((s) =>
+                `<option value="${esc(s.label)}" ${state.filters.source_url === s.label ? "selected" : ""}>${esc(s.label)} (${s.count})</option>`).join("")}
+            </select>
             ${Object.values(state.filters).some(Boolean) ? `<button class="btn btn--ghost btn--sm" id="clear-filters">Clear filters</button>` : ""}
           </div>` : ""}`;
 
@@ -228,6 +262,10 @@ export default {
                 <td class="dim">${esc(s.employee_count, "—")}</td>
                 <td>${s.score_tier ? `<span class="chip ${tierChipClass(s.score_tier)}">${esc(s.score_tier.replace(/_/g, " "))}</span>` : "—"}</td>
                 <td class="mono">${s.enrichment_score ?? "—"}</td>
+                <td>${verificationBadge(s.verification_status)}</td>
+                <td class="dim truncate" style="max-width:160px">${s.source_url
+                  ? `<a href="${esc(s.source_url)}" target="_blank" rel="noopener" title="${esc(s.source_url)}" onclick="event.stopPropagation()">${esc(sourceLabel(s.source_url, s.source))}</a>`
+                  : esc(sourceLabel(s.source_url, s.source))}</td>
               </tr>
               <tr class="detail-row hidden" data-detail-for="${esc(s.id)}"><td colspan="${COLUMNS.length}"></td></tr>
             `).join("")}
@@ -325,10 +363,25 @@ export default {
                 ${s.source_history.map((h) => `
                   <div class="row" style="font-size:12px;align-items:flex-start">
                     <span class="chip" style="flex:none">${esc(h.source || "?")}</span>
-                    <span class="grow">${esc(h.source_name || h.sender || "")}${h.subject ? ` — "${esc(h.subject)}"` : ""}</span>
+                    <span class="grow">${h.url
+                      ? `<a href="${esc(h.url)}" target="_blank" rel="noopener">${esc(h.source_name || h.sender || h.url)}</a>`
+                      : esc(h.source_name || h.sender || "")}${h.subject ? ` — "${esc(h.subject)}"` : ""}</span>
                     <span class="dim" style="flex:none">${fmt.dateTime(h.extracted_at || h.date)}</span>
                   </div>`).join("")}
               </div>` : `<div class="dim" style="font-size:12px">No source history</div>`}
+          </div>
+
+          <div class="card">
+            <div class="card__head">
+              <span class="card__title">Verification</span>
+              ${verificationBadge(s.verification_status)}
+              <span class="dim" style="margin-left:auto;font-size:12px">${s.verified_at ? `Last checked ${fmt.dateTime(s.verified_at)}` : "Not yet rechecked"}</span>
+            </div>
+            ${s.verification_notes
+              ? `<div style="font-size:13px;line-height:1.6">${esc(s.verification_notes)}</div>`
+              : `<div class="dim" style="font-size:12px">${s.source_excerpt
+                  ? "Awaiting recheck — press “Recheck now” on the Ingestion page."
+                  : "No source excerpt on file (predates the grounding system) — will be flagged for manual review on next recheck."}</div>`}
           </div>
 
           <div class="card" id="edit-card">
@@ -386,5 +439,12 @@ export default {
 
     buildSearchCard();
     load();
+
+    // Fetched once per mount, separately from load() — it's the list of
+    // distinct sites, not startup results, and rarely changes mid-session.
+    api.listSourceSites().then((res) => {
+      state.sourceSites = res.sites || [];
+      if (state.mode === "keyword") buildSearchCard();
+    }).catch(() => { state.sourceSites = []; });
   },
 };

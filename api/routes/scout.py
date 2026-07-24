@@ -1,5 +1,6 @@
 import logging
 from typing import Optional, List
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, HttpUrl
@@ -192,10 +193,16 @@ async def get_startup(startup_id: str, db: Session = Depends(get_db)):
         "source_confidence": s.source_confidence,
         "score_breakdown": s.score_breakdown,
         "source": s.source,
+        "source_url": s.source_url,
         "source_history": s.source_history or [],
         "extracted_at": s.extracted_at,
         "created_at": s.created_at,
         "updated_at": s.updated_at,
+        "verification_status": s.verification_status or "unverified",
+        "verification_notes": s.verification_notes,
+        "verification_evidence": s.verification_evidence,
+        "verified_at": s.verified_at,
+        "source_excerpt": s.source_excerpt,
     }
 
 
@@ -298,6 +305,44 @@ async def delete_startup(startup_id: str, confirm: bool = False, db: Session = D
     return {"status": "deleted", "id": startup_id, "name": name}
 
 
+def _domain_label(source: Optional[str], source_url: Optional[str]) -> str:
+    """
+    Human-readable "which website" label for one startup: the registrable
+    domain of source_url (e.g. "munich-startup.de") when there is a URL to
+    parse, else the coarse source bucket (e.g. "newsletter", "manual") as a
+    fallback for sources that were never a specific web page.
+    """
+    if source_url and not source_url.startswith("gmail://"):
+        host = urlparse(source_url).netloc
+        if host:
+            return host[4:] if host.startswith("www.") else host
+        return source_url
+    return source or "unknown"
+
+
+@router.get("/source-sites")
+async def list_source_sites(db: Session = Depends(get_db)):
+    """
+    Distinct source websites actually present in the database, with counts —
+    NOT the configured registry (see GET /sources for that; a site can be
+    configured but never have produced a stored record, or vice versa after
+    a config edit). Powers Browse's "source website" filter dropdown, so a
+    reviewer can work through one site's extractions at a time for manual
+    verification instead of hunting for the right free-text filter value.
+    """
+    from collections import Counter
+
+    rows = db.query(Startup.source, Startup.source_url).all()
+    counts = Counter(_domain_label(source, source_url) for source, source_url in rows)
+
+    return {
+        "sites": [
+            {"label": label, "count": count}
+            for label, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        ]
+    }
+
+
 @router.get("/list")
 async def list_startups(
     q: Optional[str] = None,               # keyword: name / summary / description / tags
@@ -309,6 +354,8 @@ async def list_startups(
     funding_stage: Optional[str] = None,
     score_tier: Optional[str] = None,
     source: Optional[str] = None,
+    source_url: Optional[str] = None,      # filter by the specific site a record was extracted from
+    verification_status: Optional[str] = None,   # unverified | verified | flagged (Phase H-2)
     founded_year_min: Optional[int] = None,
     founded_year_max: Optional[int] = None,
     sort: str = "created_at",              # created_at | extracted_at | name | score
@@ -342,6 +389,16 @@ async def list_startups(
     if funding_stage:  query = query.filter(Startup.funding_stage.ilike(f"%{funding_stage}%"))
     if score_tier:     query = query.filter(Startup.score_tier == score_tier)
     if source:         query = query.filter(Startup.source.ilike(f"%{source}%"))
+    if source_url:
+        # Matches both a real site domain ("munich-startup.de") AND a
+        # fallback bucket label like "newsletter" (whose rows have no
+        # crawlable source_url — see _domain_label) — the /source-sites
+        # dropdown can hand back either kind of label.
+        query = query.filter(or_(
+            Startup.source_url.ilike(f"%{source_url}%"),
+            Startup.source.ilike(f"%{source_url}%"),
+        ))
+    if verification_status: query = query.filter(Startup.verification_status == verification_status)
     if founded_year_min is not None: query = query.filter(Startup.founded_year >= founded_year_min)
     if founded_year_max is not None: query = query.filter(Startup.founded_year <= founded_year_max)
 
@@ -375,8 +432,10 @@ async def list_startups(
                 "score_tier": s.score_tier,
                 "enrichment_score": s.enrichment_score,
                 "source": s.source,
+                "source_url": s.source_url,
                 "extracted_at": s.extracted_at,
                 "created_at": s.created_at,
+                "verification_status": s.verification_status or "unverified",
             }
             for s in startups
         ],
