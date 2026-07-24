@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from api.routes import scout, matchmaking, ingestion, sources, reviews
+from api.routes import scout, matchmaking, ingestion, sources, reviews, verification
 from database.connection import init_db
 
 logging.basicConfig(
@@ -73,6 +73,16 @@ async def lifespan(app: FastAPI):
             from processing.review_explainer import explain_pending_reviews
             await explain_pending_reviews(limit=30)
 
+        async def _scheduled_recheck():
+            """
+            Nightly (Phase H-3): re-verify a batch of the unverified backlog
+            against its own source text — through the controller so it shows
+            in /ingestion/status like any run. Self-drains the backlog over
+            successive nights without anyone pressing "Recheck now".
+            """
+            from processing.scout_controller import scout_controller
+            await scout_controller.run_recheck(limit=30)
+
         scheduler = AsyncIOScheduler()
 
         # Full sweep: Monday + Thursday at 05:00 (twice a week, per the 25 June
@@ -102,11 +112,20 @@ async def lifespan(app: FastAPI):
             replace_existing=True,
         )
 
+        # Verification recheck (Phase H-3): nightly at 03:00, after the 02:00
+        # explain job so the two nightly LLM jobs don't overlap.
+        scheduler.add_job(
+            func=_scheduled_recheck,
+            trigger=CronTrigger(hour=3, minute=0),
+            id="verification_recheck",
+            replace_existing=True,
+        )
+
         scheduler.start()
         app.state.scheduler = scheduler
         logger.info(
             "Background scheduler started (full sweep Mon+Thu 05:00, Gmail top-up daily 13:00, "
-            "LLM review explanations nightly 02:00)"
+            "LLM review explanations nightly 02:00, verification recheck nightly 03:00)"
         )
     except Exception as exc:
         logger.warning(f"Scheduler could not start: {exc}")
@@ -143,6 +162,7 @@ app.include_router(matchmaking.router, prefix="/matchmaking", tags=["Matchmaking
 app.include_router(ingestion.router,   prefix="/ingestion",   tags=["Ingestion"])
 app.include_router(sources.router,     prefix="/sources",     tags=["Sources"])
 app.include_router(reviews.router,     prefix="/reviews",     tags=["Reviews"])
+app.include_router(verification.router, prefix="/verification", tags=["Verification"])
 
 
 @app.get("/health", tags=["System"])
