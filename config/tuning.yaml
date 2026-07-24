@@ -27,6 +27,7 @@ extraction:
     - "Traditional incumbents: established non-tech corporations such as car makers, banks, industrial conglomerates (e.g. BMW, Deutsche Bank, Siemens, McKinsey, SAP if founded before 2000)."
     - "VC firms, investment funds, accelerators, media outlets."
     - "Companies in medicine, biotech, e-commerce, or food retail (exception: packaging technology)."
+    - "Companies headquartered/founded outside Europe (e.g. US, China, other Asia, elsewhere) — UNLESS the text explicitly states the company is expanding into, opening an office in, or specifically targeting the DACH/European market. Being mentioned in a German or European publication purely as general industry news or founder-profile commentary is NOT sufficient reason to include a non-European company — e.g. a German newsletter profiling a Chinese AI lab's founder is industry commentary, not a DACH/Europe startup to track."
 
 
 candidate_filter:
@@ -163,6 +164,46 @@ candidate_filter:
       - team
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Geo-scope hard filter (23 Jul) — deterministic backstop, not a prompt rule
+# ══════════════════════════════════════════════════════════════════════════
+# The extraction prompt's exclude rules alone don't reliably stop the small
+# extraction model from pulling in companies outside our DACH/Europe scope —
+# confirmed live: a German-newsletter profile of a Chinese AI founder
+# (Moonshot AI) was still extracted despite an explicit "exclude non-Europe"
+# prompt rule. Same lesson as Phase H-1's grounding gate: don't just tell the
+# model, build a deterministic check.
+#
+# A chunk is REJECTED before ever reaching the LLM if it contains a clear
+# non-Europe signal AND has no DACH/Europe geo signal at all (reusing
+# candidate_filter.signals.geo above as the carve-out — a real "expanding to
+# Europe" story naturally mentions a specific European place, e.g. "opening
+# a Berlin office", so it passes through untouched). This is a hard reject,
+# independent of the min_score check above.
+geo_scope:
+  enabled: true
+  non_europe_signals:
+    - china
+    - chinese
+    - beijing
+    - shanghai
+    - shenzhen
+    - hong kong
+    - india
+    - indian
+    - bangalore
+    - mumbai
+    - japan
+    - japanese
+    - tokyo
+    - south korea
+    - korean
+    - seoul
+    - singapore
+    - silicon valley
+    - san francisco
+
+
 scoring:
   # Best source-type contribution (Category A). Unknown types default to 4.
   source_type_score:
@@ -194,3 +235,86 @@ scoring:
     - [41, INTERESTING]
     - [21, EARLY_DISCOVERY]
     - [0, WEAK_SIGNAL]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Phase H-1 — Source-grounding gate (hallucination cut)
+# ══════════════════════════════════════════════════════════════════════════
+# Deterministic, free, no-LLM check applied right after every extraction
+# (reasoning/qwen_client.py::extract_startups). A high-fabrication-risk field
+# is nulled unless the chunk it came from actually contains evidence for it.
+# Paraphrased/classified fields (description, industry, tech_cluster, city,
+# country) are NOT gated here — nulling a correct paraphrase would violate
+# "gather the correct information"; those are left to the Phase H-3 LLM
+# deep-recheck instead.
+#
+# Set enabled: false to disable the whole gate (pre-Phase-H behavior — trust
+# the model's raw output). Each check_* toggle disables just that one field.
+grounding:
+  enabled: true
+
+  check_founded_year: true    # the 4-digit year must appear literally in the chunk
+  check_funding_stage: true   # the stage value itself (e.g. "Seed") must appear
+  check_funding_amount: true  # needs BOTH a digit AND one of funding_amount_signals
+  check_employee_count: true  # needs one of employee_count_signals nearby
+  check_founders: true        # each founder's surname must appear in the chunk
+
+  # Reference vocabulary for the funding_stage check (bilingual EN/DE) —
+  # informational; the actual check matches the extracted value's own text.
+  funding_stage_keywords:
+    - pre-seed
+    - preseed
+    - vor-seed
+    - vorseed
+    - seed
+    - series a
+    - series b
+    - series c
+    - series d
+    - series e
+    - growth
+    - angel
+    - bridge
+    - wachstumskapital
+    - wachstumsrunde
+
+  funding_amount_signals:
+    - million
+    - mio
+    - billion
+    - bn
+    - thousand
+    - tsd
+    - €
+    - "$"
+    - usd
+    - eur
+    - dollar
+    - euro
+    - funding
+    - raised
+    - investment
+    - eingesammelt
+    - finanzierung
+    - kapital
+    - runde
+
+  # Deliberately NOT "people" alone — found via Phase H-4 live testing to
+  # false-positive-match unrelated text (e.g. the "Pitch & People" podcast
+  # name), which let a fabricated employee_count survive grounding just
+  # because a source article happened to mention that show's name.
+  employee_count_signals:
+    - employee
+    - employees
+    - headcount
+    - staff
+    - fte
+    - team of
+    - person team
+    - people on the team
+    - headcount of
+    - mitarbeiter
+    - beschäftigte
+    - belegschaft
+    - mann team
+    - köpfe

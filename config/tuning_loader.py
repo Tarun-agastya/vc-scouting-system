@@ -93,6 +93,43 @@ DEFAULTS = {
         "tiers": [[81, "PRIORITY"], [61, "HIGH_QUALITY_LEAD"], [41, "INTERESTING"],
                   [21, "EARLY_DISCOVERY"], [0, "WEAK_SIGNAL"]],
     },
+    "grounding": {
+        "enabled": True,
+        "check_founded_year": True,
+        "check_funding_stage": True,
+        "check_funding_amount": True,
+        "check_employee_count": True,
+        "check_founders": True,
+        "funding_stage_keywords": [
+            "pre-seed", "preseed", "vor-seed", "vorseed", "seed",
+            "series a", "series b", "series c", "series d", "series e",
+            "growth", "angel", "bridge", "wachstumskapital", "wachstumsrunde",
+        ],
+        "funding_amount_signals": [
+            "million", "mio", "billion", "bn", "thousand", "tsd",
+            "€", "$", "usd", "eur", "dollar", "euro",
+            "funding", "raised", "investment",
+            "eingesammelt", "finanzierung", "kapital", "runde",
+        ],
+        # Deliberately NOT "people" alone — found via Phase H-4 live testing
+        # to false-positive-match unrelated text (e.g. the "Pitch & People"
+        # podcast name), letting a fabricated employee_count survive.
+        "employee_count_signals": [
+            "employee", "employees", "headcount", "staff", "fte", "team of",
+            "person team", "people on the team", "headcount of",
+            "mitarbeiter", "beschäftigte", "belegschaft", "mann team", "köpfe",
+        ],
+    },
+    "geo_scope": {
+        "enabled": True,
+        "non_europe_signals": [
+            "china", "chinese", "beijing", "shanghai", "shenzhen", "hong kong",
+            "india", "indian", "bangalore", "mumbai",
+            "japan", "japanese", "tokyo",
+            "south korea", "korean", "seoul",
+            "singapore", "silicon valley", "san francisco",
+        ],
+    },
 }
 
 # ── mtime cache ──────────────────────────────────────────────────────────────
@@ -128,6 +165,8 @@ def _load() -> dict:
             "extraction":       {**DEFAULTS["extraction"], **(raw.get("extraction") or {})},
             "candidate_filter": {**DEFAULTS["candidate_filter"], **(raw.get("candidate_filter") or {})},
             "scoring":          {**DEFAULTS["scoring"], **(raw.get("scoring") or {})},
+            "grounding":        {**DEFAULTS["grounding"], **(raw.get("grounding") or {})},
+            "geo_scope":        {**DEFAULTS["geo_scope"], **(raw.get("geo_scope") or {})},
         }
         # nested signals dict: merge per-group so a partial edit keeps the rest
         cf = raw.get("candidate_filter") or {}
@@ -159,3 +198,18 @@ def get_candidate_filter_config() -> dict:
 
 def get_scoring_config() -> dict:
     return _load()["scoring"]
+
+
+def get_grounding_config() -> dict:
+    """
+    {'enabled': bool, 'check_founded_year': bool, ..., 'funding_stage_keywords':
+    [...], 'funding_amount_signals': [...], 'employee_count_signals': [...]}
+    """
+    return _load()["grounding"]
+
+
+def get_geo_scope_config() -> dict:
+    """{'enabled': bool, 'non_europe_signals': [...], '_mtime': float}"""
+    cfg = dict(_load()["geo_scope"])
+    cfg["_mtime"] = _cache_mtime  # lets candidate_filter cache its compiled pattern
+    return cfg

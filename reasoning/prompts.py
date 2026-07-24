@@ -33,46 +33,18 @@ Field instructions:
 - address: full street address if mentioned; city + country is acceptable if no street address is given; "" if unknown.
 - contact_info: email address or LinkedIn URL if mentioned, else "".
 
+CRITICAL — per-company grounding (if the text mentions more than one company):
+- Every field you report for a company must come from the SAME sentence or
+  paragraph that names that company. Never borrow a fact (founding year,
+  funding amount, funding stage, headcount) from a different company's
+  paragraph, even if it appears right next to this one.
+- If a specific fact (founding year, headcount, funding amount) is not
+  literally stated for THIS company, output "" or 0 for it. A blank field is
+  always correct; a guessed one is not — do not infer, estimate, round, or
+  pattern-match a "plausible" value from general knowledge or from context.
+
 For all other unknown fields use "" (strings) or 0 (founded_year). Never guess a value.
 Return an empty startups list only if the text contains absolutely no matching companies.
-
-Text:
-{text}"""
-
-# ── Legacy extraction prompt (kept for newsletter_ingestor until Phase 2) ─────
-
-NEWSLETTER_EXTRACTION_PROMPT = """Extract every startup mentioned in the text below.
-
-Return a JSON array. Each element must follow this schema exactly:
-[
-  {{
-    "name": "startup name (required)",
-    "description": "what they do in 1-2 sentences",
-    "website": "URL if mentioned, else null",
-    "industry": "primary sector (e.g. AI, Fintech, Climatetech, SaaS, Deeptech, Logistics, PropTech)",
-    "sub_industry": "more specific niche if identifiable",
-    "country": "country if mentioned, else null",
-    "city": "city if mentioned, else null",
-    "funding_stage": "Pre-seed / Seed / Series A / Series B / Series C / Growth / null",
-    "funding_amount": "amount raised if mentioned, else null",
-    "founded_year": "4-digit year as integer if mentioned, else null",
-    "contact_info": "email address or LinkedIn URL if mentioned, else null",
-    "published_date": "ISO 8601 date string of the article/newsletter publish date if identifiable, else null",
-    "founders": ["founder name 1", "founder name 2"],
-    "tags": ["tag1", "tag2"]
-  }}
-]
-
-STRICT EXCLUSION RULE:
-DO NOT extract startups operating in medicine, biotech, e-commerce, or food
-(unless the startup is strictly related to packaging technology).
-If a startup falls into any of these excluded categories, ignore it entirely and do not include it in the output.
-
-Additional Rules:
-- Only include companies that are clearly startups or scale-ups.
-- Do NOT include large corporations, VCs, or media outlets.
-- If a field is unknown, use null — never guess.
-- Return an empty array [] if no startups are found.
 
 Text:
 {text}"""
@@ -137,3 +109,120 @@ Format as a professional investor briefing:
 6. **Investment Recommendation** — 1 paragraph verdict
 
 Keep it sharp and evidence-based."""
+
+# ── Verification recheck (Phase H-3) ────────────────────────────────────────
+# Distinct from every prompt above: this one produces a VERDICT (which
+# fields does the source text actually support), not investor commentary.
+# It never suggests a replacement value — Layer 1 (deterministic) is the
+# only thing allowed to null a field; this only classifies support.
+
+SYSTEM_VERIFIER = """You are a fact-checker for a startup intelligence database.
+Given a stored record and the exact source text it was extracted from, your
+only job is to say which fields the source text actually supports. You do
+NOT judge the company as an investment, and you NEVER invent, correct, or
+suggest a replacement value — you only report support/contradiction.
+Return ONLY valid JSON matching the required schema. No markdown, no prose
+outside the JSON."""
+
+VERIFICATION_RECHECK_PROMPT = """Source text (the ONLY evidence — judge every field against this and nothing else):
+\"\"\"
+{source_excerpt}
+\"\"\"
+
+Stored record for "{name}":
+{fields}
+
+For each field ask: does the source text state this, contradict it, or
+simply not mention it?
+
+Report:
+- identity_match: true if the source text is clearly ABOUT this named
+  company (even briefly); false if the text doesn't describe this company
+  at all, describes a different company, or the name doesn't genuinely
+  match what the text is about.
+- summary: 1-3 plain sentences a human reviewer can read in five seconds —
+  say what's solid and what to double check.
+- unsupported_fields: field names the source text simply does NOT mention.
+  This is NOT necessarily wrong — the value may be correct from an earlier
+  sighting of this company — it just isn't confirmable from THIS text.
+- contradicted_fields: field names where the source text states something
+  DIFFERENT from the stored value. This is the strong signal — the record
+  is likely wrong here.
+
+Do not guess. Do not propose what the correct value should be. Only classify."""
+
+# ── Web verification (Phase W, 23 Jul) ──────────────────────────────────────
+# Distinct from SYSTEM_VERIFIER/VERIFICATION_RECHECK_PROMPT above: THAT pass
+# only classifies support against a stored source_excerpt and is deliberately
+# forbidden from proposing a value. This pass has independent ground truth
+# (live web search results) for records that have no source_excerpt at all —
+# so unlike the recheck pass, it CAN and SHOULD state what the correct value
+# actually is when it finds one, always citing which search result it came
+# from. Every other rule carries over: never invent, never guess, cite
+# everything, only report what the evidence actually supports.
+
+SYSTEM_WEB_VERIFIER = """You are a fact-checker for a startup intelligence database.
+You are given a stored record and a set of live web search results about the
+named company. Your job is to check each stored field against what the
+search results actually say, and — where a result clearly gives a better or
+different value — state the correct value and which result supports it.
+
+IMPORTANT — name collisions are common: search results for a company name
+often include a DIFFERENT, unrelated company that merely shares or resembles
+the name (confirmed live 24 Jul: a search for "bup system", a German
+fashion-tech startup, returned one genuine result plus four results about
+"bUp Systems"/"B-Up Systems", an unrelated US marketing-software company —
+and those got wrongly used to "correct" the real company's industry).
+Before using ANY result as evidence, confirm it is genuinely about THIS
+specific company — same business, same rough location/industry if stated —
+not just a similar name. Silently discard any result about a different
+entity; never blend facts from a different company into your findings, even
+if those results outnumber the genuine ones.
+
+Never invent a fact that isn't in the search results. If the results don't
+mention a field, leave it alone. If NONE of the results are genuinely about
+this company, say so via identity_match=false.
+Return ONLY valid JSON matching the required schema. No markdown, no prose
+outside the JSON."""
+
+WEB_VERIFICATION_PROMPT = """Web search results for "{name}" ({context}):
+{search_results}
+
+Stored record for "{name}":
+{fields}
+
+Step 1 — for EACH search result above, decide whether it is genuinely about
+THIS specific company (matching business/industry/location where stated), or
+a different company that merely shares or resembles the name. This matters —
+search results frequently mix in an unrelated company with a similar name.
+Only results that are genuinely about this company may be used as evidence
+in Step 2 — ignore every other result completely, even if they outnumber the
+genuine ones.
+
+Step 2 — using ONLY the genuinely-matching results from Step 1, check each
+stored field:
+- If a result confirms the stored value, do nothing (no finding needed).
+- If a result gives a genuinely DIFFERENT value (e.g. a different founding
+  year, a different city), report it as a finding with the correct value
+  and cite the source_url of the result that supports it.
+- If the results simply don't mention a field, leave it alone — that's not
+  a finding, just missing evidence.
+
+Report:
+- identity_match: true if at least one result is genuinely about this named
+  company (per Step 1); false if every result is about a different company
+  or nothing relevant came back at all.
+- summary: 1-3 plain sentences a human reviewer can read in five seconds —
+  say explicitly if you had to discard results about a different,
+  similarly-named company.
+- findings: a list of {{field, verdict, correct_value, source_url}} — one
+  entry per field where a genuinely-matching result contradicts the stored
+  value. verdict is always "contradicted" (only report fields you're
+  correcting — don't list fields that matched or weren't mentioned).
+  field must be one of the exact stored field names shown above.
+  correct_value is the value the search results support, as plain text.
+  source_url must be one of the results you confirmed in Step 1 is
+  genuinely about this company — never cite a discarded result.
+
+Do not guess. Do not report a finding sourced from a result you haven't
+confirmed is genuinely about this company."""

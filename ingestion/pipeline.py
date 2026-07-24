@@ -110,54 +110,32 @@ class ExtractionPipeline:
         chunk_num: int,
         total_chunks: int,
     ) -> List[dict]:
-        """Send one chunk to Qwen and return the parsed startup list."""
+        """
+        Send one chunk to the extraction model and return the parsed startup list.
+
+        Phase H-1 follow-up (21 July): this used to call qwen_client.generate()
+        with the 14B reasoning model plus a manual JSON-array parse/repair —
+        a second, independent extraction path (RSS's only) that bypassed the
+        small 7B extraction model, the JSON-schema structured output, AND the
+        H-1 source-grounding gate entirely. RSS-sourced records had zero
+        hallucination protection as a result. Now routes through the same
+        qwen_client.extract_startups() chokepoint web/newsletter ingestion
+        already use, so RSS gets the same model, schema, grounding gate, and
+        source_excerpt capture as every other source.
+        """
         import time
         from reasoning.qwen_client import qwen_client
-        from reasoning.prompts import NEWSLETTER_EXTRACTION_PROMPT
 
         logger.info(f"[Pipeline] Chunk {chunk_num}/{total_chunks}")
         try:
-            prompt = NEWSLETTER_EXTRACTION_PROMPT.format(text=chunk)
-            logger.info("[Pipeline] Sending to Qwen")
             t0 = time.time()
-            response = qwen_client.generate(
-                prompt,
-                system="Return ONLY a valid JSON array. No explanation, no markdown.",
-                temperature=0,
-                num_ctx=4096,
-            )
-            ollama_elapsed = time.time() - t0
-            logger.info(f"[Pipeline] Qwen completed in {ollama_elapsed:.1f}s")
-
-            # ── DEBUG: raw Qwen response before any parsing ───────────────────
-            logger.debug(
-                "[Pipeline] RAW RESPONSE | chunk=%d/%d | source=%s"
-                " | response_len=%d | response=%r",
-                chunk_num, total_chunks, source_url, len(response), response[:500],
-            )
-
-            t_parse = time.time()
-            startups = qwen_client.parse_json_array(response)
-            parse_elapsed = time.time() - t_parse
-
-            # ── DEBUG: separate timing ─────────────────────────────────────
-            logger.debug(
-                "[Pipeline] TIMING | chunk=%d/%d | ollama=%.2fs | json_parse=%.4fs",
-                chunk_num, total_chunks, ollama_elapsed, parse_elapsed,
-            )
-
-            # ── DEBUG: per-chunk extraction summary ───────────────────────────
-            logger.debug(
-                "[Pipeline] CHUNK SUMMARY | chunk_id=%d/%d | source=%s "
-                "| preview=%r | raw_qwen_response=%r | parsed_startup_count=%d",
-                chunk_num, total_chunks, source_url,
-                chunk[:120], response[:300], len(startups or []),
-            )
-
+            startups = qwen_client.extract_startups(chunk)
+            elapsed = time.time() - t0
             logger.info(
-                f"[Pipeline] Chunk {chunk_num}/{total_chunks}: {len(startups or [])} startup(s) extracted"
+                f"[Pipeline] Chunk {chunk_num}/{total_chunks}: "
+                f"{len(startups)} startup(s) in {elapsed:.1f}s"
             )
-            return startups or []
+            return startups
         except Exception as exc:
             logger.error(
                 f"[Pipeline] Chunk {chunk_num}/{total_chunks} failed "
