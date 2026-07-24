@@ -37,7 +37,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   display: flex; align-items: center; gap: 10px;
   padding: 6px 8px 18px;
 }
-.brand__logo { width: 30px; height: 30px; flex: none; }
+.brand__logo { width: 30px; height: 30px; flex: none; object-fit: contain; }
 .brand__name { font-weight: 700; letter-spacing: -0.02em; font-size: 16px; }
 .brand__sub  { color: var(--ink-3); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
 
