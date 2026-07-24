@@ -131,6 +131,7 @@ def upsert_startup(
                 proposed, risk = _diff_fields(master, startup, source, now.isoformat(), db)
                 _append_source_history(master, source_entry, flag_modified)
                 _rescore(master, source_url, db, flag_modified)
+                _backfill_source_excerpt(master, startup, flag_modified)
                 if proposed:
                     _create_review(
                         db, review_type="field_update", master=master, incoming_row=None,
@@ -187,12 +188,32 @@ def _insert_master(db, startup, name, website, fingerprint, stable_id,
     contact_raw = startup.get("contact_info") or ""
     linkedin_val = contact_raw if "linkedin.com" in contact_raw else None
 
+    # Phase H-1 internal keys (set by qwen_client.extract_startups): pull
+    # them out for the verification columns, then strip so they don't
+    # pollute raw_data or (via the **startup spread in _score_and_index)
+    # the Qdrant payload. Absent entirely for non-pipeline inserts (manual
+    # /add-startup) — .pop(..., None) handles that fine.
+    source_excerpt = startup.pop("_source_excerpt", None)
+    grounding_note = startup.pop("_grounding", None)
+    verification_evidence = {"h1_grounding": grounding_note} if grounding_note else None
+
     # stable_id is name-derived; two different same-named no-website companies
-    # would collide on it — mint a fresh id if it's already taken.
+    # would collide on it — mint a fresh id if it's already taken. As of
+    # Phase D-1, a same-name no-website RE-SIGHTING is caught upstream in
+    # matcher.py (exact_same_record) before ever reaching this insert path —
+    # so this branch firing now means a genuinely different company shares
+    # this exact normalized name (or the matcher was bypassed some other
+    # way). Logged so that case stays visible instead of silently minting a
+    # new id, per the plan's disclosed-risk decision.
     insert_id = stable_id
     if db.query(Startup).filter(Startup.id == stable_id).first() is not None:
         import uuid as _uuid
         insert_id = str(_uuid.uuid4())
+        logger.warning(
+            f"[Storage] stable_id collision for '{name}' (id={stable_id}) — "
+            f"minting a new id ({insert_id}) instead. Should be rare after "
+            f"Phase D-1; investigate if this fires often."
+        )
 
     row = Startup(
         id=insert_id,
@@ -220,6 +241,9 @@ def _insert_master(db, startup, name, website, fingerprint, stable_id,
         published_at=_parse_date(published_date),
         extracted_at=now,
         raw_data=startup,
+        verification_status="unverified",
+        verification_evidence=verification_evidence,
+        source_excerpt=source_excerpt,
     )
     db.add(row)
     db.commit()
@@ -251,6 +275,7 @@ def _score_and_index(row, startup, vector, fingerprint, source, source_url,
         "enrichment_score": row.enrichment_score or 0.0,
         "source_confidence": row.source_confidence or 0.0,
         "score_tier": row.score_tier or "WEAK_SIGNAL",
+        "verification_status": row.verification_status or "unverified",
     })
 
 
@@ -280,6 +305,68 @@ def _rescore(master, source_url, db, flag_modified) -> None:
         flag_modified(master, "score_breakdown")
     except Exception as exc:
         logger.warning(f"[Storage] rescore skipped: {exc}")
+
+
+def _backfill_source_excerpt(master, startup: dict, flag_modified) -> None:
+    """
+    Backfill Phase H-1's source_excerpt onto an existing master that doesn't
+    have one yet (23 Jul follow-up to Phase D-1).
+
+    Without this, a record flagged verification_status="flagged" with reason
+    "no_source_excerpt" (everything ingested before H-1 shipped) could never
+    actually be fixed by re-ingestion as the review-inbox notes promised: the
+    exact_same_record path only ever called _append_source_history/_rescore,
+    so a freshly-captured excerpt sitting right there in `startup` was read
+    and then silently discarded on every no_op/staged_update outcome — the
+    record stayed permanently unverifiable no matter how many times its
+    source was re-crawled. This doesn't verify anything itself (that's still
+    H-3's job) — it just stops throwing away the one thing H-3 needs to ever
+    be able to.
+
+    Never overwrites an existing excerpt (first-writer-wins is fine — the
+    goal is only to escape the "nothing on file" trap, not to keep the
+    excerpt fresh on every re-sighting).
+
+    Also re-queues the record for a real check: processing/verifier.py's
+    recheck only ever pulls verification_status="unverified" rows, so a
+    record already sitting "flagged" (specifically for reason
+    no_source_excerpt — see verifier.py's Phase A) would otherwise never be
+    picked up again even with an excerpt now on file. Only resets status for
+    THAT specific reason — a record flagged for an actual Layer-2 finding
+    (a real contradiction) is left alone; that still needs a human, not an
+    auto-reset.
+    """
+    if master.source_excerpt:
+        return
+    excerpt = startup.get("_source_excerpt")
+    if not excerpt:
+        return
+    master.source_excerpt = excerpt
+    grounding_note = startup.get("_grounding")
+
+    was_no_source_flag = (
+        master.verification_status == "flagged"
+        and (master.verification_evidence or {}).get("reason") == "no_source_excerpt"
+    )
+    if was_no_source_flag:
+        # The ONLY reason it was flagged no longer applies — re-queue it for
+        # a real check instead of leaving it stuck "flagged" forever. Clear
+        # the stale "no_source_excerpt" marker (replaced by the fresh
+        # grounding note if H-1 found anything, else just cleared).
+        master.verification_status = "unverified"
+        master.verification_notes = None
+        master.verified_at = None
+        master.verification_evidence = {"h1_grounding": grounding_note} if grounding_note else None
+        flag_modified(master, "verification_evidence")
+    elif grounding_note and not master.verification_evidence:
+        master.verification_evidence = {"h1_grounding": grounding_note}
+        flag_modified(master, "verification_evidence")
+
+    logger.info(
+        f"[Storage] Backfilled source_excerpt onto existing master "
+        f"'{master.name}' ({master.id}) from a re-sighting"
+        + (" — re-queued for recheck (was flagged only for missing excerpt)" if was_no_source_flag else "")
+    )
 
 
 # ── Diff (meaningful change detection) ────────────────────────────────────────
@@ -398,11 +485,60 @@ def _is_value_suppressed(db, master_id, field, value) -> bool:
 
 # ── Review creation ───────────────────────────────────────────────────────────
 
+def _has_equivalent_pending_review(db, *, review_type, master_id, proposed_changes, incoming_name) -> bool:
+    """
+    True if a pending review already covers this exact issue for this master
+    (Phase D-1, 22 Jul). Without this, re-running the same source N times
+    stages N identical review items for a human to triage — this caps it at
+    one open review per real issue no matter how many times ingestion re-runs.
+
+    field_update           -> an existing pending field_update whose proposed
+                              {field: new_value} mapping is identical.
+    possible_duplicate/anomaly -> an existing pending review of the same type
+                              whose incoming_name normalizes the same.
+    """
+    from database.models import DuplicateReview
+
+    q = db.query(DuplicateReview).filter(
+        DuplicateReview.master_id == master_id,
+        DuplicateReview.review_type == review_type,
+        DuplicateReview.status == "pending",
+    )
+    if review_type == "field_update":
+        new_changes = {f: c.get("new") for f, c in (proposed_changes or {}).items()}
+        return any(
+            {f: c.get("new") for f, c in (existing.proposed_changes or {}).items()} == new_changes
+            for existing in q.all()
+        )
+    norm_name = normalize_company_name(incoming_name or "")
+    return any(
+        normalize_company_name(existing.incoming_name or "") == norm_name
+        for existing in q.all()
+    )
+
+
 def _create_review(db, *, review_type, master, incoming_row, incoming_data,
                    proposed_changes, evidence, risk_level, confidence, source, run_id) -> None:
-    """Create a staged review row. Never raises (a review failure must not fail the upsert)."""
+    """
+    Create a staged review row. Never raises (a review failure must not fail
+    the upsert). Idempotent (Phase D-1): skips if an equivalent pending
+    review already exists for this master, so re-ingestion never stacks
+    duplicate review items.
+    """
     try:
         from database.models import DuplicateReview
+
+        if master is not None and _has_equivalent_pending_review(
+            db, review_type=review_type, master_id=master.id,
+            proposed_changes=proposed_changes,
+            incoming_name=(incoming_data.get("name") or "").strip(),
+        ):
+            logger.debug(
+                f"[Storage] Skipping duplicate {review_type} review for "
+                f"'{master.name}' — an equivalent pending review already exists"
+            )
+            return
+
         review = DuplicateReview(
             review_type=review_type,
             master_id=master.id if master is not None else None,

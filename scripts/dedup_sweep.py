@@ -33,6 +33,17 @@ Merge rule (reuses processing/storage.py::_fill_empty_fields — the same
 - Losers are deleted from PostgreSQL and Qdrant.
 - The keeper is re-embedded and re-upserted to Qdrant with the merged data.
 
+Review resolution (Phase D-2, 23 Jul) — every merge also resolves any
+PENDING review referencing a row in the group, so nothing dangles on a
+row that's about to be deleted:
+  - possible_duplicate/anomaly reviews where BOTH sides collapse to the
+    same keeper are now "is this the same as itself" — moot. Marked
+    rejected (no re-flagging).
+  - Everything else (a field_update whose master was a loser, or a
+    possible_duplicate/anomaly where only ONE side was in this group) is
+    RE-POINTED to the keeper instead — the review survives and still makes
+    sense, just against the surviving record, never silently dropped.
+
 Usage
 -----
     python scripts/dedup_sweep.py             # dry run: prints the merge plan, writes nothing
@@ -42,6 +53,7 @@ import sys
 import os
 import argparse
 import logging
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -205,6 +217,54 @@ def _merge_group(group, db, apply: bool) -> dict:
     return summary
 
 
+def _resolve_reviews(group_ids: set, keeper_id: str, db, apply: bool) -> dict:
+    """
+    After merging `group_ids` into `keeper_id`, resolve every PENDING review
+    referencing a row in this group (as master_id or incoming_id) — see
+    module docstring "Review resolution" for the two outcomes.
+
+    Dry run (apply=False) computes and rolls back, same pattern as
+    _merge_group — nothing written.
+    """
+    from database.models import DuplicateReview
+
+    reviews = (
+        db.query(DuplicateReview)
+        .filter(DuplicateReview.status == "pending")
+        .filter(
+            (DuplicateReview.master_id.in_(group_ids))
+            | (DuplicateReview.incoming_id.in_(group_ids))
+        )
+        .all()
+    )
+
+    resolved_ids, repointed_ids = [], []
+    for r in reviews:
+        old_master = str(r.master_id) if r.master_id else None
+        old_incoming = str(r.incoming_id) if r.incoming_id else None
+        new_master = keeper_id if old_master in group_ids else old_master
+        new_incoming = keeper_id if old_incoming in group_ids else old_incoming
+
+        both_collapse = (
+            r.review_type in ("possible_duplicate", "anomaly")
+            and new_master and new_incoming and new_master == new_incoming
+        )
+        if both_collapse:
+            r.status = "rejected"
+            r.resolved_at = datetime.utcnow()
+            resolved_ids.append(str(r.id))
+        else:
+            r.master_id = uuid.UUID(new_master) if new_master else None
+            r.incoming_id = uuid.UUID(new_incoming) if new_incoming else None
+            repointed_ids.append(str(r.id))
+
+    if not apply:
+        db.rollback()
+    else:
+        db.commit()
+    return {"resolved": len(resolved_ids), "repointed": len(repointed_ids)}
+
+
 def run(apply: bool) -> None:
     from database.connection import SessionLocal
     from database.models import Startup
@@ -223,24 +283,40 @@ def run(apply: bool) -> None:
         logger.info(f"Found {len(groups)} duplicate group(s):\n")
 
         total_losers = 0
+        total_resolved = 0
+        total_repointed = 0
         for i, group in enumerate(groups, 1):
             summary = _merge_group(group, db, apply=apply)
             total_losers += len(summary["losers"])
+
+            group_ids = {str(r.id) for r in group}
+            review_summary = _resolve_reviews(group_ids, summary["keeper_id"], db, apply=apply)
+            total_resolved += review_summary["resolved"]
+            total_repointed += review_summary["repointed"]
+
             logger.info(f"[{i}] KEEP:   '{summary['keeper']}' ({summary['keeper_id']})")
             for name, id_ in summary["losers"]:
                 logger.info(f"     MERGE & DELETE: '{name}' ({id_})")
             if summary["fields_filled"]:
                 logger.info(f"     Fields filled on keeper: {', '.join(summary['fields_filled'])}")
+            if review_summary["resolved"] or review_summary["repointed"]:
+                logger.info(
+                    f"     Reviews: {review_summary['resolved']} resolved as moot, "
+                    f"{review_summary['repointed']} re-pointed to the keeper"
+                )
             logger.info("")
 
         if apply:
             logger.info(
-                f"Done. Merged {total_losers} duplicate row(s) into {len(groups)} canonical record(s)."
+                f"Done. Merged {total_losers} duplicate row(s) into {len(groups)} canonical record(s). "
+                f"{total_resolved} review(s) resolved as moot, {total_repointed} re-pointed to survivors."
             )
         else:
             logger.info(
                 f"DRY RUN — no changes made. {total_losers} row(s) would be merged into "
-                f"{len(groups)} canonical record(s). Re-run with --apply to execute for real."
+                f"{len(groups)} canonical record(s). {total_resolved} review(s) would resolve as moot, "
+                f"{total_repointed} would be re-pointed to survivors. "
+                f"Re-run with --apply to execute for real."
             )
     finally:
         db.close()

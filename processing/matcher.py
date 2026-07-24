@@ -287,6 +287,33 @@ def build_match_report(startup: dict, db, incoming_vector: Optional[List[float]]
                 _, ev = _score_pair(startup, row, 1.0, domain_match=True)
                 return MatchReport("exact_same_record", str(row.id), row.name, 1.0,
                                    "low", ev, "exact name+domain fingerprint")
+    else:
+        # No usable domain (no website, or a shared/multi-tenant one like
+        # linkedin.com) — generate_fingerprint already hashes
+        # normalize(name) + "|" + "" for these, so identity is stable by
+        # name alone (Phase D-1, 22 Jul). An exact normalized-name match
+        # against another no-website master IS the same record — re-running
+        # a source must not multiply it. Only matches OTHER no-website
+        # masters: a websited master's identity is already anchored by its
+        # domain and must never be claimed by name alone. Oldest match wins
+        # (the original sighting is canonical). Accepted, disclosed risk:
+        # two genuinely different no-website companies sharing an exact
+        # normalized name collapse into one (rare).
+        normalized = normalize_company_name(name)
+        if normalized:
+            row = (
+                db.query(Startup)
+                .filter(
+                    Startup.normalized_name == normalized,
+                    (Startup.website.is_(None)) | (Startup.website == ""),
+                )
+                .order_by(Startup.created_at.asc())
+                .first()
+            )
+            if row:
+                _, ev = _score_pair(startup, row, 1.0, domain_match=False)
+                return MatchReport("exact_same_record", str(row.id), row.name, 1.0,
+                                   "low", ev, "no-website exact-name identity")
 
     # ── Run all layers: block → score every candidate → best ─────────────────
     candidates = _block_candidates(startup, incoming_vector, db)
