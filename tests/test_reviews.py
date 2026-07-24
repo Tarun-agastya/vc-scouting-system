@@ -49,13 +49,18 @@ def test_reject_field_update_suppresses_reflag(make, db):
 def test_approve_duplicate_merges_rows(make, db):
     r1, _ = make("Dup Keeper", city="Vienna", description="telemedicine for rural clinics")
     r2, s2 = make("Dup Keeper", city="Vienna", description="remote doctor visits for rural areas")
-    # only proceed if it staged a duplicate
+    # only proceed if it staged a duplicate FOR THESE ROWS — scoped by id, not
+    # "whichever possible_duplicate is newest in the whole table", which on a
+    # live/shared DB can pick up an unrelated review (confirmed 23 Jul: an
+    # orphaned pre-existing review surfaced this way once Phase D-1 correctly
+    # stopped "Dup Keeper" itself from ever staging a duplicate).
     rev = db.query(DuplicateReview).filter(
         DuplicateReview.review_type == "possible_duplicate",
         DuplicateReview.status == "pending",
+        DuplicateReview.master_id.in_([r1, r2]),
     ).order_by(DuplicateReview.created_at.desc()).first()
     if rev is None:
-        return  # scoring landed it elsewhere; covered by storage tests
+        return  # scoring landed it elsewhere (or D-1 recognized them as the same record); covered by storage tests
     master_id = str(rev.master_id)
     asyncio.run(R.approve_review(str(rev.id), db=SessionLocal()))
     db.expire_all()

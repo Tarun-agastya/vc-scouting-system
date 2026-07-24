@@ -43,6 +43,7 @@ export default {
               <option value="pending">Pending</option>
               <option value="approved">Approved</option>
               <option value="rejected">Rejected</option>
+              <option value="deleted">Deleted</option>
             </select>
             <select class="select" id="f-type" style="max-width:190px">
               <option value="">All types</option>
@@ -173,13 +174,19 @@ export default {
         bodyHtml = `
           <div class="grid-2">
             <div>
-              <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Existing record</div>
+              <div class="row" style="margin-bottom:6px">
+                <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Existing record</div>
+                ${isPending ? `<button class="btn btn--ghost btn--sm" style="margin-left:auto;font-size:11px" id="delete-master-btn" title="Neither merge nor keep — permanently remove this record">🗑 Delete</button>` : ""}
+              </div>
               <div class="stack" style="gap:4px;font-size:13px">
                 ${PROFILE_FIELDS.map((f) => `<div><span class="dim">${f}:</span> ${esc(m[f], "—")}</div>`).join("")}
               </div>
             </div>
             <div>
-              <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Incoming record</div>
+              <div class="row" style="margin-bottom:6px">
+                <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Incoming record</div>
+                ${isPending ? `<button class="btn btn--ghost btn--sm" style="margin-left:auto;font-size:11px" id="delete-incoming-btn" title="Neither merge nor keep — permanently remove this record">🗑 Delete</button>` : ""}
+              </div>
               <div class="stack" style="gap:4px;font-size:13px">
                 ${PROFILE_FIELDS.map((f) => `<div><span class="dim">${f}:</span> ${esc(inc[f], "—")}</div>`).join("")}
               </div>
@@ -221,31 +228,48 @@ export default {
           </div>
 
           ${isPending ? `
-            <div class="row" style="gap:10px">
+            <div class="row wrap" style="gap:10px">
               <button class="btn btn--primary" id="approve-btn">
                 ✅ ${rv.review_type === "field_update" ? "Apply changes" : "Merge — same company"}
               </button>
               <button class="btn btn--danger" id="reject-btn">
                 ✋ ${rv.review_type === "field_update" ? "Keep current (reject)" : "Keep separate — different"}
               </button>
+              ${rv.review_type === "field_update" ? `
+                <button class="btn btn--ghost" id="delete-master-btn" style="margin-left:auto">
+                  🗑 Delete this record
+                </button>` : ""}
             </div>` : `<div class="chip">Already ${rv.status}</div>`}
         </div>`;
 
       detailEl.querySelector("#approve-btn")?.addEventListener("click", () => act("approve"));
       detailEl.querySelector("#reject-btn")?.addEventListener("click", () => act("reject"));
+      detailEl.querySelector("#delete-master-btn")?.addEventListener("click", () =>
+        act("delete", "master", rv.master_name || rv.master?.name));
+      detailEl.querySelector("#delete-incoming-btn")?.addEventListener("click", () =>
+        act("delete", "incoming", rv.incoming_name || rv.incoming?.name));
     }
 
-    async function act(kind) {
+    async function act(kind, target, recordName) {
       if (state.busy || !state.selectedId) return;
+      if (kind === "delete") {
+        const label = recordName ? `"${recordName}"` : "this record";
+        if (!confirmAction(`Permanently delete ${label}? This removes it from the database entirely — not a merge, not a reject. This cannot be undone.`)) return;
+      }
       state.busy = true;
       try {
         if (kind === "approve") await api.approveReview(state.selectedId);
-        else await api.rejectReview(state.selectedId);
-        toast(kind === "approve" ? "Approved" : "Rejected — won't be flagged again");
+        else if (kind === "reject") await api.rejectReview(state.selectedId);
+        else await api.deleteReview(state.selectedId, target);
+        toast(
+          kind === "approve" ? "Approved" :
+          kind === "reject" ? "Rejected — won't be flagged again" :
+          "Deleted"
+        );
         await loadCounts();
         await loadList();
       } catch (err) {
-        toast(`${kind === "approve" ? "Approve" : "Reject"} failed: ${err.message}`, "error");
+        toast(`${kind === "approve" ? "Approve" : kind === "reject" ? "Reject" : "Delete"} failed: ${err.message}`, "error");
       } finally {
         state.busy = false;
       }

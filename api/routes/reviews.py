@@ -10,6 +10,10 @@ Nothing in the master DB changes except through an explicit approve here.
   POST   /reviews/{id}/approve    field_update -> apply diff to master;
                                   duplicate/anomaly -> merge the two rows
   POST   /reviews/{id}/reject     discard + record suppression (no re-flagging)
+  POST   /reviews/{id}/delete     permanently remove the master and/or incoming
+                                  record — for "neither merge nor keep, just
+                                  remove this data" (e.g. an out-of-scope
+                                  company that should never have been stored)
 """
 import logging
 from datetime import datetime
@@ -78,6 +82,7 @@ def _reindex(db, master: Startup) -> None:
         "enrichment_score": master.enrichment_score or 0.0,
         "source_confidence": master.source_confidence or 0.0,
         "score_tier": master.score_tier or "WEAK_SIGNAL",
+        "verification_status": master.verification_status or "unverified",
     })
 
 
@@ -121,6 +126,40 @@ def _merge_records(db, keeper: Startup, loser: Startup, incoming_data: dict) -> 
         logger.warning(f"[Reviews] Qdrant delete failed for loser {loser.id}: {exc}")
     db.delete(loser)
     db.commit()
+
+
+def _delete_startup_row(db, startup_id, keep_review_id) -> Optional[dict]:
+    """
+    Permanently remove one Startup row: its Qdrant point, any OTHER pending
+    review referencing it (that review's subject just vanished, so it's
+    moot — not left dangling on a record that no longer exists), and the
+    row itself. `keep_review_id` is excluded from the moot-review cleanup —
+    the caller resolves that one itself. Returns {"id", "name"} or None if
+    the row was already gone.
+    """
+    from vector_db.qdrant_store import qdrant_store
+
+    row = db.query(Startup).filter(Startup.id == startup_id).first()
+    if row is None:
+        return None
+    name = row.name
+
+    db.query(DuplicateReview).filter(
+        (DuplicateReview.master_id == startup_id) | (DuplicateReview.incoming_id == startup_id),
+        DuplicateReview.id != keep_review_id,
+        DuplicateReview.status == "pending",
+    ).delete(synchronize_session=False)
+    db.query(SuppressedMatch).filter(
+        (SuppressedMatch.master_id == startup_id) | (SuppressedMatch.other_id == startup_id)
+    ).delete(synchronize_session=False)
+
+    db.delete(row)
+    try:
+        qdrant_store.delete_startup(str(startup_id))
+    except Exception as exc:
+        logger.warning(f"[Reviews] Qdrant delete failed for {startup_id}: {exc}")
+
+    return {"id": str(startup_id), "name": name}
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -254,3 +293,64 @@ async def reject_review(review_id: str, db: Session = Depends(get_db)):
     r.resolved_at = datetime.utcnow()
     db.commit()
     return {"status": "rejected", "review_type": r.review_type}
+
+
+@router.post("/{review_id}/delete")
+async def delete_review_data(
+    review_id: str,
+    target: str = Query(..., description='"incoming" | "master" | "both"'),
+    db: Session = Depends(get_db),
+):
+    """
+    Permanently remove the master and/or incoming record tied to this
+    review — the third outcome besides approve (merge) and reject (keep
+    both, remember they're different): sometimes a reviewer wants neither —
+    the data itself is wrong or out of scope (e.g. a non-European company
+    an extraction pulled in by mistake) and should just be gone.
+
+    target="incoming": delete only the incoming record (the common case —
+      an out-of-scope/bad extraction flagged against an otherwise-fine
+      master). Only valid for possible_duplicate/anomaly, which have a
+      separate incoming row; field_update has none (incoming_id is always
+      NULL there — see DuplicateReview's docstring).
+    target="master": delete only the master.
+    target="both": delete both records.
+
+    Any OTHER pending review whose subject just got deleted is cleaned up
+    too (it would otherwise dangle on a vanished record). This review is
+    marked "deleted" — distinct from "rejected", so the audit trail is
+    honest about what actually happened.
+    """
+    if target not in ("incoming", "master", "both"):
+        raise HTTPException(status_code=422, detail='target must be "incoming", "master", or "both"')
+
+    r = db.query(DuplicateReview).filter(DuplicateReview.id == review_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Review not found")
+    if r.status != "pending":
+        raise HTTPException(status_code=409, detail=f"Review already {r.status}")
+
+    if target in ("incoming", "both") and not r.incoming_id:
+        raise HTTPException(
+            status_code=422,
+            detail="This review has no separate incoming record to delete "
+                   "(field_update reviews only have a master) — use target=master",
+        )
+
+    deleted = []
+    if target in ("incoming", "both"):
+        d = _delete_startup_row(db, r.incoming_id, keep_review_id=review_id)
+        if d:
+            deleted.append({"role": "incoming", **d})
+    if target in ("master", "both") and r.master_id:
+        d = _delete_startup_row(db, r.master_id, keep_review_id=review_id)
+        if d:
+            deleted.append({"role": "master", **d})
+
+    if not deleted:
+        raise HTTPException(status_code=410, detail="Nothing left to delete — record(s) already gone")
+
+    r.status = "deleted"
+    r.resolved_at = datetime.utcnow()
+    db.commit()
+    return {"status": "deleted", "review_type": r.review_type, "deleted": deleted}
