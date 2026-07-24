@@ -168,6 +168,7 @@ web_sources:
     crawl_strategy: website_scrape
     crawl_frequency: weekly
     priority: HIGH
+    render_mode: always   # JS directory — static fetch sees a 1.5KB shell, 0 startups (probe 23 Jul)
 
   # ── MEDIUM priority — scraped biweekly ────────────────────────────────────
   - source_id: baystartup
@@ -238,6 +239,25 @@ web_sources:
     crawl_strategy: website_scrape
     crawl_frequency: weekly
     priority: MEDIUM
+# Added via dashboard on 2026-07-17
+  - source_id: start_base
+    source_name: Start Base
+    source_type: startup_network
+    location: ''
+    primary_url: https://www.startbase.de/
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: MEDIUM
+# Added via dashboard on 2026-07-23
+  - source_id: zollhof
+    source_name: ZOLLHOF Tech Incubator
+    source_type: incubator
+    location: Nuremberg, Germany
+    primary_url: https://zollhof.de/
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+    render_mode: always   # JS SPA — static fetch sees 41 chars (probe 23 Jul)
 newsletter_senders: []
 
 

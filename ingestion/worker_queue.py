@@ -172,7 +172,7 @@ async def chunker_task(
     string operations that do not need a thread executor.
     Exits when it receives the None sentinel from the crawler.
     """
-    from ingestion.chunker import split as split_chunks
+    from ingestion.chunker import split_web_page as split_chunks
     from ingestion.candidate_filter import is_relevant
 
     while True:

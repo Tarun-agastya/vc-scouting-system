@@ -96,6 +96,14 @@ class WebSourceEntry(BaseModel):
     crawl_strategy:  CrawlStrategy = CrawlStrategy.WEBSITE_SCRAPE
     crawl_frequency: str = "weekly"
     priority:        Priority = Priority.MEDIUM
+    # "auto"   → fast static fetch, Playwright only as a fallback for empty shells
+    # "always" → render every page in a headless browser first. Set this for
+    #   JavaScript-rendered directory sites (React/Vue/Next) whose startup list
+    #   loads client-side and is INVISIBLE to a plain fetch — a static fetch of
+    #   munich-startup.de's directory returns a 1.5 KB nav shell (0 startups),
+    #   but a rendered page is ~11 KB with the actual companies. Diagnosed 23 Jul
+    #   via scripts/probe_page.py. Costs a few seconds/page, so it's opt-in.
+    render_mode:     str = "auto"   # "auto" | "always"
 
 
 class ParsedSources:
