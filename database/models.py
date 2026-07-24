@@ -69,6 +69,19 @@ class Startup(Base):
     score_breakdown   = Column(JSON, nullable=True)   # Phase 3: explainable breakdown
     last_enriched_at  = Column(DateTime, nullable=True)
 
+    # Verification / recheck state (Phase H-2/H-3) — a record's TRUST state,
+    # distinct from enrichment_score (which measures completeness, not
+    # truthfulness). Every record starts "unverified"; a Phase H-3 recheck
+    # pass (deterministic re-ground + LLM deep-recheck against source_excerpt)
+    # sets it to "verified" (no unsupported claims found) or "flagged" (a
+    # field contradicted its own source text). Never auto-corrected —
+    # flagged records wait for a human, consistent with the S-3b model.
+    verification_status   = Column(String(20), default="unverified", index=True)  # unverified | verified | flagged
+    verification_notes    = Column(Text, nullable=True)   # human/LLM-readable recheck summary
+    verification_evidence = Column(JSON, nullable=True)   # per-field grounded/nulled/flagged detail
+    verified_at            = Column(DateTime, nullable=True)
+    source_excerpt          = Column(Text, nullable=True)  # the extraction chunk this record came from (Phase H-1)
+
     # AI-generated insights
     ai_summary = Column(Text)
     investment_thesis = Column(Text)
@@ -193,6 +206,8 @@ class DuplicateReview(Base):
     status transitions:
       pending  → approved  (field_update → apply diff to master; duplicate → merge rows)
       pending  → rejected  (discard; record suppression so it isn't re-flagged)
+      pending  → deleted   (neither merge nor keep — permanently remove the
+                            master and/or incoming record itself; 23 Jul)
     """
     __tablename__ = "duplicate_reviews"
 
@@ -221,7 +236,7 @@ class DuplicateReview(Base):
     source  = Column(String(200))
     run_id  = Column(String(64), nullable=True)
 
-    status     = Column(String(30), default="pending", index=True)  # pending | approved | rejected
+    status     = Column(String(30), default="pending", index=True)  # pending | approved | rejected | deleted
 
     created_at  = Column(DateTime, default=datetime.utcnow)
     resolved_at = Column(DateTime, nullable=True)
