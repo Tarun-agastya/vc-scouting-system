@@ -58,6 +58,8 @@ export const api = {
   // ── Startups ──────────────────────────────────────────────────────────
   listStartups: (filters) => get("/scout/list", filters),
   getStartup: (id) => get(`/scout/startup/${id}`),
+  /** Distinct source websites actually present in the DB, with counts — powers the Browse source filter. */
+  listSourceSites: () => get("/scout/source-sites"),
   editStartup: (id, changes) => patch(`/scout/startup/${id}`, changes),
   deleteStartup: (id) => del(`/scout/startup/${id}`, { confirm: "true" }),
   /** Semantic (vector) search — different endpoint + shape from listStartups. */
@@ -69,6 +71,8 @@ export const api = {
   getReview: (id) => get(`/reviews/${id}`),
   approveReview: (id) => post(`/reviews/${id}/approve`),
   rejectReview: (id) => post(`/reviews/${id}/reject`),
+  /** target: "incoming" | "master" | "both" — neither merge nor keep, just remove the data */
+  deleteReview: (id, target) => post(`/reviews/${id}/delete?target=${target}`),
 
   // ── Sources ───────────────────────────────────────────────────────────
   listSources: () => get("/sources"),
@@ -80,11 +84,19 @@ export const api = {
   ingestionStatus: (runId) => get("/ingestion/status", runId ? { run_id: runId } : {}),
   runAll: () => post("/ingestion/run-all"),
   runRss: () => post("/ingestion/rss", { max_entries: 50 }),
-  runNewsletters: () => post("/ingestion/newsletters"),
+  /** days: search window — omit for the routine 14-day top-up, or pass e.g. 3650 for a full backfill. */
+  runNewsletters: (days) => post(`/ingestion/newsletters${days ? `?days=${days}` : ""}`),
   runAccelerators: () => post("/ingestion/scrape-accelerators"),
   runUniversities: () => post("/ingestion/scrape-universities"),
   /** Targeted single-source run -> {status, run_id} */
   runTargeted: (target) => post("/ingestion/targeted", target),
+  /** Cancel the currently-running ingestion (or a specific run_id). */
+  stopIngestion: (runId) => post(`/ingestion/stop${runId ? `?run_id=${runId}` : ""}`),
+
+  // ── Verification (Phase H-3 / Phase W) ───────────────────────────────
+  verificationStatus: () => get("/verification/status"),
+  runRecheck: (limit = 20) => post(`/verification/recheck?limit=${limit}`),
+  runWebVerify: (limit = 15) => post(`/verification/web-verify?limit=${limit}`),
 };
 
 /* ── Formatting helpers (shared by all views) ─────────────────────────── */

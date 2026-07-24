@@ -261,12 +261,11 @@ web_sources:
 newsletter_senders: []
 
 
-# Gmail subject-line search terms (OR'd together) used to find newsletters
-# worth looking at in the inbox.
-newsletter_search_terms:
-  - startup
-  - venture
-  - newsletter
-  - funding
-  - accelerator
-  - incubator
+# OPTIONAL Gmail subject-line search terms (OR'd together) to narrow which
+# emails get fetched. Leave empty (the default) to process every email in
+# the inbox within the 14-day window — this is a dedicated scouting inbox,
+# so relevance is already filtered by content downstream per chunk. Real
+# newsletter subject lines (e.g. "Kann das fliegen?") rarely contain literal
+# words like "startup" or "funding" — a populated list here previously
+# caused ~85% of real newsletters to be silently skipped.
+newsletter_search_terms: []

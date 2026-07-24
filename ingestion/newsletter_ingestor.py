@@ -17,15 +17,43 @@ TOKEN_PATH   = os.path.join(_PROJECT_ROOT, "credentials", "token.json")
 _STATE_PATH  = os.path.join(_PROJECT_ROOT, "credentials", "newsletter_state.json")
 
 
-def _build_search_query() -> str:
+def _build_search_query(days: int = 14) -> str:
     """
-    Build the Gmail search query from config/sources.yaml's
-    newsletter_search_terms, re-read fresh on every call (Phase S: dynamic
-    sources). Falls back to a sane default if the list is empty.
+    Build the Gmail search query. This is a dedicated scouting inbox, so by
+    default every email in the window is fetched and relevance is filtered
+    by content downstream (candidate_filter.is_relevant, per chunk) — not by
+    guessing what words a newsletter's subject line contains.
+
+    days controls the window: 14 for the routine scheduled top-up, a much
+    larger value (see run_ingestion's `days` param) for an explicit backfill
+    sweep of older mail the rolling window never reaches on its own — a real
+    gap confirmed live 24 Jul: a 61-message mailbox had only its most recent
+    15 messages inside the 14-day window, permanently missing the other 46
+    (32 of which sit in the Promotions category) on every routine run.
+
+    No date/category restriction is applied beyond `newer_than:{days}d` —
+    Gmail's default search scope already covers every category tab
+    (Primary/Promotions/Social/Updates), confirmed live: a plain
+    `newer_than:14d` query returned the exact same message set as the union
+    of per-category searches. The earlier suspicion that Promotions mail was
+    being excluded by the query itself was wrong; the real cause was the
+    14-day window never reaching older mail at all.
+
+    A subject:(...) keyword restriction used to be applied unconditionally
+    and silently dropped ~85% of real newsletters — subject lines like
+    "Kann das fliegen?" or "\U0001f7e3 Milliardenrechnung von AWS" don't
+    contain literal words like "startup" or "funding".
+
+    newsletter_search_terms (config/sources.yaml) is kept as an OPTIONAL
+    narrowing filter, only applied when the list is non-empty. Re-read fresh
+    on every call (Phase S: dynamic sources).
     """
-    terms = get_newsletter_search_terms() or ["startup", "venture", "newsletter"]
-    subject_clause = " OR ".join(terms)
-    return f"subject:({subject_clause}) newer_than:14d"
+    terms = get_newsletter_search_terms()
+    date_clause = f"newer_than:{days}d"
+    if terms:
+        subject_clause = " OR ".join(terms)
+        return f"subject:({subject_clause}) {date_clause}"
+    return date_clause
 
 
 class NewsletterIngestor:
@@ -110,10 +138,26 @@ class NewsletterIngestor:
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
-    def run_ingestion(self, max_messages: int = 50) -> int:
+    def run_ingestion(self, max_messages: int = 50, days: int = 14) -> int:
         """
         Fetch and process Gmail newsletters. Returns total startups stored.
         Already-processed messages are skipped via the state file.
+
+        days: the search window (see _build_search_query). Default 14 for
+          the routine scheduled top-up. Pass a much larger value (e.g. 3650)
+          for a one-time backfill sweep of older mail the rolling window
+          never reaches — safe to re-run any time since already-processed
+          messages are always skipped regardless of window size.
+
+        max_messages: caps how many NEW messages get PROCESSED this run —
+          it does NOT cap how many are listed (see _list_all_message_ids;
+          listing paginates through the full match set). This matters for
+          a backfill: without pagination, a >50-message window would
+          silently see only its 50 most-recent matches and permanently miss
+          the rest, exactly the bug that caused this fix (confirmed live:
+          a 61-message mailbox has more matches than the old maxResults=50
+          listing cap allowed, so anything past page one was invisible on
+          every single run, forever).
         """
         if not self._service:
             self._authenticate()
@@ -121,41 +165,67 @@ class NewsletterIngestor:
         state = self._load_state()
         processed_ids: set = set(state.get("processed_ids", []))
 
-        result = (
-            self._service.users()
-            .messages()
-            .list(userId="me", q=_build_search_query(), maxResults=max_messages)
-            .execute()
-        )
-
-        messages = result.get("messages", [])
-        logger.info(f"[Gmail] Found {len(messages)} matching emails")
+        all_ids = self._list_all_message_ids(_build_search_query(days))
+        logger.info(f"[Gmail] {len(all_ids)} messages match the {days}-day window")
 
         new_processed: list = []
         total_startups = 0
 
-        for msg in messages:
-            msg_id = msg["id"]
+        for msg_id in all_ids:
             if msg_id in processed_ids:
                 logger.debug(f"[Gmail] Skipping already-processed message {msg_id}")
                 continue
+            if len(new_processed) >= max_messages:
+                logger.info(
+                    f"[Gmail] Reached max_messages={max_messages} for this run — "
+                    f"{len(all_ids) - len(processed_ids) - len(new_processed)} more "
+                    "new message(s) remain for the next run"
+                )
+                break
 
             count = self._process_message(msg_id)
             total_startups += count
             new_processed.append(msg_id)
 
         if new_processed:
-            # Retain only the last 500 IDs so the state file stays small
-            all_ids = list(processed_ids) + new_processed
-            state["processed_ids"] = all_ids[-500:]
+            # Retain only the last 2000 IDs so the state file stays small but
+            # still comfortably covers a full-mailbox backfill (500 was sized
+            # for the old 14-day-only window; a backfill can legitimately
+            # process far more than 500 messages in its lifetime).
+            retained_ids = list(processed_ids) + new_processed
+            state["processed_ids"] = retained_ids[-2000:]
             self._save_state(state)
 
         logger.info(
             f"[Gmail] Done — {len(new_processed)} new emails processed, "
-            f"{len(messages) - len(new_processed)} skipped (already seen), "
+            f"{len(all_ids) - len(new_processed)} already seen or beyond this run's cap, "
             f"{total_startups} startups stored"
         )
         return total_startups
+
+    def _list_all_message_ids(self, query: str, *, page_size: int = 100, hard_cap: int = 5000) -> list:
+        """
+        List every message ID matching `query`, following Gmail's
+        nextPageToken across as many pages as it takes — the previous
+        version passed maxResults straight through with no pagination, so
+        any window with more than maxResults (default 50) matches silently
+        lost everything past the first page. hard_cap is just a sanity
+        backstop against a runaway loop; a real mailbox won't get close.
+        """
+        ids: list = []
+        page_token = None
+        while True:
+            resp = (
+                self._service.users()
+                .messages()
+                .list(userId="me", q=query, maxResults=page_size, pageToken=page_token)
+                .execute()
+            )
+            ids.extend(m["id"] for m in resp.get("messages", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token or len(ids) >= hard_cap:
+                break
+        return ids
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
@@ -254,12 +324,16 @@ class NewsletterIngestor:
 
         Returns total startups stored (new inserts + dedup merges).
         """
-        from ingestion.chunker import split as split_chunks
+        from ingestion.chunker import split_blurbs
         from ingestion.candidate_filter import is_relevant
         from reasoning.qwen_client import qwen_client
         from processing.storage import upsert_startup
 
-        chunks = split_chunks(text)
+        # Phase H-1: newsletters are a sequence of short, independent
+        # company blurbs — split_blurbs keeps one company per chunk (no
+        # overlap), which is what stops cross-attribution between
+        # neighboring companies in the same digest. See chunker.py docstring.
+        chunks = split_blurbs(text)
         relevant = [c for c in chunks if is_relevant(c)]
 
         logger.info(

@@ -51,7 +51,7 @@ class RunRecord:
     run_id:     str
     kind:       str               # "rss" | "newsletter" | "web" | "all"
     source:     str               # human label or URL
-    status:     str = "queued"    # queued | running | completed | failed | skipped
+    status:     str = "queued"    # queued | running | completed | failed | skipped | cancelled
     started_at: Optional[str] = None
     ended_at:   Optional[str] = None
     error:      Optional[str] = None
@@ -120,6 +120,11 @@ class ScoutController:
         self._gpu_lock: Optional[asyncio.Lock] = None
         self._runs: "OrderedDict[str, RunRecord]" = OrderedDict()
         self._current_run_id: Optional[str] = None
+        # run_id -> the asyncio.Task actually executing _execute() for it, so
+        # stop_run() can cancel a specific (or the current) run without the
+        # blunt "restart the whole API process" hammer that was the only
+        # option before (see stop_run's docstring).
+        self._tasks: dict = {}
 
     # ── GPU mutex ──────────────────────────────────────────────────────────────
 
@@ -193,33 +198,90 @@ class ScoutController:
 
         ``work`` is a zero-arg callable returning a coroutine that performs the
         ingestion and returns a metrics dict.  Never raises — all failures are
-        recorded on the RunRecord.
+        recorded on the RunRecord, including a user-requested stop (status
+        "cancelled" — see stop_run()).
         """
-        reason = await self._preflight()
-        if reason:
-            rec.status = "skipped"
-            rec.error = reason
-            rec.ended_at = _now()
-            logger.warning(f"[Controller] Skipping '{rec.source}' — {reason}")
-            return rec
+        # Registered as soon as this coroutine starts running as a Task —
+        # asyncio.current_task() returns the Task wrapping THIS coroutine
+        # regardless of how the caller created it (create_task, gather, …),
+        # so no caller needs to change how it launches a run.
+        task = asyncio.current_task()
+        if task is not None:
+            self._tasks[rec.run_id] = task
 
-        async with self.gpu_mutex:
-            self._current_run_id = rec.run_id
-            rec.status = "running"
-            rec.started_at = _now()
-            logger.info(f"[Controller] ▶ Running {rec.kind} '{rec.source}' ({rec.run_id})")
-            try:
-                rec.metrics = await work() or {}
-                rec.status = "completed"
-                logger.info(f"[Controller] ✓ Completed '{rec.source}' ({rec.run_id})")
-            except Exception as exc:
-                rec.status = "failed"
-                rec.error = str(exc)
-                logger.error(f"[Controller] ✗ Failed '{rec.source}': {exc}")
-            finally:
+        try:
+            reason = await self._preflight()
+            if reason:
+                rec.status = "skipped"
+                rec.error = reason
                 rec.ended_at = _now()
-                self._current_run_id = None
+                logger.warning(f"[Controller] Skipping '{rec.source}' — {reason}")
+                return rec
+
+            async with self.gpu_mutex:
+                self._current_run_id = rec.run_id
+                rec.status = "running"
+                rec.started_at = _now()
+                logger.info(f"[Controller] ▶ Running {rec.kind} '{rec.source}' ({rec.run_id})")
+                try:
+                    rec.metrics = await work() or {}
+                    rec.status = "completed"
+                    logger.info(f"[Controller] ✓ Completed '{rec.source}' ({rec.run_id})")
+                except Exception as exc:
+                    rec.status = "failed"
+                    rec.error = str(exc)
+                    logger.error(f"[Controller] ✗ Failed '{rec.source}': {exc}")
+                finally:
+                    rec.ended_at = _now()
+                    self._current_run_id = None
+        except asyncio.CancelledError:
+            # User-requested stop (stop_run()). Record it as a distinct
+            # outcome rather than "failed" — nothing went wrong, someone
+            # just asked it to stop. The `async with` above still releases
+            # the GPU mutex correctly even when cancelled mid-work (a
+            # cancellation raised inside an `async with` body always runs
+            # __aexit__ before propagating).
+            rec.status = "cancelled"
+            rec.error = "Stopped by user"
+            rec.ended_at = _now()
+            self._current_run_id = None
+            logger.warning(f"[Controller] ⏹ Stopped '{rec.source}' ({rec.run_id})")
+            # Re-raise: a multi-source sweep (run_all/run_accelerators/…)
+            # calls _execute() once per source via plain `await` inside the
+            # SAME task — swallowing the cancellation here would only skip
+            # the current source and silently continue to the next one.
+            # Re-raising propagates the cancellation up through the whole
+            # sweep's await chain so "Stop" actually stops everything, not
+            # just the source that happened to be running.
+            raise
+        finally:
+            self._tasks.pop(rec.run_id, None)
         return rec
+
+    def stop_run(self, run_id: Optional[str] = None) -> bool:
+        """
+        Cancel a run — the current one if run_id is omitted. Returns True if
+        a live task was found and a cancellation was requested, False if
+        there was nothing to stop (already finished, unknown run_id, or
+        nothing running).
+
+        Honest limitation: cancellation is best-effort at the asyncio level.
+        It stops the crawl/chunk/storage loops promptly (their next queue
+        wait or page fetch raises CancelledError and unwinds cleanly), but a
+        single Ollama HTTP call already in flight runs synchronously in a
+        worker thread (run_in_executor) and Python cannot forcibly interrupt
+        a running thread — that one call keeps Ollama busy until it finishes
+        or its own timeout fires, even though this run immediately shows
+        "cancelled" and the GPU mutex is released for the next queued job.
+        """
+        target_id = run_id or self._current_run_id
+        if not target_id:
+            return False
+        task = self._tasks.get(target_id)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
 
     # ── Raw workers (no record — used internally) ────────────────────────────────
 
@@ -231,7 +293,8 @@ class ScoutController:
         )
         return {}
 
-    async def _work_web(self, url: str, source_type: str, rec: RunRecord) -> dict:
+    async def _work_web(self, url: str, source_type: str, rec: RunRecord,
+                        force_render: bool = False) -> dict:
         from ingestion.web_scraper import web_scraper
         from ingestion.worker_queue import PipelineMetrics
 
@@ -241,16 +304,37 @@ class ScoutController:
         # not just after it finishes.
         live = PipelineMetrics()
         rec.live_metrics = live
-        result = await web_scraper.scrape_source(url, source_type, metrics=live)
+        result = await web_scraper.scrape_source(
+            url, source_type, force_render=force_render, metrics=live
+        )
         return _metrics_to_dict(result)
 
-    async def _work_newsletters(self, max_messages: int) -> dict:
+    async def _work_newsletters(self, max_messages: int, days: int = 14) -> dict:
         from ingestion.newsletter_ingestor import newsletter_ingestor
         loop = asyncio.get_event_loop()
         stored = await loop.run_in_executor(
-            None, lambda: newsletter_ingestor.run_ingestion(max_messages=max_messages)
+            None, lambda: newsletter_ingestor.run_ingestion(max_messages=max_messages, days=days)
         )
         return {"startups_stored": stored}
+
+    async def _work_recheck(self, limit: int) -> dict:
+        """
+        Phase H-3. recheck_pending() does its own Layer-2 GPU calls without
+        acquiring gpu_mutex itself — this call is already inside it (see
+        _execute below), and asyncio.Lock isn't reentrant.
+        """
+        from processing.verifier import recheck_pending
+        return await recheck_pending(limit=limit)
+
+    async def _work_web_verify(self, limit: int) -> dict:
+        """
+        Phase W. web_verify_pending() does its own Layer-2-equivalent GPU
+        calls without acquiring gpu_mutex itself — this call is already
+        inside it (see _execute below); asyncio.Lock isn't reentrant. The
+        search calls inside it are plain network I/O, not mutex-bound.
+        """
+        from processing.web_verifier import web_verify_pending
+        return await web_verify_pending(limit=limit)
 
     # ── Public run methods (each = one mutex-guarded record) ─────────────────────
 
@@ -262,20 +346,47 @@ class ScoutController:
         return await self._execute(rec, lambda: self._work_rss(max_entries))
 
     async def run_newsletters(
-        self, max_messages: int = 50, *,
+        self, max_messages: int = 50, days: int = 14, *,
         batch_id: Optional[str] = None, batch_index: Optional[int] = None, batch_total: Optional[int] = None,
     ) -> RunRecord:
-        rec = self._new_run("newsletter", "gmail-newsletters",
+        """
+        days=14 (default) is the routine scheduled top-up window. Pass a
+        much larger value (e.g. 3650) for a one-time backfill of older mail
+        the rolling 14-day window never reaches on its own — see
+        newsletter_ingestor.run_ingestion's docstring for why that gap
+        exists and why it's safe to re-run at any window size.
+        """
+        label = "gmail-newsletters" if days <= 14 else f"gmail-newsletters (backfill, {days}d)"
+        rec = self._new_run("newsletter", label,
                             batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
-        return await self._execute(rec, lambda: self._work_newsletters(max_messages))
+        return await self._execute(rec, lambda: self._work_newsletters(max_messages, days))
+
+    async def run_recheck(
+        self, limit: int = 20, *,
+        batch_id: Optional[str] = None, batch_index: Optional[int] = None, batch_total: Optional[int] = None,
+    ) -> RunRecord:
+        """Phase H-3: verification recheck, serialized under the GPU mutex like any run."""
+        rec = self._new_run("recheck", "verification-recheck",
+                            batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
+        return await self._execute(rec, lambda: self._work_recheck(limit))
+
+    async def run_web_verify(
+        self, limit: int = 15, *,
+        batch_id: Optional[str] = None, batch_index: Optional[int] = None, batch_total: Optional[int] = None,
+    ) -> RunRecord:
+        """Phase W: web-search verification of the no-source_excerpt backlog, under the GPU mutex."""
+        rec = self._new_run("web_verify", "web-verification-sweep",
+                            batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
+        return await self._execute(rec, lambda: self._work_web_verify(limit))
 
     async def run_web_source(
         self, url: str, source_type: str = "general", label: Optional[str] = None, *,
+        force_render: bool = False,
         batch_id: Optional[str] = None, batch_index: Optional[int] = None, batch_total: Optional[int] = None,
     ) -> RunRecord:
         rec = self._new_run("web", label or url,
                             batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
-        return await self._execute(rec, lambda: self._work_web(url, source_type, rec))
+        return await self._execute(rec, lambda: self._work_web(url, source_type, rec, force_render))
 
     @staticmethod
     def _high_priority_split():
@@ -294,6 +405,7 @@ class ScoutController:
         for i, s in enumerate(accel, start=1):
             results.append(await self.run_web_source(
                 s.primary_url, s.source_type.value, label=s.source_name,
+                force_render=(getattr(s, "render_mode", "auto") == "always"),
                 batch_id=bid, batch_index=i, batch_total=total,
             ))
         return results
@@ -306,6 +418,7 @@ class ScoutController:
         for i, s in enumerate(uni, start=1):
             results.append(await self.run_web_source(
                 s.primary_url, s.source_type.value, label=s.source_name,
+                force_render=(getattr(s, "render_mode", "auto") == "always"),
                 batch_id=bid, batch_index=i, batch_total=total,
             ))
         return results
@@ -328,12 +441,14 @@ class ScoutController:
         for s in accel:
             await self.run_web_source(
                 s.primary_url, s.source_type.value, label=s.source_name,
+                force_render=(getattr(s, "render_mode", "auto") == "always"),
                 batch_id=bid, batch_index=i, batch_total=total,
             )
             i += 1
         for s in uni:
             await self.run_web_source(
                 s.primary_url, s.source_type.value, label=s.source_name,
+                force_render=(getattr(s, "render_mode", "auto") == "always"),
                 batch_id=bid, batch_index=i, batch_total=total,
             )
             i += 1
@@ -371,8 +486,9 @@ class ScoutController:
         elif source_id:
             src = self._find_registry_source(source_id)  # raises ValueError if unknown
             target_url, target_type = src.primary_url, src.source_type.value
+            render = getattr(src, "render_mode", "auto") == "always"
             rec = self._new_run("web", src.source_name)
-            work = lambda: self._work_web(target_url, target_type, rec)
+            work = lambda: self._work_web(target_url, target_type, rec, render)
         elif url:
             rec = self._new_run("web", url)
             work = lambda: self._work_web(url, source_type, rec)
@@ -419,7 +535,7 @@ class ScoutController:
         current = self._runs.get(self._current_run_id) if self._current_run_id else None
         finished = [
             r for r in self._runs.values()
-            if r.status in ("completed", "failed", "skipped")
+            if r.status in ("completed", "failed", "skipped", "cancelled")
         ]
         last_run = finished[-1] if finished else None
         recent = list(self._runs.values())[-10:][::-1]

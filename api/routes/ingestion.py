@@ -83,13 +83,24 @@ async def scrape_universities():
 
 
 @router.post("/newsletters")
-async def ingest_newsletters():
-    """Trigger Gmail newsletter ingestion through the controller."""
+async def ingest_newsletters(days: int = 14, max_messages: int = 50):
+    """
+    Trigger Gmail newsletter ingestion through the controller.
+
+    days=14 (default) is the routine window the scheduler also uses. Pass a
+    much larger value (e.g. days=3650) to run a one-time backfill sweep of
+    older mail — the rolling window never reaches anything past `days` on
+    its own, confirmed live 24 Jul: a 61-message mailbox had 46 messages
+    (32 of them in the Promotions category) permanently unreachable under
+    the old fixed 14-day-only design. Safe to re-run at any window size;
+    already-processed messages are always skipped.
+    """
     import asyncio
     from processing.scout_controller import scout_controller
 
-    asyncio.create_task(scout_controller.run_newsletters())
-    return {"status": "started", "message": "Gmail newsletter ingestion queued via controller"}
+    asyncio.create_task(scout_controller.run_newsletters(max_messages=max_messages, days=days))
+    window = "routine 14-day" if days <= 14 else f"backfill, {days}-day"
+    return {"status": "started", "message": f"Gmail newsletter ingestion queued ({window} window)"}
 
 
 @router.post("/run-all")
@@ -121,6 +132,22 @@ async def ingest_targeted(request: TargetedRequest):
         raise HTTPException(status_code=422, detail=str(exc))
 
     return {"status": "started", "run_id": run_id}
+
+
+@router.post("/stop")
+async def stop_ingestion(run_id: Optional[str] = None):
+    """
+    Cancel the currently-running ingestion (or a specific run_id). Best-effort
+    — see ScoutController.stop_run's docstring for the honest limitation
+    around an Ollama call already in flight. Returns 409 if there was
+    nothing to stop (already finished, or nothing running).
+    """
+    from processing.scout_controller import scout_controller
+
+    stopped = scout_controller.stop_run(run_id)
+    if not stopped:
+        raise HTTPException(status_code=409, detail="No run in progress to stop")
+    return {"status": "stopping"}
 
 
 @router.get("/status")
