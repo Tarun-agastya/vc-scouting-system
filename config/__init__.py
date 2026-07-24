@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     # Gmail
     gmail_credentials_path: str = "./credentials/gmail_credentials.json"
 
+    # Tavily (Phase W web verification search backend, 24 Jul — replaces the
+    # DuckDuckGo HTML scrape, which an anti-bot block made unreliable; see
+    # ingestion/web_search.py's module docstring for the full evaluation).
+    # Optional — if unset, ingestion.web_search falls back to DuckDuckGo.
+    tavily_api_key: Optional[str] = None
+
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
@@ -36,6 +42,18 @@ class Settings(BaseSettings):
     page_queue_size: int = 5     # Max pages buffered between crawler and chunker
     chunk_queue_size: int = 20   # Max chunks buffered between chunker and Qwen workers
     storage_queue_size: int = 50 # Max startup dicts buffered before storage
+
+    # Crawl reach (Phase 23 Jul — coverage/recall fix). The old hardcoded
+    # max_pages=10 was spent on top-level nav before the crawler ever reached a
+    # startup profile (diagnosed via scripts/probe_page.py). Raised + made the
+    # frontier priority-ordered so detail/portfolio pages are visited FIRST.
+    crawl_max_pages: int = 25     # pages per source per run (was a hardcoded 10)
+    crawl_max_depth: int = 3      # link-hops from the entry URL (was a hardcoded 2)
+    # Max "load more" clicks / infinite-scroll steps on a rendered directory
+    # page. Each click loads more of the list but adds extraction volume, so
+    # this is the completeness-vs-speed knob. munich-startup's full startup
+    # list needs ~29 clicks (10K → 350K chars); default is a middle ground.
+    crawl_max_load_more: int = 15
 
     # Deduplication / entity matching (Phase S-3 — multi-signal matcher)
     # All tunable via .env so matching behaviour can be calibrated against real
