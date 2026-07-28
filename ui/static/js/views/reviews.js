@@ -17,6 +17,11 @@ const RISK = {
 const TYPE_LABEL = { field_update: "Field change", possible_duplicate: "Possible duplicate", anomaly: "Anomaly" };
 const PROFILE_FIELDS = ["name", "description", "website", "city", "country", "funding_stage", "founded_year", "industry"];
 
+function debounce(fn, ms) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
 function rowLabel(rv) {
   if (rv.review_type === "field_update") {
     const fields = (rv.changed_fields || []).join(", ") || "—";
@@ -30,7 +35,7 @@ export default {
 
   mount(el) {
     const state = {
-      status: "pending", type: "", risk: "",
+      status: "pending", type: "", risk: "", q: "",
       reviews: [], selectedId: null, busy: false,
     };
 
@@ -39,6 +44,7 @@ export default {
         <div class="kpis" id="counts"></div>
         <div class="card">
           <div class="row wrap" style="gap:8px">
+            <input class="input" id="f-q" placeholder="Filter by company…" style="max-width:200px" value="${esc(state.q)}">
             <select class="select" id="f-status" style="max-width:150px">
               <option value="pending">Pending</option>
               <option value="approved">Approved</option>
@@ -73,6 +79,7 @@ export default {
     el.querySelector("#f-status").addEventListener("change", (e) => { state.status = e.target.value; loadList(); });
     el.querySelector("#f-type").addEventListener("change", (e) => { state.type = e.target.value; loadList(); });
     el.querySelector("#f-risk").addEventListener("change", (e) => { state.risk = e.target.value; loadList(); });
+    el.querySelector("#f-q").addEventListener("input", debounce((e) => { state.q = e.target.value; loadList(); }, 300));
 
     async function loadCounts() {
       try {
@@ -93,6 +100,7 @@ export default {
           status: state.status || undefined,
           review_type: state.type || undefined,
           risk_level: state.risk || undefined,
+          q: state.q || undefined,
           limit: 200,
         });
         state.reviews = res.reviews || [];

@@ -23,6 +23,11 @@ const COLUMNS = [
   ["source_url", "Source", false],
 ];
 
+/* Phase V-3: only shown while a thesis is selected — relevance sort takes
+   over from the normal `sort`/`order` columns, so it's not clickable-sortable
+   like the rest (the backend already returns it pre-ranked). */
+const RELEVANCE_COLUMN = ["relevance_score", "Relevant to", false];
+
 /** "https://www.munich-startup.de/en/x" -> "munich-startup.de" (falls back to the coarse source type). */
 function sourceLabel(sourceUrl, source) {
   if (sourceUrl) {
@@ -92,12 +97,14 @@ export default {
       mode: "keyword",           // "keyword" | "semantic"
       q: "",
       filters: { industry: "", country: "", city: "", tech_cluster: "", funding_stage: "", score_tier: "", employee_count: "", verification_status: "", source_url: "" },
+      thesis: "",           // Phase V-3: selected thesis id — "" means normal sort/order browsing
       sort: "created_at", order: "desc",
       limit: 50, offset: 0,
       expandedId: null,
       lastRows: [], lastTotal: 0,
       aiAnalysis: null,
       sourceSites: null,   // [{label, count}] — fetched once, populates the source-website filter
+      theses: null,        // [{id, name, kind, summary}] — fetched once, populates the "Relevant to" dropdown
     };
 
     el.innerHTML = `
@@ -124,6 +131,11 @@ export default {
         </div>
         ${state.mode === "keyword" ? `
           <div class="row wrap" style="gap:8px;margin-top:10px">
+            <select class="select" style="max-width:200px" id="f-thesis" title="Rank &amp; filter by relevance to a stakeholder's interests or an ad-hoc theme">
+              <option value="">${state.theses ? "Relevant to…" : "Loading theses…"}</option>
+              ${(state.theses || []).map((t) =>
+                `<option value="${esc(t.id)}" ${state.thesis === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}
+            </select>
             <input class="input" style="max-width:150px" id="f-industry" placeholder="Industry" value="${esc(state.filters.industry)}">
             <input class="input" style="max-width:130px" id="f-country" placeholder="Country" value="${esc(state.filters.country)}">
             <input class="input" style="max-width:130px" id="f-city" placeholder="City" value="${esc(state.filters.city)}">
@@ -145,7 +157,7 @@ export default {
               ${(state.sourceSites || []).map((s) =>
                 `<option value="${esc(s.label)}" ${state.filters.source_url === s.label ? "selected" : ""}>${esc(s.label)} (${s.count})</option>`).join("")}
             </select>
-            ${Object.values(state.filters).some(Boolean) ? `<button class="btn btn--ghost btn--sm" id="clear-filters">Clear filters</button>` : ""}
+            ${Object.values(state.filters).some(Boolean) || state.thesis ? `<button class="btn btn--ghost btn--sm" id="clear-filters">Clear filters</button>` : ""}
           </div>` : ""}`;
 
       searchCard.querySelectorAll("[data-mode]").forEach((btn) =>
@@ -179,8 +191,14 @@ export default {
             load();
           }, evt === "input" ? 300 : 0));
         }
+        searchCard.querySelector("#f-thesis")?.addEventListener("change", (e) => {
+          state.thesis = e.target.value;
+          state.offset = 0;
+          load();
+        });
         searchCard.querySelector("#clear-filters")?.addEventListener("click", () => {
           for (const k in state.filters) state.filters[k] = "";
+          state.thesis = "";
           state.offset = 0;
           buildSearchCard();
           load();
@@ -210,6 +228,7 @@ export default {
         const filters = Object.fromEntries(Object.entries(state.filters).filter(([, v]) => v));
         const res = await api.listStartups({
           q: state.q || undefined, ...filters,
+          thesis: state.thesis || undefined,
           sort: state.sort, order: state.order,
           limit: state.limit, offset: state.offset,
         });
@@ -240,20 +259,28 @@ export default {
         return;
       }
 
+      // Relevance only applies to keyword-mode results (semantic-search rows
+      // come back with a different shape and never carry relevance_score) —
+      // gate on both so a thesis selected earlier doesn't leave a stale,
+      // always-"—" column showing once the user switches to semantic search.
+      const thesisActive = Boolean(state.thesis) && state.mode === "keyword";
+      const cols = thesisActive ? [COLUMNS[0], RELEVANCE_COLUMN, ...COLUMNS.slice(1)] : COLUMNS;
+
       const wrap = document.createElement("div");
       wrap.className = "table-wrap";
       wrap.innerHTML = `
         <table class="table">
           <thead><tr>
-            ${COLUMNS.map(([key, label, sortable]) => `
-              <th ${sortable ? `data-sort="${key}"` : ""}>
-                ${esc(label)}${state.sort === key ? (state.order === "asc" ? " ↑" : " ↓") : ""}
+            ${cols.map(([key, label, sortable]) => `
+              <th ${sortable && !thesisActive ? `data-sort="${key}"` : ""}>
+                ${esc(label)}${!thesisActive && state.sort === key ? (state.order === "asc" ? " ↑" : " ↓") : ""}
               </th>`).join("")}
           </tr></thead>
           <tbody>
             ${rows.map((s) => `
               <tr data-id="${esc(s.id)}">
                 <td><strong>${esc(s.name)}</strong></td>
+                ${thesisActive ? `<td class="mono" title="${esc((s.matched_signals || []).join('; '), 'semantic match only')}">${s.relevance_score?.toFixed(2) ?? "—"}</td>` : ""}
                 <td class="dim">${esc(s.industry, "—")}</td>
                 <td class="dim">${esc(s.tech_cluster, "—")}</td>
                 <td class="dim">${esc(s.city, "—")}</td>
@@ -267,7 +294,7 @@ export default {
                   ? `<a href="${esc(s.source_url)}" target="_blank" rel="noopener" title="${esc(s.source_url)}" onclick="event.stopPropagation()">${esc(sourceLabel(s.source_url, s.source))}</a>`
                   : esc(sourceLabel(s.source_url, s.source))}</td>
               </tr>
-              <tr class="detail-row hidden" data-detail-for="${esc(s.id)}"><td colspan="${COLUMNS.length}"></td></tr>
+              <tr class="detail-row hidden" data-detail-for="${esc(s.id)}"><td colspan="${cols.length}"></td></tr>
             `).join("")}
           </tbody>
         </table>`;
@@ -446,5 +473,10 @@ export default {
       state.sourceSites = res.sites || [];
       if (state.mode === "keyword") buildSearchCard();
     }).catch(() => { state.sourceSites = []; });
+
+    api.listTheses().then((res) => {
+      state.theses = res.theses || [];
+      if (state.mode === "keyword") buildSearchCard();
+    }).catch(() => { state.theses = []; });
   },
 };

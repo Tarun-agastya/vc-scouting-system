@@ -97,6 +97,16 @@ export const api = {
   verificationStatus: () => get("/verification/status"),
   runRecheck: (limit = 20) => post(`/verification/recheck?limit=${limit}`),
   runWebVerify: (limit = 15) => post(`/verification/web-verify?limit=${limit}`),
+
+  // ── Classification (Phase V-2) ────────────────────────────────────────
+  classificationStatus: () => get("/classification/status"),
+  runReclassify: (limit = 20) => post(`/classification/reclassify?limit=${limit}`),
+
+  // ── Theses (Phase V-3 / V-4) ──────────────────────────────────────────
+  listTheses: () => get("/theses"),
+  thesesTaxonomy: () => get("/theses/taxonomy"),
+  addThesis: (thesis) => post("/theses", thesis),
+  deleteThesis: (id) => del(`/theses/${id}`),
 };
 
 /* ── Formatting helpers (shared by all views) ─────────────────────────── */

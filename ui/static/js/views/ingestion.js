@@ -151,7 +151,7 @@ export default {
     }
 
     async function render() {
-      let status, sources, verification;
+      let status, sources, verification, classification;
       try {
         [status, sources] = await Promise.all([api.ingestionStatus(), api.listSources()]);
       } catch (err) {
@@ -169,6 +169,11 @@ export default {
         verification = await api.verificationStatus();
       } catch {
         verification = null; // Data quality card degrades to a fallback state
+      }
+      try {
+        classification = await api.classificationStatus();
+      } catch {
+        classification = null; // same graceful degrade
       }
 
       const running = status.current_run;
@@ -198,6 +203,14 @@ export default {
       if (running) {
         const pct = running.batch_total ? Math.round((running.batch_index / running.batch_total) * 100) : null;
         const m = running.metrics || {};
+        // Two live-metrics shapes depending on run kind (processing/scout_controller.py):
+        // web scrapes carry a PipelineMetrics dict (pages/chunks/etc, METRIC_LABELS);
+        // record-by-record jobs (recheck/reclassify/web_verify) carry a RecordProgress
+        // dict {processed, total, current_name} instead — they don't crawl pages or
+        // chunks, so showing the pipeline tile grid for them always read as all-zeros
+        // even while genuinely running. Detect by the presence of "total".
+        const isRecordProgress = typeof m.total === "number";
+        const recordPct = isRecordProgress && m.total > 0 ? Math.round((m.processed / m.total) * 100) : null;
         liveCard.innerHTML = `
           <div class="card__head">
             <span class="dot dot--live"></span>
@@ -214,13 +227,24 @@ export default {
               </span>
               <span class="dim mono" style="font-size:12px">${pct}%</span>
             </div>` : ""}
+          ${isRecordProgress ? `
+            <div class="stack" style="gap:6px">
+              <div class="row" style="gap:10px">
+                <span class="dim" style="font-size:12px;white-space:nowrap">${fmt.num(m.processed ?? 0)} of ${fmt.num(m.total ?? 0)} processed</span>
+                <span style="flex:1;background:var(--surface-2);border-radius:4px;height:8px;overflow:hidden">
+                  <span style="display:block;height:100%;width:${recordPct ?? 0}%;background:var(--brand-lime);transition:width .4s"></span>
+                </span>
+                <span class="dim mono" style="font-size:12px">${recordPct ?? 0}%</span>
+              </div>
+              ${m.current_name ? `<div class="dim" style="font-size:12px">Currently checking: <strong>${esc(m.current_name)}</strong></div>` : ""}
+            </div>` : `
           <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr))">
             ${METRIC_LABELS.map(([k, label]) => `
               <div style="padding:8px 0">
                 <div class="kpi__label">${label}</div>
                 <div class="kpi__value" style="font-size:20px">${fmt.num(m[k] ?? 0)}</div>
               </div>`).join("")}
-          </div>`;
+          </div>`}`;
 
         // Fast local ticking clock (separate from the 2s data poll) so elapsed
         // time feels alive without hammering the backend.
@@ -295,11 +319,22 @@ export default {
           <span class="grow"></span>
           <button class="btn" id="webverify-btn" ${disabled ? "disabled" : ""}>🌐 Web-verify backlog</button>
         </div>
+        <div class="row wrap" style="gap:12px;align-items:center;margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+          <div>
+            <div class="dim" style="font-size:12px">Industry/cluster still free-form — needs re-classifying</div>
+            <strong style="font-size:18px">${fmt.num(classification?.pending ?? 0)}</strong>
+            <span class="dim" style="font-size:12px">of ${fmt.num(classification?.total ?? 0)} total — controlled taxonomy, Phase V-2</span>
+          </div>
+          <span class="grow"></span>
+          <button class="btn" id="reclassify-btn" ${disabled ? "disabled" : ""}>🏷 Re-classify</button>
+        </div>
         ${verification ? "" : `<div class="dim" style="font-size:12px;margin-top:8px">Couldn't load verification counts</div>`}`;
       dqCard.querySelector("#recheck-btn")?.addEventListener("click", () =>
         triggerRun("Verification recheck", () => api.runRecheck(20)));
       dqCard.querySelector("#webverify-btn")?.addEventListener("click", () =>
         triggerRun("Web verification", () => api.runWebVerify(15)));
+      dqCard.querySelector("#reclassify-btn")?.addEventListener("click", () =>
+        triggerRun("Reclassification", () => api.runReclassify(20)));
       statusRegion.appendChild(dqCard);
 
       /* ── Next scheduled run ──────────────────────────────────────────── */
@@ -341,6 +376,7 @@ export default {
                     : r.kind === "newsletter" ? `${fmt.num(m.startups_stored ?? 0)} stored`
                     : r.kind === "recheck" ? `${fmt.num(m.verified ?? 0)} verified · ${fmt.num(m.flagged ?? 0)} flagged`
                     : r.kind === "web_verify" ? `${fmt.num(m.verified ?? 0)} verified · ${fmt.num(m.staged ?? 0)} staged · ${fmt.num(m.unchanged ?? 0)} unchanged`
+                    : r.kind === "reclassify" ? `${fmt.num(m.classified ?? 0)} classified · ${fmt.num(m.errors ?? 0)} errors`
                     : "—";
                   return `<tr>
                     <td class="truncate" style="max-width:220px">${esc(r.source)}</td>

@@ -22,6 +22,8 @@ export default {
   mount(el) {
     let data = null;
     let historyBySource = {};
+    let theses = null;      // [{id, name, kind, summary}]
+    let taxonomy = null;    // {industries: [...], tech_clusters: {industry: [...]}}
 
     el.innerHTML = `<div class="stack">
       <div class="skeleton" style="height:200px"></div>
@@ -30,8 +32,12 @@ export default {
 
     async function load() {
       try {
-        const [sources, status] = await Promise.all([api.listSources(), api.ingestionStatus()]);
+        const [sources, status, thesesRes, taxRes] = await Promise.all([
+          api.listSources(), api.ingestionStatus(), api.listTheses(), api.thesesTaxonomy(),
+        ]);
         data = sources;
+        theses = thesesRes.theses || [];
+        taxonomy = taxRes;
         historyBySource = {};
         for (const h of status.history || []) {
           if (!(h.source in historyBySource)) historyBySource[h.source] = h; // most recent first
@@ -57,6 +63,31 @@ export default {
     function render() {
       el.innerHTML = `
         <div class="stack">
+          <div class="card">
+            <div class="card__head">
+              <span class="card__title">Scouting themes</span>
+              <span class="dim" style="font-size:12px">${theses.length} active · stakeholder theses + ad-hoc themes, ranks &amp; filters Browse's "Relevant to" dropdown</span>
+              <button class="btn btn--primary btn--sm" id="add-theme-btn" style="margin-left:auto">+ Add theme</button>
+            </div>
+            <div id="add-theme-form"></div>
+            <div class="table-wrap">
+              <table class="table">
+                <thead><tr><th>Name</th><th>Kind</th><th>Summary</th><th></th></tr></thead>
+                <tbody>
+                  ${theses.map((t) => `
+                    <tr>
+                      <td><strong>${esc(t.name)}</strong></td>
+                      <td><span class="chip ${t.kind === "stakeholder" ? "chip--brand" : ""}">${esc(t.kind)}</span></td>
+                      <td class="dim truncate" style="max-width:420px" title="${esc(t.summary)}">${esc(t.summary)}</td>
+                      <td class="row" style="gap:6px;justify-content:flex-end">
+                        ${t.kind === "adhoc" ? `<button class="btn btn--sm btn--danger" data-del-theme="${esc(t.id)}">Delete</button>` : `<span class="dim" style="font-size:12px">protected</span>`}
+                      </td>
+                    </tr>`).join("")}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           <div class="card">
             <div class="card__head">
               <span class="card__title">Web sources</span>
@@ -203,6 +234,73 @@ export default {
           } catch (err) { toast(`Couldn't add feed: ${err.message}`, "error"); }
         });
       });
+
+      /* ── Add theme form (Phase V-4) ──────────────────────────────────── */
+      const addThemeForm = el.querySelector("#add-theme-form");
+      el.querySelector("#add-theme-btn").addEventListener("click", () => {
+        const industryOptions = taxonomy.industries.map((i) => `<option value="${esc(i)}">${esc(i)}</option>`).join("");
+        const clusterOptions = Object.entries(taxonomy.tech_clusters).map(([industry, clusters]) => `
+          <optgroup label="${esc(industry)}">
+            ${clusters.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
+          </optgroup>`).join("");
+        addThemeForm.innerHTML = `
+          <form id="theme-form" class="card" style="background:var(--surface-2);margin:12px 0">
+            <div class="stack" style="gap:10px">
+              <div class="grid-2">
+                <div class="field"><label class="field__label">Theme name</label>
+                  <input class="input" name="name" required placeholder="e.g. Construction Tech"></div>
+                <div class="field"><label class="field__label">Theme ID (auto-filled)</label>
+                  <input class="input" name="id" required placeholder="construction_tech"></div>
+              </div>
+              <div class="field"><label class="field__label">Summary — what makes a startup relevant (2-3 sentences, this is what gets semantically matched)</label>
+                <textarea class="textarea" name="summary" required rows="3" placeholder="e.g. Startups building software, robotics, or materials for the construction and civil-engineering industry — BIM, site digitalization, construction robotics, sustainable building materials…"></textarea></div>
+              <div class="grid-2">
+                <div class="field"><label class="field__label">Industries (ctrl/cmd-click to select several)</label>
+                  <select class="select" name="industries" multiple size="6">${industryOptions}</select></div>
+                <div class="field"><label class="field__label">Tech clusters</label>
+                  <select class="select" name="tech_clusters" multiple size="6">${clusterOptions}</select></div>
+              </div>
+              <div class="field"><label class="field__label">Keywords (comma-separated)</label>
+                <input class="input" name="keywords" placeholder="e.g. BIM, site digitalization, construction robotics"></div>
+            </div>
+            <div class="row" style="gap:8px;margin-top:12px">
+              <button type="submit" class="btn btn--primary">Add theme</button>
+              <button type="button" class="btn btn--ghost" id="cancel-theme">Cancel</button>
+            </div>
+          </form>`;
+        const nameInput = addThemeForm.querySelector('[name="name"]');
+        const idInput = addThemeForm.querySelector('[name="id"]');
+        nameInput.addEventListener("input", () => { idInput.value = slugify(nameInput.value); });
+        addThemeForm.querySelector("#cancel-theme").addEventListener("click", () => { addThemeForm.innerHTML = ""; });
+        addThemeForm.querySelector("#theme-form").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const form = e.target;
+          const payload = {
+            id: form.elements.id.value,
+            name: form.elements.name.value,
+            summary: form.elements.summary.value,
+            industries: Array.from(form.elements.industries.selectedOptions).map((o) => o.value),
+            tech_clusters: Array.from(form.elements.tech_clusters.selectedOptions).map((o) => o.value),
+            keywords: form.elements.keywords.value.split(",").map((k) => k.trim()).filter(Boolean),
+          };
+          try {
+            await api.addThesis(payload);
+            toast(`Added theme "${payload.name}"`);
+            addThemeForm.innerHTML = "";
+            load();
+          } catch (err) { toast(`Couldn't add theme: ${err.message}`, "error"); }
+        });
+      });
+
+      el.querySelectorAll("[data-del-theme]").forEach((btn) => btn.addEventListener("click", async () => {
+        const name = btn.closest("tr").querySelector("strong")?.textContent || btn.dataset.delTheme;
+        if (!confirmAction(`Remove theme "${name}"? It will stop appearing in Browse's "Relevant to" filter.`)) return;
+        try {
+          await api.deleteThesis(btn.dataset.delTheme);
+          toast(`Removed "${name}"`);
+          load();
+        } catch (err) { toast(`Couldn't remove theme: ${err.message}`, "error"); }
+      }));
 
       /* ── Run now / delete ────────────────────────────────────────────── */
       el.querySelectorAll("[data-run]").forEach((btn) => btn.addEventListener("click", async () => {
