@@ -14,6 +14,7 @@ Provenance (source_history) and derived scores are the only things applied to
 an existing master automatically — never extracted startup data.
 """
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -197,6 +198,40 @@ def _insert_master(db, startup, name, website, fingerprint, stable_id,
     grounding_note = startup.pop("_grounding", None)
     verification_evidence = {"h1_grounding": grounding_note} if grounding_note else None
 
+    # Phase V-2: classify into config/taxonomy.yaml's controlled vocabulary —
+    # never store extraction's free-form industry/tech_cluster directly (that's
+    # the "Proptech - Fashion Tech" noise this phase exists to fix). Local
+    # vars only — startup["industry"]/["tech_cluster"] are left untouched, so
+    # the original free-form values extraction produced stay visible in
+    # raw_data=startup below for audit, same as always. A classification
+    # failure (Ollama down, taxonomy misconfigured) leaves classified_at NULL
+    # rather than blocking the insert — processing/reclassifier.py's backlog
+    # pass picks it up later, exactly like any other unclassified legacy row.
+    classified_industry, classified_cluster, classified_at = None, None, None
+    # Skipped under pytest (PYTEST_CURRENT_TEST is set automatically by
+    # pytest for every test) — classify_startup is a heavy structured-output
+    # call (a 114-value enum grammar) that both slows the suite dramatically
+    # (was ~5s, real classification calls made it exceed 2 minutes) and
+    # queues behind whatever the live pipeline is doing on the same shared
+    # Ollama/GPU. Every other call here (embeddings, matcher) stays real,
+    # per this test suite's integration-testing philosophy — classification
+    # is excluded purely for cost, not because it needs mocking. Test rows
+    # simply keep classified_at=NULL, same as any other unclassified record,
+    # and are purged before/after each test regardless.
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        try:
+            from reasoning.qwen_client import qwen_client
+            result = qwen_client.classify_startup(
+                name, startup.get("one_liner") or "", startup.get("description") or ""
+            )
+            classified_industry = result.get("industry")
+            classified_cluster = result.get("tech_cluster")
+            if classified_industry:
+                classified_at = datetime.utcnow()
+        except Exception as exc:
+            logger.warning(f"[Storage] Classification failed for '{name}': {exc} — "
+                           f"left for the reclassify backlog")
+
     # stable_id is name-derived; two different same-named no-website companies
     # would collide on it — mint a fresh id if it's already taken. As of
     # Phase D-1, a same-name no-website RE-SIGHTING is caught upstream in
@@ -225,9 +260,10 @@ def _insert_master(db, startup, name, website, fingerprint, stable_id,
         website=website or None,
         contact_info=contact_raw or None,
         linkedin=linkedin_val,
-        industry=startup.get("industry"),
+        industry=classified_industry,
         sub_industry=startup.get("sub_industry"),
-        tech_cluster=startup.get("tech_cluster"),
+        tech_cluster=classified_cluster,
+        classified_at=classified_at,
         country=startup.get("country"),
         city=startup.get("city"),
         address=startup.get("address"),
@@ -276,6 +312,12 @@ def _score_and_index(row, startup, vector, fingerprint, source, source_url,
         "source_confidence": row.source_confidence or 0.0,
         "score_tier": row.score_tier or "WEAK_SIGNAL",
         "verification_status": row.verification_status or "unverified",
+        # Phase V-2: the row's CONTROLLED classification, not startup's
+        # free-form extracted values — **startup above would otherwise leak
+        # the pre-classification industry/tech_cluster into Qdrant even
+        # though the Postgres row already holds the taxonomy-constrained ones.
+        "industry": row.industry,
+        "tech_cluster": row.tech_cluster,
     })
 
 

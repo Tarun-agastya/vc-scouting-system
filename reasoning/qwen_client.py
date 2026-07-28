@@ -176,9 +176,25 @@ def _ground_startup(s: dict, source_text: str, cfg: dict) -> dict:
 
     if cfg.get("check_founded_year", True) and s.get("founded_year"):
         year = str(s["founded_year"])
-        if not re.search(rf"\b{re.escape(year)}\b", source_text):
+        matches = list(re.finditer(rf"\b{re.escape(year)}\b", source_text))
+        if not matches:
             s["founded_year"] = None
             nulled.append("founded_year")
+        else:
+            # The year must appear near an actual founding-context signal —
+            # not merely exist somewhere in the chunk (a coincidental date
+            # elsewhere, e.g. an article's own publish date, would
+            # otherwise trivially "prove" a fabricated founding year; see
+            # config/tuning.yaml's founded_year_signals comment).
+            signals = cfg.get("founded_year_signals") or []
+            window = cfg.get("founded_year_context_chars", 60)
+            has_context = any(
+                _signal_present(signals, source_text[max(0, m.start() - window):m.end() + window].lower())
+                for m in matches
+            )
+            if not has_context:
+                s["founded_year"] = None
+                nulled.append("founded_year")
 
     if cfg.get("check_funding_stage", True) and s.get("funding_stage"):
         if not _text_contains(s["funding_stage"], text_lower):
@@ -240,6 +256,8 @@ class QwenClient:
         self._ollama_client = None         # lazy reason client (14B, 120s timeout)
         self._extract_ollama_client = None # lazy extract client (7B, 45s timeout)
         self._verify_ollama_client = None  # lazy verify client (14B, 180s timeout)
+        self._classify_ollama_client = None # lazy classify client (7B, 120s timeout)
+        self._web_verify_ollama_client = None  # lazy web-verify client (14B, 300s timeout)
         # Derived from max_qwen_workers so config and semaphore stay in sync.
         self._semaphore = threading.Semaphore(settings.max_qwen_workers)
 
@@ -271,14 +289,60 @@ class QwenClient:
         observed in testing: giving the model enough num_predict budget to
         actually finish its <think> reasoning plus a structured-output
         verdict occasionally takes longer than 120s for a dense record.
+
+        Bumped 180s -> 240s (27 Jul): confirmed live that individual calls
+        can legitimately run past 180s with nothing else competing for the
+        GPU (recheck_record now also retries once — see its docstring —
+        but the retry should rarely be needed once the ceiling itself has
+        real headroom).
         """
         if self._verify_ollama_client is None:
             import ollama
             self._verify_ollama_client = ollama.Client(
                 host=self.base_url,
-                timeout=180,
+                timeout=240,
             )
         return self._verify_ollama_client
+
+    def _web_verify_client(self):
+        """
+        Separate client for Phase W web-verification. Reuses the 14B model
+        but with a longer timeout than _verify_client()'s 180s — confirmed
+        live 27 Jul: web_verify_record's prompt embeds up to 5 full
+        search-result snippets (title+URL+excerpt each) on top of the
+        record's own field list, measurably heavier than recheck_record's
+        single 2000-char source_excerpt, and two consecutive real calls
+        (same record, same 5 results) both exceeded 180s with nothing else
+        competing for the GPU — this isn't a fluke, the prompt is just
+        bigger than the original 180s budget assumed.
+        """
+        if self._web_verify_ollama_client is None:
+            import ollama
+            self._web_verify_ollama_client = ollama.Client(
+                host=self.base_url,
+                timeout=300,
+            )
+        return self._web_verify_ollama_client
+
+    def _classify_client(self):
+        """
+        Separate client for Phase V-2 classification. Still the small 7B
+        model, but _extract_client()'s 75s timeout isn't always enough here —
+        confirmed live 27 Jul: the classification grammar constrains
+        tech_cluster to a 114-value enum (config/taxonomy.yaml's full flat
+        cluster list) plus the grouped taxonomy spelled out in the prompt
+        text, and constrained decoding over that much larger grammar than a
+        normal extraction call occasionally exceeded 75s (one real call timed
+        out at 75s; a similar call finished cleanly in 56s) even though the
+        model and call shape are otherwise identical to extract_startups.
+        """
+        if self._classify_ollama_client is None:
+            import ollama
+            self._classify_ollama_client = ollama.Client(
+                host=self.base_url,
+                timeout=120,
+            )
+        return self._classify_ollama_client
 
     def extract_startups(self, text: str) -> list:
         """
@@ -361,8 +425,17 @@ class QwenClient:
 
         Returns {"identity_match": bool, "summary": str,
         "unsupported_fields": [...], "contradicted_fields": [...]}.
-        Raises on failure — the caller (processing/verifier.py) decides how
-        to handle an unreachable/failing Ollama.
+        Raises on repeated failure — the caller (processing/verifier.py)
+        decides how to handle an unreachable/failing Ollama.
+
+        One retry with backoff (added 27 Jul after a live find: this call
+        previously had none, unlike extract_startups/classify_startup/
+        web_verify_record — a single call landing on the slow side of the
+        latency range (observed 30-265s live this session) would raise
+        immediately, and the caller's "this looks like Ollama is down"
+        heuristic then abandoned the ENTIRE rest of a 400+ record batch on
+        one outlier, every night, for at least 5 days straight before this
+        was caught).
         """
         from reasoning.prompts import SYSTEM_VERIFIER
 
@@ -370,15 +443,25 @@ class QwenClient:
             {"role": "system", "content": SYSTEM_VERIFIER},
             {"role": "user", "content": prompt},
         ]
-        with self._semaphore:
-            response = self._verify_client().chat(
-                model=self.model,
-                messages=messages,
-                format=_VERIFICATION_SCHEMA,
-                options={"temperature": 0, "num_predict": 3000, "num_ctx": 8192},
-            )
-        content = self._strip_thinking(response["message"]["content"])
-        return json.loads(content)
+        last_exc: Exception = RuntimeError("no attempts made")
+        for attempt in range(2):
+            try:
+                with self._semaphore:
+                    response = self._verify_client().chat(
+                        model=self.model,
+                        messages=messages,
+                        format=_VERIFICATION_SCHEMA,
+                        options={"temperature": 0, "num_predict": 3000, "num_ctx": 8192},
+                    )
+                content = self._strip_thinking(response["message"]["content"])
+                return json.loads(content)
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 0:
+                    logger.warning(f"[Recheck] Attempt 1 failed ({exc}), retrying in 2s…")
+                    time.sleep(2)
+
+        raise last_exc
 
     def web_verify_record(self, prompt: str) -> dict:
         """
@@ -387,13 +470,16 @@ class QwenClient:
         propose a corrected value per finding (it has independent ground
         truth to draw from — recheck_record's source text does not).
 
-        Reuses the same 14B reasoning model + verify client (180s timeout —
-        search-result prompts run comparably long to source_excerpt ones)
-        and the same structured-output + <think>-stripping pattern.
+        Runs on the 14B reasoning model via _web_verify_client() (300s
+        timeout — its own dedicated client, longer than the plain
+        recheck's 180s, since this prompt embeds several full search-result
+        snippets and measurably runs longer; see that method's docstring).
+        One retry with backoff on failure, mirroring classify_startup — a
+        single slow/transient call shouldn't lose the whole batch record.
 
         Returns {"identity_match": bool, "summary": str, "findings": [...]}.
-        Raises on failure — the caller (processing/web_verifier.py) decides
-        how to handle an unreachable/failing Ollama.
+        Raises on repeated failure — the caller (processing/web_verifier.py)
+        decides how to handle an unreachable/failing Ollama.
         """
         from reasoning.prompts import SYSTEM_WEB_VERIFIER
 
@@ -401,15 +487,102 @@ class QwenClient:
             {"role": "system", "content": SYSTEM_WEB_VERIFIER},
             {"role": "user", "content": prompt},
         ]
-        with self._semaphore:
-            response = self._verify_client().chat(
-                model=self.model,
-                messages=messages,
-                format=_WEB_VERIFICATION_SCHEMA,
-                options={"temperature": 0, "num_predict": 3000, "num_ctx": 8192},
-            )
-        content = self._strip_thinking(response["message"]["content"])
-        return json.loads(content)
+        last_exc: Exception = RuntimeError("no attempts made")
+        for attempt in range(2):
+            try:
+                with self._semaphore:
+                    response = self._web_verify_client().chat(
+                        model=self.model,
+                        messages=messages,
+                        format=_WEB_VERIFICATION_SCHEMA,
+                        options={"temperature": 0, "num_predict": 3000, "num_ctx": 8192},
+                    )
+                content = self._strip_thinking(response["message"]["content"])
+                return json.loads(content)
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 0:
+                    logger.warning(f"[WebVerify] Attempt 1 failed ({exc}), retrying in 2s…")
+                    time.sleep(2)
+
+        raise last_exc
+
+    def classify_startup(self, name: str, one_liner: str, description: str) -> dict:
+        """
+        Phase V-2: classify a startup into config/taxonomy.yaml's controlled
+        industry + tech_cluster — never free text. The schema's enum lists are
+        built fresh from the taxonomy on every call (hot-reloaded config), so
+        editing taxonomy.yaml takes effect on the next classification without
+        a restart.
+
+        Runs on the small 7B extraction model (settings.ollama_extract_model),
+        not the 14B reasoning model — this is a cheap categorical pick, not
+        deep reasoning, and it runs once per startup at ingest plus across the
+        whole reclassify backlog, so cost matters.
+
+        Returns {"industry": str|None, "tech_cluster": str|None}. tech_cluster
+        is nulled (not the model's raw pick) if it doesn't actually belong
+        under the chosen industry — a deterministic Python cross-check, since
+        JSON-schema enums alone can't express "cluster must belong to
+        industry" as a hard grammar constraint. industry stays set either way;
+        losing tech_cluster to an inconsistent pick is the same
+        correct-and-less-over-wrong-and-more tradeoff as H-1 grounding.
+
+        Raises on failure — the caller (ingest path / processing/reclassifier.py)
+        decides how to handle an unreachable/failing Ollama.
+        """
+        from config.thesis_loader import get_taxonomy
+        from reasoning.prompts import SYSTEM_CLASSIFIER, CLASSIFICATION_PROMPT
+
+        tax = get_taxonomy()
+        industries = tax["industries"]
+        all_clusters = tax["all_clusters"]
+        if not industries or not all_clusters:
+            return {"industry": None, "tech_cluster": None}
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "industry":     {"type": "string", "enum": industries},
+                "tech_cluster": {"type": "string", "enum": all_clusters},
+            },
+            "required": ["industry", "tech_cluster"],
+        }
+        taxonomy_text = "\n".join(
+            f"- {industry}: " + ", ".join(clusters)
+            for industry, clusters in tax["tech_clusters"].items()
+        )
+        prompt = CLASSIFICATION_PROMPT.format(
+            name=name, one_liner=one_liner or "", description=description or "",
+            taxonomy=taxonomy_text,
+        )
+        messages = [
+            {"role": "system", "content": SYSTEM_CLASSIFIER},
+            {"role": "user", "content": prompt},
+        ]
+        last_exc: Exception = RuntimeError("no attempts made")
+        for attempt in range(2):
+            try:
+                with self._semaphore:
+                    response = self._classify_client().chat(
+                        model=settings.ollama_extract_model,
+                        messages=messages,
+                        format=schema,
+                        options={"temperature": 0, "num_predict": 200},
+                    )
+                data = json.loads(response["message"]["content"])
+                industry = data.get("industry")
+                cluster = data.get("tech_cluster")
+                if cluster and tax["cluster_to_industry"].get(cluster) != industry:
+                    cluster = None
+                return {"industry": industry, "tech_cluster": cluster}
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 0:
+                    logger.warning(f"[Classify] Attempt 1 failed ({exc}), retrying in 2s…")
+                    time.sleep(2)
+
+        raise last_exc
 
     def generate(
         self,

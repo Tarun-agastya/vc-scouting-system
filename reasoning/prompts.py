@@ -220,9 +220,49 @@ Report:
   value. verdict is always "contradicted" (only report fields you're
   correcting — don't list fields that matched or weren't mentioned).
   field must be one of the exact stored field names shown above.
-  correct_value is the value the search results support, as plain text.
+  correct_value must be ONLY the corrected value itself, in the same bare
+  format the stored field already uses (e.g. "2022", not "2022 (implied by
+  the launch announcement)" — put any reasoning in summary instead, never
+  inside correct_value). If you cannot state a clean value with no
+  explanation attached, do not report a finding for that field at all —
+  founded_year in particular must be a bare 4-digit year or omitted.
   source_url must be one of the results you confirmed in Step 1 is
   genuinely about this company — never cite a discarded result.
 
 Do not guess. Do not report a finding sourced from a result you haven't
 confirmed is genuinely about this company."""
+
+# ── Classification (Phase V-2, 27 Jul) ──────────────────────────────────────
+# Distinct from extraction's free-form industry/tech_cluster (which produced
+# noise like "Proptech - Fashion Tech"): this is a dedicated, structured-output
+# call whose industry/tech_cluster are ENUM-constrained by the caller to
+# config/taxonomy.yaml's controlled vocabulary, so the model can only return a
+# value that's already valid — no post-hoc cleanup, no free text.
+
+SYSTEM_CLASSIFIER = """You are a precise company classifier for a startup
+intelligence database. You are given a company's name and description, and a
+fixed list of valid industries and tech clusters. Pick the single best-fitting
+industry and the single best-fitting tech cluster FROM THAT LIST — never
+invent a new category, never combine two, never leave either blank if a
+reasonable fit exists. The tech cluster you pick must genuinely belong under
+the industry you pick.
+Return ONLY valid JSON matching the required schema. No markdown, no prose
+outside the JSON."""
+
+CLASSIFICATION_PROMPT = """Company: {name}
+One-liner: {one_liner}
+Description: {description}
+
+Valid industries and their tech clusters (pick industry, then a tech_cluster
+that is listed under that SAME industry):
+{taxonomy}
+
+Classify this company:
+- industry: the single best-fitting industry from the list above, exactly as written.
+- tech_cluster: the single best-fitting tech cluster from the list above,
+  exactly as written, and it MUST be one of the clusters listed under the
+  industry you chose.
+
+If the company is genuinely generic or doesn't fit any specific tech cluster,
+use "Other / Uncategorized" for both. Do not guess a specific-sounding
+category that doesn't actually match the description."""

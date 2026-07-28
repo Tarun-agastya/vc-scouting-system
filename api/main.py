@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from api.routes import scout, matchmaking, ingestion, sources, reviews, verification
+from api.routes import scout, matchmaking, ingestion, sources, reviews, verification, classification, theses
 from database.connection import init_db
 
 logging.basicConfig(
@@ -163,6 +163,8 @@ app.include_router(ingestion.router,   prefix="/ingestion",   tags=["Ingestion"]
 app.include_router(sources.router,     prefix="/sources",     tags=["Sources"])
 app.include_router(reviews.router,     prefix="/reviews",     tags=["Reviews"])
 app.include_router(verification.router, prefix="/verification", tags=["Verification"])
+app.include_router(classification.router, prefix="/classification", tags=["Classification"])
+app.include_router(theses.router,      prefix="/theses",       tags=["Theses"])
 
 
 @app.get("/health", tags=["System"])

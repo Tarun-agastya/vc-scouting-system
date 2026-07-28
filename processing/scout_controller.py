@@ -74,9 +74,18 @@ class RunRecord:
         # While running, prefer the live in-flight counters over the (still
         # empty) final `metrics` dict, which is only populated once work()
         # returns. Once finished, self.metrics holds the final values.
+        # live_metrics is one of two shapes depending on run kind — a
+        # PipelineMetrics (web scrapes: pages/chunks/etc, see _metrics_to_dict)
+        # or a RecordProgress (recheck/reclassify/web_verify: a simple
+        # processed-of-total loop over DB rows, see _progress_to_dict).
+        # Duck-typed on "processed" rather than isinstance to avoid this
+        # module importing ingestion.web_scraper.PipelineMetrics.
         metrics = self.metrics
         if self.status == "running" and self.live_metrics is not None:
-            metrics = _metrics_to_dict(self.live_metrics)
+            if hasattr(self.live_metrics, "processed"):
+                metrics = _progress_to_dict(self.live_metrics)
+            else:
+                metrics = _metrics_to_dict(self.live_metrics)
         return {
             "run_id":     self.run_id,
             "kind":       self.kind,
@@ -90,6 +99,35 @@ class RunRecord:
             "batch_index": self.batch_index,
             "batch_total": self.batch_total,
         }
+
+
+class RecordProgress:
+    """
+    Minimal live-progress tracker for record-by-record LLM batch jobs
+    (recheck, reclassify, web-verify) — the equivalent of PipelineMetrics
+    for jobs that loop over DB rows one at a time rather than crawling
+    pages/chunks (those never populate PipelineMetrics, so /ingestion/status
+    showed a flat "everything is 0" the whole run — this fixes that).
+
+    Single writer (the batch loop, running in an executor thread), single
+    reader (the /ingestion/status polling handler on the event loop thread).
+    Plain int/str attribute reads/writes are atomic in CPython, so no lock
+    is needed for this single-writer/single-reader access pattern (unlike
+    PipelineMetrics.inc(), which guards against genuinely concurrent
+    writers from multiple crawl workers).
+    """
+    def __init__(self, total: int = 0):
+        self.processed = 0
+        self.total = total
+        self.current_name: Optional[str] = None
+
+
+def _progress_to_dict(progress: RecordProgress) -> dict:
+    return {
+        "processed": progress.processed,
+        "total": progress.total,
+        "current_name": progress.current_name,
+    }
 
 
 def _metrics_to_dict(metrics) -> dict:
@@ -317,16 +355,18 @@ class ScoutController:
         )
         return {"startups_stored": stored}
 
-    async def _work_recheck(self, limit: int) -> dict:
+    async def _work_recheck(self, limit: int, rec: RunRecord) -> dict:
         """
         Phase H-3. recheck_pending() does its own Layer-2 GPU calls without
         acquiring gpu_mutex itself — this call is already inside it (see
         _execute below), and asyncio.Lock isn't reentrant.
         """
         from processing.verifier import recheck_pending
-        return await recheck_pending(limit=limit)
+        progress = RecordProgress(total=limit)
+        rec.live_metrics = progress
+        return await recheck_pending(limit=limit, progress=progress)
 
-    async def _work_web_verify(self, limit: int) -> dict:
+    async def _work_web_verify(self, limit: int, rec: RunRecord) -> dict:
         """
         Phase W. web_verify_pending() does its own Layer-2-equivalent GPU
         calls without acquiring gpu_mutex itself — this call is already
@@ -334,7 +374,20 @@ class ScoutController:
         search calls inside it are plain network I/O, not mutex-bound.
         """
         from processing.web_verifier import web_verify_pending
-        return await web_verify_pending(limit=limit)
+        progress = RecordProgress(total=limit)
+        rec.live_metrics = progress
+        return await web_verify_pending(limit=limit, progress=progress)
+
+    async def _work_reclassify(self, limit: int, rec: RunRecord) -> dict:
+        """
+        Phase V-2. reclassify_pending() does its own GPU calls without
+        acquiring gpu_mutex itself — this call is already inside it (see
+        _execute below); asyncio.Lock isn't reentrant.
+        """
+        from processing.reclassifier import reclassify_pending
+        progress = RecordProgress(total=limit)
+        rec.live_metrics = progress
+        return await reclassify_pending(limit=limit, progress=progress)
 
     # ── Public run methods (each = one mutex-guarded record) ─────────────────────
 
@@ -368,7 +421,16 @@ class ScoutController:
         """Phase H-3: verification recheck, serialized under the GPU mutex like any run."""
         rec = self._new_run("recheck", "verification-recheck",
                             batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
-        return await self._execute(rec, lambda: self._work_recheck(limit))
+        return await self._execute(rec, lambda: self._work_recheck(limit, rec))
+
+    async def run_reclassify(
+        self, limit: int = 20, *,
+        batch_id: Optional[str] = None, batch_index: Optional[int] = None, batch_total: Optional[int] = None,
+    ) -> RunRecord:
+        """Phase V-2: controlled-taxonomy reclassification, serialized under the GPU mutex like any run."""
+        rec = self._new_run("reclassify", "taxonomy-reclassify",
+                            batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
+        return await self._execute(rec, lambda: self._work_reclassify(limit, rec))
 
     async def run_web_verify(
         self, limit: int = 15, *,
@@ -377,7 +439,7 @@ class ScoutController:
         """Phase W: web-search verification of the no-source_excerpt backlog, under the GPU mutex."""
         rec = self._new_run("web_verify", "web-verification-sweep",
                             batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
-        return await self._execute(rec, lambda: self._work_web_verify(limit))
+        return await self._execute(rec, lambda: self._work_web_verify(limit, rec))
 
     async def run_web_source(
         self, url: str, source_type: str = "general", label: Optional[str] = None, *,
