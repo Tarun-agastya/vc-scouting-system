@@ -79,9 +79,17 @@ async def lifespan(app: FastAPI):
             against its own source text — through the controller so it shows
             in /ingestion/status like any run. Self-drains the backlog over
             successive nights without anyone pressing "Recheck now".
+
+            limit=80 (raised from 30, 28 Jul): headroom so a month of
+            unattended Mon/Thu sweeps can't outpace the nightly drain and let
+            the unverified backlog quietly grow. It runs at 03:00 with nothing
+            else competing for the GPU, and the consecutive-timeout guard now
+            keeps a slow record from aborting the batch, so a larger limit is
+            safe — it just processes more each night, stopping early when the
+            backlog is empty.
             """
             from processing.scout_controller import scout_controller
-            await scout_controller.run_recheck(limit=30)
+            await scout_controller.run_recheck(limit=80)
 
         scheduler = AsyncIOScheduler()
 
