@@ -1,0 +1,404 @@
+# ══════════════════════════════════════════════════════════════════════════
+# Scouting theses (Phase V-1, 24 Jul; deepened 24 Jul; group-entity research +
+# secondary-interest layer added 27 Jul per colleague review)
+#
+# A "thesis" defines an interest profile the dashboard filters/ranks startups
+# against. Each is a `stakeholder` (one of the four industrial partners) or an
+# ad-hoc `theme` added on demand.
+#
+# HOW MATCHING WORKS (Phase V-3):
+#   - `summary`  -> embedded for SEMANTIC search. Names the partner's actual
+#                  divisions/products/group entities so a startup working on a
+#                  SPECIFIC part of what they do is found even if its tags are
+#                  imperfect. This is the most important field — write it richly.
+#   - `industries`/`tech_clusters` -> PRIMARY boost when a startup's classified
+#                  taxonomy values are in these lists. Must be exact
+#                  taxonomy.yaml values. This is the partner's CORE field.
+#   - `keywords` -> PRIMARY boost on a literal hit in the startup's
+#                  name/description. Product/process-level specificity lives
+#                  here (e.g. "asphalt recycling", "railroad ballast", "MSR").
+#   - `secondary_industries`/`secondary_tech_clusters`/`secondary_keywords` ->
+#                  a SMALLER boost for interests OUTSIDE the partner's core
+#                  field — administration/back-office/workforce tooling that's
+#                  useful to any company but isn't their scouting focus.
+#                  Per owner + colleague decision (27 Jul): every company can
+#                  use better admin/HR/ops tooling, but it should never
+#                  outrank a genuine hit in the partner's own field — that's
+#                  what the smaller boost weight (Phase V-3) enforces.
+#
+# Hot-reloaded — edit freely. Seeded from public research 24 Jul; deepened via
+# each group's own subsidiary/brand websites 27 Jul (not just search snippets)
+# per colleague's review note. Core profiles approved by the owner's colleague
+# 27 Jul as a correct starting point.
+# ══════════════════════════════════════════════════════════════════════════
+
+# Shared secondary interest — "useful but not the focus" tooling that applies
+# similarly to all four (family Mittelstand businesses of comparable size).
+# Anchored to taxonomy.yaml's B2B SaaS & Enterprise Software / HR & Future of
+# Work industries. Duplicated per-thesis (not a global default) so any one
+# partner's admin-tech appetite can be tuned up/down independently later
+# without a schema change — e.g. if someone says "actually Kutter cares a lot
+# about workforce/skilled-labour tooling given 2,000 staff, more than the
+# others do."
+.admin_secondary: &admin_secondary
+  secondary_industries:
+    - B2B SaaS & Enterprise Software
+    - HR & Future of Work
+  secondary_tech_clusters:
+    - ERP & Business Operations
+    - Workflow & Productivity
+    - HR Operations & Payroll
+    - Collaboration & Communication
+    - Recruiting & Talent
+  secondary_keywords:
+    - erp
+    - back office
+    - administration
+    - accounting software
+    - invoicing
+    - procurement
+    - payroll
+    - hr software
+    - recruiting software
+    - workforce management
+    - document management
+    - process automation
+    - digitization
+
+theses:
+  # ── REISACHER — automotive retail & mobility ────────────────────────────
+  - id: reisacher
+    name: Reisacher
+    kind: stakeholder
+    active: true
+    summary: >
+      Reisacher is a large family-owned BMW / MINI / BYD automotive dealer
+      group in the Memmingen / Ulm / Augsburg / Munich region, run across new-
+      and used-car sales, a mechanical service workshop, a body-and-paint
+      shop, spare parts, and financing / leasing / insurance / trade-in,
+      including its own e-mobility entity (Reisacher Electric Mobility) as an
+      early BYD partner covering EV sales, charging and wallbox planning, and
+      fleet / commercial-customer business. It is interested in startups that
+      improve any part of the car retail and aftersales value chain: digital
+      showrooms and online car sales, dealer management systems and CRM, lead
+      generation, digital finance-and-insurance, AI used-car valuation and
+      remarketing, damage and inspection detection, workshop and service
+      management, predictive maintenance and diagnostics, tyre and parts
+      management, EV charging and charge/energy management, battery health,
+      fleet management and telematics, car subscription, and renewable energy
+      for its own sites.
+    industries:
+      - Mobility & Automotive
+      - Energy & CleanTech
+    tech_clusters:
+      - E-Mobility & Electric Vehicles
+      - EV Charging Infrastructure
+      - Automotive Retail & Dealership Tech
+      - Aftersales, Workshop & Repair Tech
+      - Used-Car & Vehicle Remarketing
+      - Fleet & Mobility Services
+      - Car Subscription & Rental Tech
+      - Connected Car & Telematics
+      - Energy Storage & Batteries
+    keywords:
+      - car dealership
+      - dealer management system
+      - automotive crm
+      - online car sales
+      - vehicle configurator
+      - lead management
+      - finance and insurance
+      - trade-in valuation
+      - used car pricing
+      - vehicle remarketing
+      - damage detection
+      - vehicle inspection
+      - workshop management
+      - service scheduling
+      - predictive maintenance
+      - vehicle diagnostics
+      - spare parts
+      - tyre management
+      - electric vehicle
+      - ev charging
+      - wallbox
+      - charge management
+      - battery health
+      - fleet management
+      - telematics
+      - car subscription
+      - aftersales
+    <<: *admin_secondary
+  - id: kutter
+    name: Kutter
+    kind: stakeholder
+    active: true
+    summary: >
+      Kutter is one of southern Germany's largest family construction groups
+      (~2,000 staff), organised in four divisions: building & turnkey
+      construction (shell construction, turnkey, project development); road &
+      civil engineering (roads from cycle paths to federal highways, drainage,
+      sewers, district-heating pipelines, earthworks); Germany's largest
+      road-milling / pavement-rehabilitation operation; and its own materials
+      production. Materials production runs through named subsidiaries: BK-Kies
+      (gravel/sand/split aggregate processing, landscape stone, and a preferred
+      supplier of railroad ballast — KG1/KG2 — with ISO 50001-certified,
+      energy-reducing processing and TU-Munich-certified quality control),
+      Hans Hebel (gravel extraction using up to 80% recycled water for
+      groundwater-compatible operation), and Result-Recycling (a licensed
+      mineral-waste recycler turning construction/demolition debris into
+      branded RC-Mix, RC-Concrete, RC-gravel and RC-brick-chipping products,
+      with multi-site interim storage and environmental consulting). It is
+      interested in startups across all of this: construction software, BIM
+      and digital site management, construction robotics and automation,
+      road-milling and pavement-condition sensing, asphalt production and
+      recycled-asphalt (RAP) technology, quarry and aggregate processing,
+      energy-efficient mineral processing, water recycling and treatment for
+      quarrying, railroad/rail-infrastructure materials, low-carbon and
+      recycled concrete and cement, alternative binders,
+      construction-and-demolition waste recycling and urban mining,
+      trenchless and pipeline / district-heating civil works, prefab and
+      modular construction, and construction-machinery telematics,
+      electrification and emissions reduction.
+    industries:
+      - Construction & Real Estate
+      - Packaging & Materials
+      - Climate & Environment
+    tech_clusters:
+      - ConTech & Construction Software
+      - BIM & Digital Planning
+      - Construction Robotics & Automation
+      - Road, Asphalt & Pavement Tech
+      - Civil & Underground Infrastructure
+      - Aggregates, Concrete & Cement Tech
+      - Construction & Demolition Recycling
+      - Construction Equipment & Machinery Tech
+      - Sustainable & Recycled Building Materials
+      - Modular & Prefab Construction
+    keywords:
+      - construction site
+      - construction software
+      - bim
+      - construction robotics
+      - road construction
+      - asphalt
+      - asphalt recycling
+      - reclaimed asphalt
+      - road milling
+      - pavement condition
+      - road maintenance
+      - civil engineering
+      - earthworks
+      - drainage
+      - sewer
+      - pipeline
+      - district heating pipe
+      - trenchless
+      - quarry
+      - gravel
+      - sand
+      - aggregate
+      - aggregate processing
+      - railroad ballast
+      - rail infrastructure
+      - groundwater
+      - water recycling
+      - water treatment
+      - energy management iso 50001
+      - ready-mix concrete
+      - recycled concrete
+      - low-carbon concrete
+      - cement
+      - alternative binder
+      - demolition
+      - construction waste
+      - mineral waste
+      - urban mining
+      - building materials
+      - prefab
+      - modular construction
+      - construction machinery
+      - equipment telematics
+    <<: *admin_secondary
+  - id: suedpack
+    name: SÜDPACK
+    kind: stakeholder
+    active: true
+    summary: >
+      SÜDPACK is a technology-leading manufacturer of flexible high-performance
+      packaging films, made by co-extrusion, for food, medical, pharmaceutical
+      and technical products — product lines include skin-packaging (SkinPro),
+      composite and mono-material barrier films (Multifol, Pure-Line / PurePP),
+      vacuum and modified-atmosphere packaging, and lidding films, with flexo,
+      gravure, offset and digital printing. Its Medica division is a top-5
+      European sterile-barrier packaging provider for medical, pharma and
+      diagnostics, with named product lines MedGuard (thermoforming and
+      form-fill-seal systems), PharmaGuard (recyclable mono-material blister),
+      NutriGuard (nutraceuticals) and MedHub (standardised medical bags),
+      meeting GMP/cleanroom standards for incontinence care, wound care and
+      diagnostics. It drives the circular economy hard: mono-material
+      design-for-recycling, mechanical recycling, and chemical recycling
+      through CARBOLIQ, a chemical recycler it majority-owns whose "direct
+      oiling" catalytic tribochemical conversion (CTC) process — unlike most
+      pyrolysis — can process PA and PET plastics plus mixed/contaminated
+      waste at under 400°C, yielding virgin-grade oil for new plastics. It is
+      interested in startups in film and co-extrusion technology, high-barrier
+      and functional coatings that replace aluminium or multilayer laminates,
+      recyclable mono-materials, biopolymers and compostables, chemical /
+      advanced recycling and pyrolysis-adjacent processes, mechanical
+      recycling and food-grade recyclate decontamination, plastics sorting
+      (NIR, AI, digital watermarks), active and intelligent packaging and
+      freshness / shelf-life sensing, sterile and medical/pharma packaging,
+      printing technology for flexible packaging, materials science and
+      additives, and packaging LCA / carbon footprint — including healthcare
+      supply-chain emissions specifically.
+    industries:
+      - Packaging & Materials
+      - Climate & Environment
+      - Health & Life Sciences
+    tech_clusters:
+      - Packaging Technology & Films
+      - Barrier & Coating Technology
+      - Active & Intelligent Packaging
+      - Medical & Sterile Packaging
+      - Recycling & Circular Economy
+      - Chemical & Advanced Recycling
+      - Plastics Sorting & Collection
+      - Biopolymers & Compostables
+      - Advanced & Functional Materials
+      - Materials Science & Chemistry
+    keywords:
+      - packaging
+      - flexible packaging
+      - film
+      - co-extrusion
+      - mono-material
+      - barrier film
+      - barrier coating
+      - laminate
+      - modified atmosphere
+      - vacuum packaging
+      - lidding film
+      - skin packaging
+      - flexible packaging printing
+      - recyclable packaging
+      - design for recycling
+      - circular economy
+      - chemical recycling
+      - advanced recycling
+      - pyrolysis
+      - direct oiling
+      - tribochemical conversion
+      - mechanical recycling
+      - post-consumer recyclate
+      - food-grade recyclate
+      - plastics sorting
+      - nir sorting
+      - digital watermark
+      - biopolymer
+      - compostable
+      - active packaging
+      - intelligent packaging
+      - freshness sensor
+      - shelf-life
+      - sterile packaging
+      - sterile barrier
+      - blister packaging
+      - medical packaging
+      - cleanroom
+      - gmp
+      - materials science
+      - healthcare emissions
+    <<: *admin_secondary
+  - id: alois_mueller
+    name: Alois Müller
+    kind: stakeholder
+    active: true
+    summary: >
+      Alois Müller Group is an energy and building-services engineering company
+      (technical building equipment / TGA) and industrial plant builder
+      (~1,000 staff). Its divisions span heating, ventilation (including its
+      own duct manufacturing) and air-conditioning, refrigeration and cooling,
+      sanitary, electrical, photovoltaics, industrial piping and district
+      heating, and gas / media supply, plus building automation and
+      measurement-control-regulation (MSR) via its subsidiary ECONTEC MSR —
+      an electrical-panel and controls specialist for HVAC and refrigeration
+      automation. In its energy-self-sufficient "Green Factory" (1.5 MW PV,
+      biogas CHP, pellet heating, high-temperature heat pump, battery storage)
+      it manufactures steel/stainless piping and modular / containerised
+      energy centres under two brands: Energy Unit (turnkey heating for
+      multi-family buildings, with named product lines for heat-pump, pellet,
+      oil/gas and modular "ModulPro" systems, built in CO2-neutral
+      manufacturing) and Mobile Energy (rentable mobile heating/cooling units
+      from 10 kW to 5,000 kW for construction sites, renovations and
+      emergency/temporary supply). It is interested in startups in energy
+      technology and decarbonisation: heat pumps (including high-temperature
+      and industrial), energy storage (battery and thermal), photovoltaics and
+      solar integration, building and industrial energy management and
+      monitoring, demand response and energy flexibility, district-heating and
+      thermal networks, CHP / cogeneration, refrigeration and waste-heat
+      recovery, smart-building automation, MSR / IoT sensing and control
+      panels, mobile / temporary / rental energy systems, modular and
+      containerised energy plant, and digital planning tools for building
+      services (MEP / TGA).
+    industries:
+      - Energy & CleanTech
+      - Construction & Real Estate
+      - Manufacturing & Industry 4.0
+    tech_clusters:
+      - Heat Pumps & Heating Tech
+      - Refrigeration & Cooling Tech
+      - Solar & Photovoltaics
+      - Energy Storage & Batteries
+      - Energy Management & Efficiency
+      - Demand Response & Energy Flexibility
+      - District Heating & Thermal Networks
+      - CHP & Cogeneration
+      - Building Energy & HVAC Tech
+      - Smart Building & Facility Management
+    keywords:
+      - energy technology
+      - heat pump
+      - high-temperature heat pump
+      - industrial heat pump
+      - energy storage
+      - battery storage
+      - thermal storage
+      - photovoltaic
+      - solar
+      - energy management
+      - energy monitoring
+      - energy efficiency
+      - demand response
+      - energy flexibility
+      - district heating
+      - heat network
+      - cogeneration
+      - chp
+      - combined heat and power
+      - biomass
+      - biogas
+      - pellet heating
+      - ventilation
+      - hvac
+      - air conditioning
+      - refrigeration
+      - cooling
+      - waste heat recovery
+      - building automation
+      - building management system
+      - smart building
+      - measurement control regulation
+      - msr
+      - control panel
+      - sensor
+      - metering
+      - sanitary
+      - piping
+      - mobile energy
+      - rental energy system
+      - temporary heating
+      - modular energy center
+      - energy center
+      - decarbonization
+    <<: *admin_secondary

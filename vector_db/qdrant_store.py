@@ -94,6 +94,21 @@ class QdrantStore:
             with_payload=True,
         )
 
+    def get_vectors(self, ids: List[str]) -> Dict[str, List[float]]:
+        """
+        Batch-fetch already-stored vectors for a set of startup ids. Used by
+        thesis relevance ranking (Phase V-3) to reuse the embedding computed
+        at ingest time instead of re-embedding — cheap and always in sync
+        with what search_startups would return for the same point.
+        """
+        if not ids:
+            return {}
+        self._ensure_ready()
+        points = self._get_client().retrieve(
+            collection_name="startups", ids=ids, with_vectors=True, with_payload=False,
+        )
+        return {str(p.id): p.vector for p in points}
+
     def get_startup_count(self) -> int:
         """Return total number of startups in the collection."""
         self._ensure_ready()

@@ -1,0 +1,197 @@
+# ══════════════════════════════════════════════════════════════════════════
+# Controlled classification taxonomy (Phase V-1, 24 Jul)
+#
+# The FIXED vocabulary that every startup's `industry` and `tech_cluster` is
+# classified into (Phase V-2 constrains the LLM to these exact values, so the
+# database stops filling with free-form noise like "Proptech - Fashion Tech").
+# Stakeholder theses (config/theses.yaml) reference these same terms, so
+# accurate classification and accurate thesis-matching are one and the same.
+#
+# HOW TO EDIT:
+#   - `industries`: the top-level buckets (keep this list fairly short/stable).
+#   - `tech_clusters`: finer domains, grouped UNDER an industry. A startup gets
+#     exactly one industry + one tech_cluster. Add a cluster by putting it under
+#     the right industry; add an industry by adding a top-level key here AND an
+#     entry in `industries`. Hot-reloaded — no restart needed.
+#
+# The first four industries are deliberately the partners' core verticals
+# (Mobility, Energy, Construction, Packaging); the rest cover general startup
+# tech so the whole DB classifies, not just partner-adjacent companies.
+# ══════════════════════════════════════════════════════════════════════════
+
+industries:
+  - Mobility & Automotive
+  - Energy & CleanTech
+  - Construction & Real Estate
+  - Packaging & Materials
+  - Manufacturing & Industry 4.0
+  - AI & Machine Learning
+  - B2B SaaS & Enterprise Software
+  - FinTech & InsurTech
+  - Health & Life Sciences
+  - Food & AgTech
+  - Logistics & Supply Chain
+  - Retail & E-Commerce
+  - Cybersecurity
+  - HR & Future of Work
+  - Marketing & Sales Tech
+  - Robotics & Hardware
+  - Climate & Environment
+  - Consumer & Lifestyle
+  - GovTech & Education
+  - Other / Uncategorized
+
+tech_clusters:
+  Mobility & Automotive:
+    - E-Mobility & Electric Vehicles
+    - EV Charging Infrastructure
+    - Automotive Retail & Dealership Tech
+    - Aftersales, Workshop & Repair Tech
+    - Used-Car & Vehicle Remarketing
+    - Fleet & Mobility Services
+    - Car Subscription & Rental Tech
+    - Autonomous Driving & ADAS
+    - Connected Car & Telematics
+    - Micromobility & Logistics Vehicles
+
+  Energy & CleanTech:
+    - Solar & Photovoltaics
+    - Heat Pumps & Heating Tech
+    - Refrigeration & Cooling Tech
+    - Energy Storage & Batteries
+    - Energy Management & Efficiency
+    - Demand Response & Energy Flexibility
+    - District Heating & Thermal Networks
+    - CHP & Cogeneration
+    - Smart Grid & Grid Tech
+    - Hydrogen & Fuel Cells
+    - Renewable Energy Generation
+    - Building Energy & HVAC Tech
+
+  Construction & Real Estate:
+    - ConTech & Construction Software
+    - BIM & Digital Planning
+    - Construction Robotics & Automation
+    - Road, Asphalt & Pavement Tech
+    - Civil & Underground Infrastructure
+    - Aggregates, Concrete & Cement Tech
+    - Construction & Demolition Recycling
+    - Construction Equipment & Machinery Tech
+    - Sustainable & Recycled Building Materials
+    - PropTech & Real Estate Software
+    - Smart Building & Facility Management
+    - Modular & Prefab Construction
+
+  Packaging & Materials:
+    - Packaging Technology & Films
+    - Barrier & Coating Technology
+    - Active & Intelligent Packaging
+    - Medical & Sterile Packaging
+    - Recycling & Circular Economy
+    - Chemical & Advanced Recycling
+    - Plastics Sorting & Collection
+    - Biopolymers & Compostables
+    - Advanced & Functional Materials
+    - Materials Science & Chemistry
+    - Sustainable Materials
+
+  Manufacturing & Industry 4.0:
+    - Industrial IoT & Sensors
+    - Digital Factory & MES
+    - Predictive Maintenance
+    - Additive Manufacturing & 3D Printing
+    - Industrial Automation
+    - Quality Inspection & Machine Vision
+
+  AI & Machine Learning:
+    - AI/ML Infrastructure & MLOps
+    - Generative AI & LLMs
+    - Computer Vision
+    - Natural Language Processing
+    - AI Applications (Vertical)
+    - Data & Analytics Platforms
+
+  B2B SaaS & Enterprise Software:
+    - Workflow & Productivity
+    - DevOps & Developer Tools
+    - Observability & Monitoring
+    - No-Code / Low-Code
+    - ERP & Business Operations
+    - Collaboration & Communication
+
+  FinTech & InsurTech:
+    - Payments & Banking
+    - Lending & Credit
+    - Wealth & Investing
+    - InsurTech
+    - RegTech & Compliance
+    - Crypto & Web3
+
+  Health & Life Sciences:
+    - Digital Health
+    - MedTech & Devices
+    - Biotech & Pharma
+    - Health Data & AI Diagnostics
+    - Care & Telemedicine
+
+  Food & AgTech:
+    - AgTech & Farming
+    - Food Production & Processing
+    - Alternative Proteins
+    - Food Safety & Traceability
+
+  Logistics & Supply Chain:
+    - Supply Chain Software
+    - Last-Mile & Delivery
+    - Warehouse Automation
+    - Freight & Transport Tech
+
+  Retail & E-Commerce:
+    - E-Commerce Platforms & Tools
+    - Retail Tech & POS
+    - Marketplaces
+    - D2C Brands
+
+  Cybersecurity:
+    - Application & Cloud Security
+    - Identity & Access
+    - Threat Detection & Response
+    - Data Privacy & Protection
+
+  HR & Future of Work:
+    - Recruiting & Talent
+    - HR Operations & Payroll
+    - Learning & Upskilling
+    - Employee Experience
+
+  Marketing & Sales Tech:
+    - MarTech & Advertising
+    - Sales Enablement & CRM
+    - Content & Creator Tools
+    - Customer Data & Analytics
+
+  Robotics & Hardware:
+    - Industrial & Service Robotics
+    - Drones & Autonomous Systems
+    - Sensors & Embedded Hardware
+    - DeepTech Hardware
+
+  Climate & Environment:
+    - Carbon Capture & Removal
+    - Carbon Accounting & ESG
+    - Water & Waste Tech
+    - Environmental Monitoring
+
+  Consumer & Lifestyle:
+    - Consumer Apps
+    - Health & Wellness
+    - Gaming & Entertainment
+    - Home & Living
+
+  GovTech & Education:
+    - GovTech & Public Sector
+    - EdTech
+    - Civic & Social Impact
+
+  Other / Uncategorized:
+    - Other / Uncategorized

@@ -82,6 +82,15 @@ class Startup(Base):
     verified_at            = Column(DateTime, nullable=True)
     source_excerpt          = Column(Text, nullable=True)  # the extraction chunk this record came from (Phase H-1)
 
+    # Controlled-taxonomy classification (Phase V-2) — industry/tech_cluster
+    # ABOVE are the live, displayed values, constrained to config/taxonomy.yaml
+    # once classified_at is set. NULL means this record still has whatever
+    # free-form value extraction produced (pre-V-2 legacy, or ingest-time
+    # classification failed) and is eligible for processing/reclassifier.py's
+    # backlog pass. The original free-form values are preserved in raw_data
+    # ("original_industry"/"original_tech_cluster") for audit, never lost.
+    classified_at          = Column(DateTime, nullable=True, index=True)
+
     # AI-generated insights
     ai_summary = Column(Text)
     investment_thesis = Column(Text)
