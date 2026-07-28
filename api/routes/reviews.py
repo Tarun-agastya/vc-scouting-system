@@ -16,6 +16,7 @@ Nothing in the master DB changes except through an explicit approve here.
                                   company that should never have been stored)
 """
 import logging
+import re
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
@@ -86,11 +87,46 @@ def _reindex(db, master: Startup) -> None:
     })
 
 
+def _coerce_founded_year(raw_val):
+    """
+    founded_year is an Integer column; a proposed value can arrive as a
+    non-numeric string when the LLM that proposed it (web_verify_record)
+    embedded reasoning in what should have been a bare value — found live
+    28 Jul: "2023 (implied by 'start-up journey began' in 2023 via
+    Instagram...)" crashed approve with a Postgres type error, and a worse
+    case ("previously founded by a serial entrepreneur, exact year not
+    specified") has no year in it at all.
+
+    Extracts the first plausible 4-digit year and returns it as an int.
+    Returns None if nothing plausible is found — the caller skips the
+    field entirely rather than writing garbage or crashing.
+    """
+    if isinstance(raw_val, int):
+        return raw_val
+    match = re.search(r"\b(1[89]\d{2}|20\d{2})\b", str(raw_val))
+    return int(match.group()) if match else None
+
+
 def _apply_field_updates(db, master: Startup, proposed: dict) -> None:
-    """Apply an approved field_update diff to the master."""
+    """
+    Apply an approved field_update diff to the master. Never lets one
+    malformed field abort the whole approve — skips it (logged) and keeps
+    applying the rest, since the alternative (a 500 on approve) blocks a
+    human from applying every OTHER, perfectly good field in the same
+    review too.
+    """
     for field, change in (proposed or {}).items():
         new_val = change.get("new")
-        if field == "founders":
+        if field == "founded_year":
+            coerced = _coerce_founded_year(new_val)
+            if coerced is None:
+                logger.warning(
+                    f"[Reviews] Skipping unparseable founded_year on approve "
+                    f"for '{master.name}': {new_val!r}"
+                )
+                continue
+            master.founded_year = coerced
+        elif field == "founders":
             raw = dict(master.raw_data or {})
             raw["founders"] = new_val
             master.raw_data = raw
@@ -169,18 +205,27 @@ async def list_reviews(
     status: str = Query("pending"),
     review_type: Optional[str] = None,
     risk_level: Optional[str] = None,
+    q: Optional[str] = None,       # company name filter — matches master_name or incoming_name
     limit: int = 100,
     db: Session = Depends(get_db),
 ):
     """List reviews (pending by default). The dashboard Review Inbox reads this."""
-    q = db.query(DuplicateReview)
+    from sqlalchemy import or_
+
+    query = db.query(DuplicateReview)
     if status:
-        q = q.filter(DuplicateReview.status == status)
+        query = query.filter(DuplicateReview.status == status)
     if review_type:
-        q = q.filter(DuplicateReview.review_type == review_type)
+        query = query.filter(DuplicateReview.review_type == review_type)
     if risk_level:
-        q = q.filter(DuplicateReview.risk_level == risk_level)
-    rows = q.order_by(DuplicateReview.created_at.desc()).limit(limit).all()
+        query = query.filter(DuplicateReview.risk_level == risk_level)
+    if q:
+        like = f"%{q}%"
+        query = query.filter(or_(
+            DuplicateReview.master_name.ilike(like),
+            DuplicateReview.incoming_name.ilike(like),
+        ))
+    rows = query.order_by(DuplicateReview.created_at.desc()).limit(limit).all()
     return {
         "total": len(rows),
         "reviews": [

@@ -100,6 +100,20 @@ DEFAULTS = {
         "check_funding_amount": True,
         "check_employee_count": True,
         "check_founders": True,
+        # A bare "is this 4-digit token anywhere in the chunk" check passes
+        # on a coincidental date elsewhere in the text — found live 27 Jul
+        # on a Campus Founders news-listing page where every blurb carries
+        # the article's own publish date ("04/11/2024"), which the
+        # extractor mistook for RiDERgy's/NextStepHR's/DeepFile's founding
+        # year and the old bare-substring check couldn't tell apart from a
+        # real founding statement. The year must now appear within
+        # founded_year_context_chars of one of these signals.
+        "founded_year_context_chars": 60,
+        "founded_year_signals": [
+            "founded", "founded in", "co-founded", "established", "est.",
+            "incorporated", "started in", "launched in", "since",
+            "gegründet", "gegr.", "seit",
+        ],
         "funding_stage_keywords": [
             "pre-seed", "preseed", "vor-seed", "vorseed", "seed",
             "series a", "series b", "series c", "series d", "series e",

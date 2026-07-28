@@ -71,6 +71,25 @@ def _score_tiers():
     return [(int(t[0]), str(t[1])) for t in _scoring()["tiers"]]
 
 
+def _founded_year_ok(value) -> bool:
+    """
+    True if founded_year is a plausible year (1990-2030). Defensive: a
+    non-numeric value must never crash scoring — found live 28 Jul, a
+    record momentarily carrying a garbage founded_year like "2023 (implied
+    by ...)" from a malformed web-verify proposal threw
+    invalid-literal-for-int() here and errored the whole scoring pass.
+    Anything not cleanly castable to an int just scores as "not a valid
+    year" rather than raising.
+    """
+    if value is None:
+        return False
+    try:
+        year = int(str(value).strip())
+    except (ValueError, TypeError):
+        return False
+    return 1990 <= year <= 2030
+
+
 # ── Return type ───────────────────────────────────────────────────────────────
 
 @dataclass
@@ -173,9 +192,7 @@ def _compute(record: "Startup") -> ScoringResult:
     has_desc     = desc_words >= 50
     has_industry = bool(record.industry)
     has_location = bool(record.city and record.country)
-    founded_ok   = bool(
-        record.founded_year and 1990 <= int(record.founded_year) <= 2030
-    )
+    founded_ok   = _founded_year_ok(record.founded_year)
     tags_ok   = bool(record.tags and len(record.tags) >= 2)
     has_size  = bool(record.employee_count or record.business_model)
 

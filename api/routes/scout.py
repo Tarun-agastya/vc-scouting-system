@@ -358,6 +358,7 @@ async def list_startups(
     verification_status: Optional[str] = None,   # unverified | verified | flagged (Phase H-2)
     founded_year_min: Optional[int] = None,
     founded_year_max: Optional[int] = None,
+    thesis: Optional[str] = None,          # Phase V-3: rank by relevance to this thesis id instead of `sort`
     sort: str = "created_at",              # created_at | extracted_at | name | score
     order: str = "desc",                   # asc | desc
     limit: int = 50,
@@ -368,7 +369,12 @@ async def list_startups(
     Browse/search startups with rich filters + keyword search (Phase D).
     Powers the team dashboard's Browse & Search page. Keyword `q` matches
     name / short_description / description / tags (case-insensitive).
+
+    `thesis`: when set, all other filters still apply as an SQL pre-filter,
+    but the result order switches from `sort`/`order` to semantic+tag
+    relevance against that thesis (Phase V-3) — see processing/thesis_matcher.
     """
+    import asyncio
     from sqlalchemy import or_, cast, String
 
     query = db.query(Startup)
@@ -403,6 +409,64 @@ async def list_startups(
     if founded_year_max is not None: query = query.filter(Startup.founded_year <= founded_year_max)
 
     total = query.count()
+
+    if thesis:
+        from config.thesis_loader import get_thesis
+        from processing.thesis_matcher import rank
+        from vector_db.qdrant_store import qdrant_store
+
+        if get_thesis(thesis) is None:
+            raise HTTPException(status_code=404, detail=f"Unknown thesis id: {thesis!r}")
+
+        # Relevance ranking needs the whole SQL-filtered set (not just one
+        # page) so it can reorder before slicing — fine at current DB size
+        # (hundreds-low-thousands of rows), same tradeoff already accepted
+        # by the "no precomputed relevance, always fresh" V-3 design.
+        matched = query.all()
+        ids = [str(s.id) for s in matched]
+        loop = asyncio.get_event_loop()
+        # Both the Qdrant fetch and the thesis-summary embed are blocking
+        # network/Ollama calls — dispatched off the event loop the same way
+        # /scout/search already does, so a thesis-filtered Browse request
+        # never freezes every other concurrent request (this exact class of
+        # bug was fixed for semantic search in 9d802bc; don't reintroduce it).
+        vectors = await loop.run_in_executor(None, qdrant_store.get_vectors, ids)
+        candidates = [
+            {
+                "id": str(s.id),
+                "name": s.name,
+                "short_description": s.short_description,
+                "description": s.description,
+                "industry": s.industry,
+                "tech_cluster": s.tech_cluster,
+                "country": s.country,
+                "city": s.city,
+                "funding_stage": s.funding_stage,
+                "employee_count": s.employee_count,
+                "score_tier": s.score_tier,
+                "enrichment_score": s.enrichment_score,
+                "source": s.source,
+                "source_url": s.source_url,
+                "extracted_at": s.extracted_at,
+                "created_at": s.created_at,
+                "verification_status": s.verification_status or "unverified",
+                "vector": vectors.get(str(s.id)),
+            }
+            for s in matched
+        ]
+        try:
+            ranked = await loop.run_in_executor(None, rank, thesis, candidates)
+        except Exception as exc:
+            logger.error(f"[Scout] Thesis ranking failed for '{thesis}': {exc}")
+            raise HTTPException(
+                status_code=503,
+                detail=f"Thesis ranking unavailable — is Ollama running? ({exc})",
+            )
+        page = ranked[offset:offset + limit]
+        for r in page:
+            r.pop("vector", None)
+            r.pop("description", None)
+        return {"total": total, "offset": offset, "limit": limit, "startups": page}
 
     sort_col = {
         "created_at": Startup.created_at,

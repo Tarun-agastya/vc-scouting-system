@@ -103,7 +103,108 @@ def _normalize_field(field: str) -> str:
     return _FIELD_ALIASES.get(f, f)
 
 
-async def web_verify_pending(limit: int = 15) -> dict:
+def apply_verdict(db, record, results: list, verdict: dict) -> str:
+    """
+    Apply one already-computed web-verify verdict to a record: stage a
+    field_update review on a real contradiction, mark 'verified' on a clean
+    check, or leave 'flagged'/'identity_unconfirmed' if the search results
+    couldn't even confirm this is the right company. Never applies a
+    correction directly — always stages for human approval, same
+    S-3b stewardship contract as every other pipeline path.
+
+    Factored out of web_verify_pending's loop body (27 Jul) so a verdict
+    already computed elsewhere — e.g. an ad-hoc verification pass run
+    outside the normal no_source_excerpt-only backlog — can be staged
+    through the exact same, tested path instead of duplicating this logic.
+
+    Returns the outcome key: "unchanged" | "verified" | "staged".
+    """
+    from processing.storage import _create_review
+
+    identity_ok = verdict.get("identity_match", True)
+    findings = [
+        f for f in (verdict.get("findings") or [])
+        if f.get("verdict") == "contradicted" and f.get("field")
+    ]
+
+    if not identity_ok:
+        record.verification_status = "flagged"
+        record.verification_notes = (
+            f"Web verification could not confirm this is the right company: "
+            f"{verdict.get('summary') or ''}"
+        )
+        record.verification_evidence = {
+            "reason": "identity_unconfirmed", "web_verdict": verdict,
+            "search_results": results,
+        }
+        record.verified_at = datetime.utcnow()
+        db.commit()
+        return "unchanged"
+
+    if not findings:
+        record.verification_status = "verified"
+        record.verification_notes = (
+            verdict.get("summary") or "Confirmed via web search — no contradictions found."
+        )
+        record.verification_evidence = {
+            "reason": "web_verified", "web_verdict": verdict,
+            "search_results": results,
+        }
+        record.verified_at = datetime.utcnow()
+        db.commit()
+        return "verified"
+
+    proposed = {}
+    for f in findings:
+        attr = _normalize_field(f["field"])
+        if attr not in _CHECK_FIELDS:
+            continue
+        old_val = getattr(record, attr, None)
+        new_val = f.get("correct_value")
+        if not new_val or str(new_val).strip() == str(old_val or "").strip():
+            continue
+        proposed[attr] = {
+            "old": old_val, "new": new_val,
+            "incoming_source": "web_verification",
+            "incoming_extracted_at": datetime.utcnow().isoformat(),
+            "source_url": f.get("source_url"),
+        }
+
+    if proposed:
+        _create_review(
+            db,
+            review_type="field_update",
+            master=record,
+            incoming_row=None,
+            incoming_data={"name": record.name},
+            proposed_changes=proposed,
+            evidence={"web_verdict": verdict, "search_results": results},
+            risk_level="high",
+            confidence=None,
+            source="web_verification",
+            run_id=None,
+        )
+        record.verification_notes = verdict.get("summary") or ""
+        record.verification_evidence = {
+            "reason": "web_verification_flagged", "web_verdict": verdict,
+            "search_results": results,
+        }
+        record.verified_at = datetime.utcnow()
+        db.commit()
+        return "staged"
+
+    record.verification_status = "verified"
+    record.verification_notes = verdict.get("summary") or "Confirmed via web search."
+    record.verification_evidence = {
+        "reason": "web_verified", "web_verdict": verdict,
+        "search_results": results,
+    }
+    record.verified_at = datetime.utcnow()
+    db.commit()
+    return "verified"
+
+
+async def web_verify_pending(limit: int = 15, progress=None) -> dict:
     """
     Process up to `limit` records from the no_source_excerpt backlog:
     verification_status='flagged' with verification_evidence.reason ==
@@ -123,7 +224,6 @@ async def web_verify_pending(limit: int = 15) -> dict:
     """
     from database.connection import SessionLocal
     from database.models import Startup
-    from processing.storage import _create_review
 
     db = SessionLocal()
     counts = {"verified": 0, "staged": 0, "unchanged": 0, "errors": 0}
@@ -148,11 +248,23 @@ async def web_verify_pending(limit: int = 15) -> dict:
             .limit(limit)
             .all()
         )
+        if progress is not None:
+            progress.total = len(candidates)
 
         loop = asyncio.get_event_loop()
         ollama_down = False
+        consecutive_timeouts = 0
+        # Require several timeouts IN A ROW before concluding Ollama itself
+        # is down, not just one slow record — see processing/verifier.py's
+        # identical fix (27 Jul) for the full story: one outlier timeout
+        # used to abandon the entire rest of a multi-hundred-record batch.
+        # web_verify_record already retries once internally, so this is a
+        # second line of defense, not the primary fix.
+        CONSECUTIVE_TIMEOUT_THRESHOLD = 3
 
         for record in candidates:
+            if progress is not None:
+                progress.current_name = record.name
             try:
                 results = await loop.run_in_executor(None, _search_record, record)
                 if not results:
@@ -164,92 +276,10 @@ async def web_verify_pending(limit: int = 15) -> dict:
                     continue
 
                 verdict = await loop.run_in_executor(None, _verify_record, record, results)
+                consecutive_timeouts = 0
 
-                identity_ok = verdict.get("identity_match", True)
-                findings = [
-                    f for f in (verdict.get("findings") or [])
-                    if f.get("verdict") == "contradicted" and f.get("field")
-                ]
-
-                if not identity_ok:
-                    record.verification_status = "flagged"
-                    record.verification_notes = (
-                        f"Web verification could not confirm this is the right company: "
-                        f"{verdict.get('summary') or ''}"
-                    )
-                    record.verification_evidence = {
-                        "reason": "identity_unconfirmed", "web_verdict": verdict,
-                        "search_results": results,
-                    }
-                    record.verified_at = datetime.utcnow()
-                    db.commit()
-                    counts["unchanged"] += 1
-                    continue
-
-                if not findings:
-                    record.verification_status = "verified"
-                    record.verification_notes = (
-                        verdict.get("summary") or "Confirmed via web search — no contradictions found."
-                    )
-                    record.verification_evidence = {
-                        "reason": "web_verified", "web_verdict": verdict,
-                        "search_results": results,
-                    }
-                    record.verified_at = datetime.utcnow()
-                    db.commit()
-                    counts["verified"] += 1
-                    continue
-
-                proposed = {}
-                for f in findings:
-                    attr = _normalize_field(f["field"])
-                    if attr not in _CHECK_FIELDS:
-                        continue
-                    old_val = getattr(record, attr, None)
-                    new_val = f.get("correct_value")
-                    if not new_val or str(new_val).strip() == str(old_val or "").strip():
-                        continue
-                    proposed[attr] = {
-                        "old": old_val, "new": new_val,
-                        "incoming_source": "web_verification",
-                        "incoming_extracted_at": datetime.utcnow().isoformat(),
-                        "source_url": f.get("source_url"),
-                    }
-
-                if proposed:
-                    _create_review(
-                        db,
-                        review_type="field_update",
-                        master=record,
-                        incoming_row=None,
-                        incoming_data={"name": record.name},
-                        proposed_changes=proposed,
-                        evidence={"web_verdict": verdict, "search_results": results},
-                        risk_level="high",
-                        confidence=None,
-                        source="web_verification",
-                        run_id=None,
-                    )
-                    record.verification_notes = verdict.get("summary") or ""
-                    record.verification_evidence = {
-                        "reason": "web_verification_flagged", "web_verdict": verdict,
-                        "search_results": results,
-                    }
-                    record.verified_at = datetime.utcnow()
-                    db.commit()
-                    counts["staged"] += 1
-                else:
-                    record.verification_status = "verified"
-                    record.verification_notes = (
-                        verdict.get("summary") or "Confirmed via web search."
-                    )
-                    record.verification_evidence = {
-                        "reason": "web_verified", "web_verdict": verdict,
-                        "search_results": results,
-                    }
-                    record.verified_at = datetime.utcnow()
-                    db.commit()
-                    counts["verified"] += 1
+                outcome = apply_verdict(db, record, results, verdict)
+                counts[outcome] += 1
 
             except Exception as exc:
                 db.rollback()
@@ -259,7 +289,18 @@ async def web_verify_pending(limit: int = 15) -> dict:
                 counts["errors"] += 1
                 msg = str(exc).lower()
                 if any(s in msg for s in ("connect", "timeout", "timed out", "refused", "unreachable")):
-                    ollama_down = True
+                    consecutive_timeouts += 1
+                    if consecutive_timeouts >= CONSECUTIVE_TIMEOUT_THRESHOLD:
+                        ollama_down = True
+                        logger.warning(
+                            f"[WebVerifier] {CONSECUTIVE_TIMEOUT_THRESHOLD} consecutive timeouts — "
+                            f"treating Ollama as down for the rest of this batch"
+                        )
+                else:
+                    consecutive_timeouts = 0
+            finally:
+                if progress is not None:
+                    progress.processed += 1
 
         logger.info(f"[WebVerifier] Batch: {counts}")
         return counts

@@ -27,9 +27,13 @@ backlog visible instead of assumed, and it's exactly the honest signal the
 owner asked for: don't hide what can't be checked.
 
 A "flagged" record is never auto-corrected by Layer 2 findings — it always
-waits for a human, consistent with the Phase S-3b stewardship model. Only
-Layer 1 ever writes new field values, and only ones it's already applying
-at ingestion time via the same function.
+waits for a human, consistent with the Phase S-3b stewardship model. Layer 2
+never proposes a replacement value for any field. The one exception (added
+27 Jul after a live find — see the "layer2_nulled" logic below) is nulling,
+never guessing: if Layer 2 says one of the same high-risk fields Layer 1
+already gates (founded_year, funding_stage, employee_count) has no support
+in the record's own source_excerpt, it's cleared the same way Layer 1
+clears an ungrounded field — an absence, not a proposed correction.
 
 Called exclusively through processing.scout_controller.run_recheck(), which
 wraps the whole batch in the GPU mutex via ScoutController._execute() — do
@@ -115,7 +119,7 @@ def _layer2_deep_recheck(record) -> dict:
     return qwen_client.recheck_record(prompt)
 
 
-async def recheck_pending(limit: int = 20) -> dict:
+async def recheck_pending(limit: int = 20, progress=None) -> dict:
     """
     Process the unverified backlog. Two phases:
 
@@ -130,6 +134,10 @@ async def recheck_pending(limit: int = 20) -> dict:
     Never raises. If Ollama fails partway through Phase B, the remaining
     records in this batch are left "unverified" (retried on the next run)
     rather than guessed at.
+
+    `progress`: optional scout_controller.RecordProgress — updated per Phase
+    B record so /ingestion/status shows real "processed / total" counters
+    while running (Phase A is near-instant and free, not worth tracking).
     """
     from database.connection import SessionLocal
     from database.models import Startup
@@ -165,11 +173,26 @@ async def recheck_pending(limit: int = 20) -> dict:
             .limit(limit)
             .all()
         )
+        if progress is not None:
+            progress.total = len(checkable)
 
         loop = asyncio.get_event_loop()
         ollama_down = False
+        consecutive_timeouts = 0
+        # Require several timeouts IN A ROW before concluding Ollama itself
+        # is down, not just one slow record. Found live 27 Jul: a single
+        # record landing on the slow tail of the latency range (30-265s
+        # observed this session) tripped this on ONE timeout, and every
+        # night for 5+ days the scheduled 03:00 recheck hit an early record,
+        # timed out once, and silently abandoned the entire rest of a
+        # 400+ record batch without even attempting the others — the real
+        # reason the backlog never drained. recheck_record now also retries
+        # once internally, so this counter should rarely even move.
+        CONSECUTIVE_TIMEOUT_THRESHOLD = 3
 
         for record in checkable:
+            if progress is not None:
+                progress.current_name = record.name
             try:
                 layer1_changes = _layer1_reground(record)
                 for field, value in layer1_changes.items():
@@ -189,6 +212,7 @@ async def recheck_pending(limit: int = 20) -> dict:
                 verdict = await loop.run_in_executor(None, _layer2_deep_recheck, record)
 
                 contradicted = verdict.get("contradicted_fields") or []
+                unsupported = set(verdict.get("unsupported_fields") or [])
                 identity_ok = verdict.get("identity_match", True)
                 # Flag on a real contradiction or a misidentified company —
                 # NOT merely on "unsupported" fields, which just means this
@@ -196,20 +220,43 @@ async def recheck_pending(limit: int = 20) -> dict:
                 # correct from an earlier sighting). See plan addendum 3.
                 is_flagged = (not identity_ok) or bool(contradicted)
 
+                # BUT: for the same high-fabrication-risk fields H-1 already
+                # gates at ingest time, "unsupported" here means Layer 2 —
+                # reading the record's OWN source_excerpt — found no support
+                # for a value that's still sitting on the record. That's
+                # exactly the gap that let a coincidental-date fabrication
+                # (RiDERgy/NextStepHR/DeepFile's founded_year=2024, actually
+                # a news listing's publish date, not a founding year — H-1's
+                # old bare-substring check couldn't tell them apart) read
+                # through to a clean "verified" badge. Null it here too,
+                # mirroring Layer 1's own discipline, rather than leaving a
+                # value the record's own evidence doesn't support standing
+                # under a checkmark. Never touches paraphrased fields
+                # (industry/city/description) — over-nulling those on a
+                # short blurb that simply doesn't restate them would be
+                # worse than leaving a plausible value in place.
+                layer2_nulled = []
+                for field in ("founded_year", "funding_stage", "employee_count"):
+                    if field in unsupported and getattr(record, field, None) is not None:
+                        setattr(record, field, None)
+                        layer2_nulled.append(field)
+
                 record.verification_status = "flagged" if is_flagged else "verified"
                 record.verification_notes = verdict.get("summary") or ""
                 record.verification_evidence = {
                     "layer1_reground": layer1_changes or None,
                     "layer2": verdict,
+                    "layer2_nulled": layer2_nulled or None,
                 }
                 record.verified_at = datetime.utcnow()
 
-                if layer1_changes:
+                if layer1_changes or layer2_nulled:
                     _reindex(db, record)  # re-score/re-embed — commits internally
                 else:
                     db.commit()
 
                 counts["flagged" if is_flagged else "verified"] += 1
+                consecutive_timeouts = 0
 
             except Exception as exc:
                 db.rollback()
@@ -219,7 +266,18 @@ async def recheck_pending(limit: int = 20) -> dict:
                 counts["errors"] += 1
                 msg = str(exc).lower()
                 if any(s in msg for s in ("connect", "timeout", "timed out", "refused", "unreachable")):
-                    ollama_down = True
+                    consecutive_timeouts += 1
+                    if consecutive_timeouts >= CONSECUTIVE_TIMEOUT_THRESHOLD:
+                        ollama_down = True
+                        logger.warning(
+                            f"[Verifier] {CONSECUTIVE_TIMEOUT_THRESHOLD} consecutive timeouts — "
+                            f"treating Ollama as down for the rest of this batch"
+                        )
+                else:
+                    consecutive_timeouts = 0
+            finally:
+                if progress is not None:
+                    progress.processed += 1
 
         logger.info(f"[Verifier] Recheck batch: {counts}")
         return counts

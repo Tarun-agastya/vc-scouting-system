@@ -259,6 +259,29 @@ grounding:
   check_employee_count: true  # needs one of employee_count_signals nearby
   check_founders: true        # each founder's surname must appear in the chunk
 
+  # A bare "is this 4-digit token anywhere in the chunk" check passes on a
+  # coincidental date elsewhere in the text — found live 27 Jul on a Campus
+  # Founders news-listing page where every blurb carries the article's own
+  # publish date ("04/11/2024"), which the extractor mistook for three
+  # different companies' founding year (RiDERgy, NextStepHR, DeepFile) and
+  # the old bare-substring check couldn't tell apart from a real founding
+  # statement. The year must now appear within founded_year_context_chars
+  # of one of these signals.
+  founded_year_context_chars: 60
+  founded_year_signals:
+    - founded
+    - founded in
+    - co-founded
+    - established
+    - est.
+    - incorporated
+    - started in
+    - launched in
+    - since
+    - gegründet
+    - gegr.
+    - seit
+
   # Reference vocabulary for the funding_stage check (bilingual EN/DE) —
   # informational; the actual check matches the extracted value's own text.
   funding_stage_keywords:
