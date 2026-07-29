@@ -220,12 +220,18 @@ Report:
   value. verdict is always "contradicted" (only report fields you're
   correcting — don't list fields that matched or weren't mentioned).
   field must be one of the exact stored field names shown above.
-  correct_value must be ONLY the corrected value itself, in the same bare
-  format the stored field already uses (e.g. "2022", not "2022 (implied by
-  the launch announcement)" — put any reasoning in summary instead, never
-  inside correct_value). If you cannot state a clean value with no
-  explanation attached, do not report a finding for that field at all —
-  founded_year in particular must be a bare 4-digit year or omitted.
+  correct_value must be ONLY the corrected value itself, in the same bare,
+  short format the stored field already uses — put any reasoning in summary
+  instead, never inside correct_value. If you cannot state a clean value
+  with no explanation attached, do not report a finding for that field at
+  all. Specifically:
+    - founded_year: a bare 4-digit year ("2022"), or omit the finding.
+    - funding_stage: a short stage name only ("Seed", "Series C",
+      "Bootstrapped") — NEVER an amount or valuation ("$13.7B raised" is
+      wrong; omit it or say "Series C").
+    - employee_count: a short range or number ("2-10", "50").
+    - city / country: the plain place name only.
+  A correct_value longer than a few words is almost always wrong — omit it.
   source_url must be one of the results you confirmed in Step 1 is
   genuinely about this company — never cite a discarded result.
 

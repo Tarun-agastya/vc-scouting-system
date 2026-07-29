@@ -87,24 +87,50 @@ def _reindex(db, master: Startup) -> None:
     })
 
 
-def _coerce_founded_year(raw_val):
+def _sanitize_for_column(field: str, value):
     """
-    founded_year is an Integer column; a proposed value can arrive as a
-    non-numeric string when the LLM that proposed it (web_verify_record)
-    embedded reasoning in what should have been a bare value — found live
-    28 Jul: "2023 (implied by 'start-up journey began' in 2023 via
-    Instagram...)" crashed approve with a Postgres type error, and a worse
-    case ("previously founded by a serial entrepreneur, exact year not
-    specified") has no year in it at all.
+    Make a proposed value safe to write to `Startup.<field>`, or reject it.
 
-    Extracts the first plausible 4-digit year and returns it as an int.
-    Returns None if nothing plausible is found — the caller skips the
-    field entirely rather than writing garbage or crashing.
+    Returns (ok, cleaned_value). ok=False means the caller must SKIP this
+    field (never write garbage, never crash the whole approve).
+
+    Why this exists (general, not one-field): a web-verify LLM proposal can
+    violate the target column's constraints in more than one way, and each
+    such violation is a raw Postgres error that 500s the entire approve —
+    blocking every other good field in the same review. Two seen live:
+      - founded_year (Integer): "2023 (implied by 'start-up journey began'
+        ...)"  -> InvalidTextRepresentation (28 Jul)
+      - funding_stage (varchar 50): "$13.7 billion in venture capital
+        (valuation over $40 billion)"  -> StringDataRightTruncation (29 Jul)
+    Rather than patch each field as it surfaces, validate every value
+    against the actual column type: coerce Integers, reject over-length
+    strings (truncating would store a meaningless fragment), pass the rest.
     """
-    if isinstance(raw_val, int):
-        return raw_val
-    match = re.search(r"\b(1[89]\d{2}|20\d{2})\b", str(raw_val))
-    return int(match.group()) if match else None
+    from sqlalchemy import Integer as SAInteger
+
+    col = Startup.__table__.columns.get(field)
+    if col is None:
+        return True, value  # not a plain scalar column (founders/tags handled by caller)
+    if value is None:
+        return True, None
+
+    # Integer columns → must be a real int; extract one or reject.
+    if isinstance(col.type, SAInteger):
+        if isinstance(value, int):
+            return True, value
+        # founded_year wants a plausible year specifically; other ints, any integer.
+        pattern = r"\b(1[89]\d{2}|20\d{2})\b" if field == "founded_year" else r"-?\d+"
+        m = re.search(pattern, str(value))
+        return (True, int(m.group())) if m else (False, None)
+
+    # String columns with a declared length → reject anything that wouldn't
+    # fit. A value that long is the LLM stuffing prose into a typed field;
+    # truncating it to 50 chars would store a garbage fragment, so skip it.
+    length = getattr(col.type, "length", None)
+    if length is not None and len(str(value)) > length:
+        return False, None
+
+    return True, value
 
 
 def _apply_field_updates(db, master: Startup, proposed: dict) -> None:
@@ -117,16 +143,7 @@ def _apply_field_updates(db, master: Startup, proposed: dict) -> None:
     """
     for field, change in (proposed or {}).items():
         new_val = change.get("new")
-        if field == "founded_year":
-            coerced = _coerce_founded_year(new_val)
-            if coerced is None:
-                logger.warning(
-                    f"[Reviews] Skipping unparseable founded_year on approve "
-                    f"for '{master.name}': {new_val!r}"
-                )
-                continue
-            master.founded_year = coerced
-        elif field == "founders":
+        if field == "founders":
             raw = dict(master.raw_data or {})
             raw["founders"] = new_val
             master.raw_data = raw
@@ -134,7 +151,14 @@ def _apply_field_updates(db, master: Startup, proposed: dict) -> None:
         elif field == "tags":
             master.tags = new_val
         else:
-            setattr(master, field, new_val)
+            ok, cleaned = _sanitize_for_column(field, new_val)
+            if not ok:
+                logger.warning(
+                    f"[Reviews] Skipping field '{field}' on approve for "
+                    f"'{master.name}': value doesn't fit the column ({new_val!r})"
+                )
+                continue
+            setattr(master, field, cleaned)
     master.extracted_at = datetime.utcnow()
     master.updated_at = datetime.utcnow()
 
