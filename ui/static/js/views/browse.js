@@ -355,6 +355,75 @@ export default {
       }));
     }
 
+    /**
+     * Phase P-3: render the proposed-changes panel from a web-verify
+     * response. Show-changes-first, one-click apply — never writes anything
+     * on its own; "Apply selected" reuses api.editStartup (the same
+     * "a human action applies directly" path as manual Edit), never the
+     * Review Inbox.
+     */
+    function renderWebVerifyPanel(panel, id, res) {
+      const proposed = res.proposed || {};
+      const fields = Object.entries(proposed);
+
+      if (res.identity_match === false) {
+        panel.innerHTML = `<div class="card" style="background:var(--surface-2)">
+          <div style="font-size:13px;line-height:1.5">⚠️ Could not confirm this is the right company: ${esc(res.summary)}</div>
+        </div>`;
+        return;
+      }
+
+      if (!fields.length) {
+        panel.innerHTML = `<div class="card" style="background:var(--surface-2)">
+          <div style="font-size:13px;line-height:1.5">✅ ${esc(res.summary || "Confirmed via web search — no corrections needed.")}</div>
+        </div>`;
+        return;
+      }
+
+      panel.innerHTML = `
+        <div class="card" style="background:var(--surface-2)">
+          <div style="font-size:13px;line-height:1.5;margin-bottom:10px">${esc(res.summary)}</div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th></th><th>Field</th><th>Current</th><th>Proposed</th><th>Source</th></tr></thead>
+              <tbody>
+                ${fields.map(([field, c]) => `
+                  <tr>
+                    <td><input type="checkbox" class="wv-check" data-field="${esc(field)}" checked></td>
+                    <td><strong>${esc(field.replace(/_/g, " "))}</strong></td>
+                    <td class="dim">${esc(c.old, "—")}</td>
+                    <td>${esc(c.new, "—")}</td>
+                    <td style="font-size:12px">${c.source_url ? `<a href="${esc(c.source_url)}" target="_blank" rel="noopener">source</a>` : "—"}</td>
+                  </tr>`).join("")}
+              </tbody>
+            </table>
+          </div>
+          <div class="row" style="gap:8px;margin-top:10px">
+            <button class="btn btn--primary btn--sm" id="wv-apply-btn">✅ Apply selected</button>
+            <button class="btn btn--ghost btn--sm" id="wv-discard-btn">Discard</button>
+          </div>
+        </div>`;
+
+      panel.querySelector("#wv-discard-btn").addEventListener("click", () => { panel.innerHTML = ""; });
+      panel.querySelector("#wv-apply-btn").addEventListener("click", async () => {
+        const checked = [...panel.querySelectorAll(".wv-check:checked")].map((c) => c.dataset.field);
+        if (!checked.length) { toast("Nothing selected"); return; }
+        const changed = {};
+        for (const field of checked) {
+          let val = proposed[field].new;
+          if (field === "founded_year") val = val ? Number(val) : null;
+          changed[field] = val;
+        }
+        try {
+          await api.editStartup(id, changed);
+          toast(`Applied: ${checked.join(", ")}`);
+          load();
+        } catch (err) {
+          toast(`Apply failed: ${err.message}`, "error");
+        }
+      });
+    }
+
     async function openDetail(cell, id) {
       cell.innerHTML = `<div class="row" style="padding:16px;gap:8px"><span class="spinner"></span><span class="dim">Loading…</span></div>`;
       let s;
@@ -425,6 +494,12 @@ export default {
               : `<div class="dim" style="font-size:12px">${s.source_excerpt
                   ? "Awaiting recheck — press “Recheck now” on the Ingestion page."
                   : "No source excerpt on file (predates the grounding system) — will be flagged for manual review on next recheck."}</div>`}
+            <div class="row" style="margin-top:10px">
+              <button class="btn btn--sm" id="web-verify-btn" title="Search the live web and check this one record now — shows proposed corrections here, applies only what you approve">
+                🌐 Verify now (web)
+              </button>
+            </div>
+            <div id="web-verify-panel" style="margin-top:10px"></div>
           </div>
 
           <div class="card" id="edit-card">
@@ -476,6 +551,23 @@ export default {
           load();
         } catch (err) {
           toast(`Delete failed: ${err.message}`, "error");
+        }
+      });
+
+      cell.querySelector("#web-verify-btn").addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        const panel = cell.querySelector("#web-verify-panel");
+        btn.disabled = true;
+        btn.textContent = "🌐 Searching & checking… (up to a few minutes)";
+        panel.innerHTML = `<div class="row" style="gap:8px;padding:8px 0"><span class="spinner"></span><span class="dim" style="font-size:12px">Live web search + local model check in progress…</span></div>`;
+        try {
+          const res = await api.webVerifyStartup(id);
+          renderWebVerifyPanel(panel, id, res);
+        } catch (err) {
+          panel.innerHTML = `<div class="dim" style="font-size:12px">Verify failed: ${esc(err.message)}</div>`;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "🌐 Verify now (web)";
         }
       });
     }

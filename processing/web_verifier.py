@@ -147,6 +147,42 @@ def _normalize_field(field: str) -> str:
     return _FIELD_ALIASES.get(f, f)
 
 
+def build_proposal(record, verdict: dict) -> dict:
+    """
+    Turn a verdict's raw `findings` into the same {field: {old, new,
+    source_url}} shape apply_verdict stages — the field-name normalization,
+    no-op/unchanged filtering, and the website official-domain guard, all in
+    one place, but WITHOUT writing anything. Factored out (Phase P-3, 29 Jul)
+    so the per-startup "Verify now" endpoint can show a human the proposed
+    changes before anything is written, using the exact same rules
+    apply_verdict's batch path uses — one place decides what a finding is
+    allowed to become, not two.
+
+    Returns {field: {old, new, source_url}}, empty if nothing survives.
+    """
+    findings = [
+        f for f in (verdict.get("findings") or [])
+        if f.get("verdict") == "contradicted" and f.get("field")
+    ]
+    proposed = {}
+    for f in findings:
+        attr = _normalize_field(f["field"])
+        if attr not in _CHECK_FIELDS:
+            continue
+        old_val = getattr(record, attr, None)
+        new_val = f.get("correct_value")
+        if not new_val or str(new_val).strip() == str(old_val or "").strip():
+            continue
+        if attr == "website" and not _is_official_website(new_val):
+            logger.warning(
+                f"[WebVerifier] Rejected non-official website proposal for "
+                f"'{record.name}': {new_val!r} (aggregator/social/news domain)"
+            )
+            continue
+        proposed[attr] = {"old": old_val, "new": new_val, "source_url": f.get("source_url")}
+    return proposed
+
+
 def apply_verdict(db, record, results: list, verdict: dict) -> str:
     """
     Apply one already-computed web-verify verdict to a record: stage a
@@ -198,27 +234,10 @@ def apply_verdict(db, record, results: list, verdict: dict) -> str:
         db.commit()
         return "verified"
 
-    proposed = {}
-    for f in findings:
-        attr = _normalize_field(f["field"])
-        if attr not in _CHECK_FIELDS:
-            continue
-        old_val = getattr(record, attr, None)
-        new_val = f.get("correct_value")
-        if not new_val or str(new_val).strip() == str(old_val or "").strip():
-            continue
-        if attr == "website" and not _is_official_website(new_val):
-            logger.warning(
-                f"[WebVerifier] Rejected non-official website proposal for "
-                f"'{record.name}': {new_val!r} (aggregator/social/news domain)"
-            )
-            continue
-        proposed[attr] = {
-            "old": old_val, "new": new_val,
-            "incoming_source": "web_verification",
-            "incoming_extracted_at": datetime.utcnow().isoformat(),
-            "source_url": f.get("source_url"),
-        }
+    proposed = build_proposal(record, verdict)
+    for attr in proposed:
+        proposed[attr]["incoming_source"] = "web_verification"
+        proposed[attr]["incoming_extracted_at"] = datetime.utcnow().isoformat()
 
     if proposed:
         _create_review(

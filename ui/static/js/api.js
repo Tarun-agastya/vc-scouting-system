@@ -48,7 +48,7 @@ async function request(method, path, { body, timeout = 30000 } = {}) {
 }
 
 const get = (p, params) => request("GET", p + qs(params));
-const post = (p, body) => request("POST", p, { body });
+const post = (p, body, opts = {}) => request("POST", p, { body, ...opts });
 const patch = (p, body) => request("PATCH", p, { body });
 const del = (p, params) => request("DELETE", p + qs(params));
 
@@ -65,6 +65,13 @@ export const api = {
   /** Semantic (vector) search — different endpoint + shape from listStartups. */
   semanticSearch: (query, opts = {}) =>
     post("/scout/search", { query, limit: opts.limit ?? 30, ...opts }),
+  /**
+   * Phase P-3: on-demand web verification for ONE startup. Runs a live
+   * search + a 14B verdict call (100-300s observed) — extended timeout,
+   * well past the 30s default. Returns proposed changes for an inline
+   * confirm; never writes anything itself (see api.editStartup to apply).
+   */
+  webVerifyStartup: (id) => post(`/scout/startup/${id}/web-verify`, null, { timeout: 320000 }),
 
   // ── Reviews ───────────────────────────────────────────────────────────
   listReviews: (filters) => get("/reviews", filters),

@@ -260,6 +260,59 @@ async def edit_startup(startup_id: str, changes: dict, db: Session = Depends(get
     return {"status": "ok", "id": startup_id, "applied": applied}
 
 
+@router.post("/startup/{startup_id}/web-verify")
+async def web_verify_startup(startup_id: str, db: Session = Depends(get_db)):
+    """
+    Phase P-3: on-demand web verification for ONE startup, triggered from
+    Browse's "Verify now" button — searches the live web and returns
+    proposed corrections (including website, Phase P-2) for an inline human
+    confirm. Deliberately does NOT stage to the Review Inbox and does NOT
+    write anything itself: unlike the batch web-verify job, this is a single
+    human looking at one record right now, so the contract mirrors
+    edit_startup's "a human action applies directly, no staging" — apply the
+    accepted subset via the existing PATCH /scout/startup/{id}, same as any
+    manual edit.
+
+    Acquires scout_controller.gpu_mutex around the one LLM call (the
+    /scout/search synthesis precedent) so it never collides with a
+    concurrent ingestion/recheck/reclassify/web-verify batch on the same
+    Ollama backend. Runs 100-300s — the caller (ui/static/js/api.js) must use
+    an extended request timeout, not the default.
+    """
+    import asyncio
+    from processing.web_verifier import _search_record, _verify_record, build_proposal
+    from processing.scout_controller import scout_controller
+
+    s = db.query(Startup).filter(Startup.id == startup_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Startup not found")
+
+    loop = asyncio.get_event_loop()
+    try:
+        results = await loop.run_in_executor(None, _search_record, s)
+        if not results:
+            return {
+                "identity_match": None,
+                "summary": "No web search results found for this company.",
+                "proposed": {}, "sources": [],
+            }
+        async with scout_controller.gpu_mutex:
+            verdict = await loop.run_in_executor(None, _verify_record, s, results)
+    except Exception as exc:
+        logger.error(f"[Scout] Web-verify failed for '{s.name}' ({startup_id}): {exc}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Web verification unavailable — is Ollama running? ({exc})",
+        )
+
+    return {
+        "identity_match": verdict.get("identity_match", True),
+        "summary": verdict.get("summary") or "",
+        "proposed": build_proposal(s, verdict),
+        "sources": [{"title": r.get("title", ""), "url": r.get("url", "")} for r in results],
+    }
+
+
 @router.delete("/startup/{startup_id}")
 async def delete_startup(startup_id: str, confirm: bool = False, db: Session = Depends(get_db)):
     """
