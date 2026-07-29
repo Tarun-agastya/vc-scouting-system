@@ -207,6 +207,21 @@ stored field:
   and cite the source_url of the result that supports it.
 - If the results simply don't mention a field, leave it alone — that's not
   a finding, just missing evidence.
+- If your OWN genuinely-matching results disagree with EACH OTHER on a
+  field (not just vs. the stored value) — e.g. one says Boston, another
+  says Greece — that is a conflict, not a finding: do not silently pick
+  one. Prefer the company's own official channel (its own website or
+  company LinkedIn page) over a third-party article or an unrelated
+  mention (a founder's nationality or academic affiliation is NOT the
+  company's location). If you still can't resolve it confidently, omit
+  the finding entirely rather than guess — say so in summary instead.
+- city, country, and address must describe ONE consistent real-world
+  place. Never report city/country/address findings that would put the
+  company in two different places at once (a Boston address with a
+  Greece country is exactly this kind of self-contradiction) — resolve
+  them together as a single location using the same official-source
+  preference above, or omit all three rather than mix values pulled from
+  different, disagreeing sources.
 
 Report:
 - identity_match: true if at least one result is genuinely about this named

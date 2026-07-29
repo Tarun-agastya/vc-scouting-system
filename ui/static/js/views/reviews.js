@@ -202,16 +202,48 @@ export default {
           </div>`;
       }
 
-      const evidenceRows = Object.entries(rv.evidence || {})
-        .filter(([k]) => k !== "aggregate_score")
-        .map(([k, v]) => `
-          <div>
-            <div class="row" style="font-size:12px"><span class="dim">${esc(k.replace(/_/g, " "))}</span>
-              <span class="mono" style="margin-left:auto">${(v * 100).toFixed(0)}%</span></div>
-            <div style="background:var(--surface-2);border-radius:4px;height:6px;overflow:hidden;margin-top:3px">
-              <span style="display:block;height:100%;width:${v * 100}%;background:var(--brand-lime)"></span>
-            </div>
-          </div>`).join("");
+      // Two unrelated evidence shapes share this field: the duplicate-matcher
+      // produces {signal_name: 0.0-1.0, ...} (rendered as % bars below), but
+      // web-verification evidence is {web_verdict: {...}, search_results:
+      // [...]} — dicts/arrays, not scores. Treating them as numbers silently
+      // produced "NaN%" bars and hid exactly the source citations a reviewer
+      // needs (found live 29 Jul, reviewing a Boston/Greece location
+      // conflict). Detect the shape and render each appropriately.
+      const rawEvidence = rv.evidence || {};
+      const isWebVerification = "web_verdict" in rawEvidence || "search_results" in rawEvidence;
+
+      let evidenceRows;
+      if (isWebVerification) {
+        const sources = rawEvidence.search_results || [];
+        evidenceRows = `
+          <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Sources checked (live web search)</div>
+          <div class="stack" style="gap:4px">
+            ${sources.length ? sources.map((s) => `
+              <div style="font-size:12px">
+                <a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title || s.url)}</a>
+              </div>`).join("") : '<div class="dim" style="font-size:12px">No search results recorded</div>'}
+          </div>`;
+      } else {
+        evidenceRows = Object.entries(rawEvidence)
+          .filter(([k]) => k !== "aggregate_score")
+          .map(([k, v]) => `
+            <div>
+              <div class="row" style="font-size:12px"><span class="dim">${esc(k.replace(/_/g, " "))}</span>
+                <span class="mono" style="margin-left:auto">${(v * 100).toFixed(0)}%</span></div>
+              <div style="background:var(--surface-2);border-radius:4px;height:6px;overflow:hidden;margin-top:3px">
+                <span style="display:block;height:100%;width:${v * 100}%;background:var(--brand-lime)"></span>
+              </div>
+            </div>`).join("");
+      }
+
+      // For a web-verification review, llm_explanation is never populated
+      // (that field is written by the SEPARATE nightly review_explainer job,
+      // which only runs for duplicate-matcher reviews) — so the banner
+      // always read "No AI explanation yet" even though the model's own
+      // verdict summary (which can explicitly call out a conflict, like
+      // "Boston vs. Greece") was sitting right there in evidence, unused.
+      const explanation = rv.llm_explanation || rawEvidence.web_verdict?.summary || null;
+      const explanationLabel = rv.llm_explanation ? "🤖 AI explanation (not a decision)" : "🌐 Web-verification summary";
 
       detailEl.innerHTML = `
         <div class="stack" style="gap:16px">
@@ -222,16 +254,16 @@ export default {
             <span class="dim" style="margin-left:auto;font-size:12px">via ${esc(rv.source, "unknown source")}</span>
           </div>
 
-          ${rv.llm_explanation ? `
+          ${explanation ? `
             <div class="card" style="background:var(--surface-2)">
-              <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">🤖 AI explanation (not a decision)</div>
-              <div style="font-size:13px;line-height:1.5">${esc(rv.llm_explanation)}</div>
+              <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">${explanationLabel}</div>
+              <div style="font-size:13px;line-height:1.5">${esc(explanation)}</div>
             </div>` : `<div class="dim" style="font-size:12px">No AI explanation yet — added nightly at 02:00</div>`}
 
           ${bodyHtml}
 
           <div class="card">
-            <div class="card__head"><span class="card__title">Match evidence</span></div>
+            <div class="card__head"><span class="card__title">${isWebVerification ? "Evidence" : "Match evidence"}</span></div>
             <div class="stack" style="gap:8px">${evidenceRows || '<div class="dim" style="font-size:12px">No evidence recorded</div>'}</div>
           </div>
 
