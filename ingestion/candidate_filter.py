@@ -33,6 +33,16 @@ _geo_scope_mtime = object()
 _non_europe_pattern = None       # compiled regex, or None when disabled
 _geo_scope_enabled = True
 
+# Phase P-1 (29 Jul): soft scouting bias toward priority theses (see
+# config/tuning.yaml's priority_scouting comment). Two independent inputs can
+# each go stale — the tuning.yaml enabled/boost knobs, and theses.yaml's set
+# of priority keywords — so both mtimes are tracked separately.
+_priority_tuning_mtime = object()
+_priority_theses_mtime = object()
+_priority_pattern = None         # compiled regex over all priority keywords, or None
+_priority_enabled = True
+_priority_boost = 1
+
 
 def _build_patterns(cfg: dict) -> None:
     global _compiled, _min_score, _min_words
@@ -66,10 +76,31 @@ def _build_geo_scope(cfg: dict) -> None:
         _non_europe_pattern = None
 
 
+def _build_priority(cfg: dict) -> None:
+    global _priority_pattern, _priority_enabled, _priority_boost
+    _priority_enabled = bool(cfg.get("enabled", True))
+    _priority_boost = int(cfg.get("boost", 1))
+    from config.thesis_loader import get_priority_keywords
+    keywords = get_priority_keywords()
+    if not keywords:
+        _priority_pattern = None
+        return
+    # re.escape: unlike the plain single-word signal groups above, priority
+    # keywords are free-form phrases from theses.yaml ("aluminium replacement",
+    # "high-barrier film") that could in principle contain a regex
+    # metacharacter — escape defensively rather than assume they never will.
+    body = "|".join(re.escape(str(k)) for k in keywords)
+    try:
+        _priority_pattern = re.compile(rf"\b(?:{body})\b", re.IGNORECASE)
+    except re.error:
+        _priority_pattern = None
+
+
 def _ensure_current() -> None:
-    """Reload compiled patterns iff config/tuning.yaml changed since last build."""
-    global _cache_mtime, _geo_scope_mtime
-    from config.tuning_loader import get_candidate_filter_config, get_geo_scope_config
+    """Reload compiled patterns iff config/tuning.yaml or theses.yaml changed since last build."""
+    global _cache_mtime, _geo_scope_mtime, _priority_tuning_mtime, _priority_theses_mtime
+    from config.tuning_loader import get_candidate_filter_config, get_geo_scope_config, get_priority_scouting_config
+    from config.thesis_loader import get_theses_mtime
     cfg = get_candidate_filter_config()
     if cfg.get("_mtime") != _cache_mtime or not _compiled:
         _build_patterns(cfg)
@@ -79,6 +110,13 @@ def _ensure_current() -> None:
     if geo_cfg.get("_mtime") != _geo_scope_mtime:
         _build_geo_scope(geo_cfg)
         _geo_scope_mtime = geo_cfg.get("_mtime")
+
+    priority_cfg = get_priority_scouting_config()
+    theses_mtime = get_theses_mtime()
+    if priority_cfg.get("_mtime") != _priority_tuning_mtime or theses_mtime != _priority_theses_mtime:
+        _build_priority(priority_cfg)
+        _priority_tuning_mtime = priority_cfg.get("_mtime")
+        _priority_theses_mtime = theses_mtime
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -102,6 +140,15 @@ def is_relevant(chunk: str) -> bool:
     non-European company expanding into Europe naturally mentions a specific
     European place (e.g. "opening a Berlin office"), which satisfies the geo
     carve-out and lets it through untouched.
+
+    Priority-scouting boost (Phase P-1, independent of the score above): a
+    chunk matching a keyword from any theses.yaml thesis marked
+    `priority: true` gets `priority_scouting.boost` added to its score before
+    the min_score gate — never a hard include, just a thumb on the scale so
+    more chunks relevant to a prioritized partner (e.g. SÜDPACK's flexible/
+    foil + sterile-medical packaging focus) reach the LLM during a sweep.
+    Config-toggleable (`priority_scouting.enabled`); no priority thesis
+    configured means this is a no-op.
     """
     _ensure_current()
 
@@ -116,4 +163,6 @@ def is_relevant(chunk: str) -> bool:
             return False
 
     score = sum(1 for pat in _compiled.values() if pat.search(chunk))
+    if _priority_enabled and _priority_pattern is not None and _priority_pattern.search(chunk):
+        score += _priority_boost
     return score >= _min_score

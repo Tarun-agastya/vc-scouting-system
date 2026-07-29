@@ -359,7 +359,7 @@ async def list_startups(
     founded_year_min: Optional[int] = None,
     founded_year_max: Optional[int] = None,
     thesis: Optional[str] = None,          # Phase V-3: rank by relevance to this thesis id instead of `sort`
-    sort: str = "created_at",              # created_at | extracted_at | name | score
+    sort: str = "created_at",              # created_at | extracted_at | name | score | priority
     order: str = "desc",                   # asc | desc
     limit: int = 50,
     offset: int = 0,
@@ -410,6 +410,12 @@ async def list_startups(
 
     total = query.count()
 
+    # Phase P-1: cheap (mtime-cached) lookup, used to tag every returned row
+    # with priority_match so Browse can show a ⭐ chip regardless of sort,
+    # and to power the dedicated priority-first ordering below.
+    from config.thesis_loader import get_priority_industries
+    priority_industries = set(get_priority_industries())
+
     if thesis:
         from config.thesis_loader import get_thesis
         from processing.thesis_matcher import rank
@@ -450,6 +456,7 @@ async def list_startups(
                 "extracted_at": s.extracted_at,
                 "created_at": s.created_at,
                 "verification_status": s.verification_status or "unverified",
+                "priority_match": s.industry in priority_industries,
                 "vector": vectors.get(str(s.id)),
             }
             for s in matched
@@ -468,15 +475,27 @@ async def list_startups(
             r.pop("description", None)
         return {"total": total, "offset": offset, "limit": limit, "startups": page}
 
-    sort_col = {
-        "created_at": Startup.created_at,
-        "extracted_at": Startup.extracted_at,
-        "name": Startup.name,
-        "score": Startup.enrichment_score,
-    }.get(sort, Startup.created_at)
-    sort_col = sort_col.asc() if order == "asc" else sort_col.desc()
-
-    startups = query.order_by(sort_col).offset(offset).limit(limit).all()
+    if sort == "priority":
+        # Phase P-1: priority-industry rows first, enrichment_score as the
+        # tiebreak within each group — a compound ORDER BY, so it's handled
+        # separately from the single-column dict lookup below. `order` is
+        # ignored here (priority-first only makes sense one way); ASC/DESC
+        # toggling stays meaningful for every other sort option.
+        from sqlalchemy import case
+        priority_rank = case((Startup.industry.in_(priority_industries), 0), else_=1) if priority_industries else 1
+        startups = (
+            query.order_by(priority_rank, Startup.enrichment_score.desc())
+            .offset(offset).limit(limit).all()
+        )
+    else:
+        sort_col = {
+            "created_at": Startup.created_at,
+            "extracted_at": Startup.extracted_at,
+            "name": Startup.name,
+            "score": Startup.enrichment_score,
+        }.get(sort, Startup.created_at)
+        sort_col = sort_col.asc() if order == "asc" else sort_col.desc()
+        startups = query.order_by(sort_col).offset(offset).limit(limit).all()
 
     return {
         "total": total,
@@ -500,6 +519,7 @@ async def list_startups(
                 "extracted_at": s.extracted_at,
                 "created_at": s.created_at,
                 "verification_status": s.verification_status or "unverified",
+                "priority_match": s.industry in priority_industries,
             }
             for s in startups
         ],

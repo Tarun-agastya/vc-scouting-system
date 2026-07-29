@@ -203,6 +203,17 @@ geo_scope:
     - silicon valley
     - san francisco
 
+# Phase P-1 (29 Jul): a soft, config-toggleable scouting bias for whichever
+# theses in config/theses.yaml are marked `priority: true` (e.g. SÜDPACK's
+# flexible/foil packaging + sterile-medical packaging focus). A chunk that
+# matches a priority thesis's keywords gets `boost` added to its candidate
+# score before the min_score gate — never a hard include/exclude, just a
+# thumb on the scale so more matching chunks reach the LLM during sweeps.
+# Mirrors geo_scope's enabled/mtime-cache shape exactly (see
+# ingestion/candidate_filter.py). Off-switchable without a redeploy.
+priority_scouting:
+  enabled: true
+  boost: 1
 
 scoring:
   # Best source-type contribution (Category A). Unknown types default to 4.

@@ -98,6 +98,7 @@ export default {
       q: "",
       filters: { industry: "", country: "", city: "", tech_cluster: "", funding_stage: "", score_tier: "", employee_count: "", verification_status: "", source_url: "" },
       thesis: "",           // Phase V-3: selected thesis id — "" means normal sort/order browsing
+      priorityFirst: false, // Phase P-1: sort=priority — startups matching a priority thesis (e.g. SÜDPACK) first
       sort: "created_at", order: "desc",
       limit: 50, offset: 0,
       expandedId: null,
@@ -136,6 +137,11 @@ export default {
               ${(state.theses || []).map((t) =>
                 `<option value="${esc(t.id)}" ${state.thesis === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}
             </select>
+            ${!state.thesis ? `
+              <button class="btn btn--sm ${state.priorityFirst ? "btn--primary" : "btn--ghost"}" id="priority-toggle"
+                title="Sort startups matching a priority thesis (e.g. SÜDPACK's flexible/foil + medical packaging focus) first">
+                ⭐ Priority first
+              </button>` : ""}
             <input class="input" style="max-width:150px" id="f-industry" placeholder="Industry" value="${esc(state.filters.industry)}">
             <input class="input" style="max-width:130px" id="f-country" placeholder="Country" value="${esc(state.filters.country)}">
             <input class="input" style="max-width:130px" id="f-city" placeholder="City" value="${esc(state.filters.city)}">
@@ -157,7 +163,7 @@ export default {
               ${(state.sourceSites || []).map((s) =>
                 `<option value="${esc(s.label)}" ${state.filters.source_url === s.label ? "selected" : ""}>${esc(s.label)} (${s.count})</option>`).join("")}
             </select>
-            ${Object.values(state.filters).some(Boolean) || state.thesis ? `<button class="btn btn--ghost btn--sm" id="clear-filters">Clear filters</button>` : ""}
+            ${Object.values(state.filters).some(Boolean) || state.thesis || state.priorityFirst ? `<button class="btn btn--ghost btn--sm" id="clear-filters">Clear filters</button>` : ""}
           </div>` : ""}`;
 
       searchCard.querySelectorAll("[data-mode]").forEach((btn) =>
@@ -193,12 +199,21 @@ export default {
         }
         searchCard.querySelector("#f-thesis")?.addEventListener("change", (e) => {
           state.thesis = e.target.value;
+          if (state.thesis) state.priorityFirst = false; // thesis ranking already surfaces priority via priority_match
           state.offset = 0;
+          buildSearchCard();
+          load();
+        });
+        searchCard.querySelector("#priority-toggle")?.addEventListener("click", () => {
+          state.priorityFirst = !state.priorityFirst;
+          state.offset = 0;
+          buildSearchCard();
           load();
         });
         searchCard.querySelector("#clear-filters")?.addEventListener("click", () => {
           for (const k in state.filters) state.filters[k] = "";
           state.thesis = "";
+          state.priorityFirst = false;
           state.offset = 0;
           buildSearchCard();
           load();
@@ -229,7 +244,7 @@ export default {
         const res = await api.listStartups({
           q: state.q || undefined, ...filters,
           thesis: state.thesis || undefined,
-          sort: state.sort, order: state.order,
+          sort: state.priorityFirst ? "priority" : state.sort, order: state.order,
           limit: state.limit, offset: state.offset,
         });
         state.lastRows = res.startups || [];
@@ -264,6 +279,7 @@ export default {
       // gate on both so a thesis selected earlier doesn't leave a stale,
       // always-"—" column showing once the user switches to semantic search.
       const thesisActive = Boolean(state.thesis) && state.mode === "keyword";
+      const sortLocked = thesisActive || state.priorityFirst; // both override the clickable-column sort with their own ordering
       const cols = thesisActive ? [COLUMNS[0], RELEVANCE_COLUMN, ...COLUMNS.slice(1)] : COLUMNS;
 
       const wrap = document.createElement("div");
@@ -272,14 +288,14 @@ export default {
         <table class="table">
           <thead><tr>
             ${cols.map(([key, label, sortable]) => `
-              <th ${sortable && !thesisActive ? `data-sort="${key}"` : ""}>
-                ${esc(label)}${!thesisActive && state.sort === key ? (state.order === "asc" ? " ↑" : " ↓") : ""}
+              <th ${sortable && !sortLocked ? `data-sort="${key}"` : ""}>
+                ${esc(label)}${!sortLocked && state.sort === key ? (state.order === "asc" ? " ↑" : " ↓") : ""}
               </th>`).join("")}
           </tr></thead>
           <tbody>
             ${rows.map((s) => `
               <tr data-id="${esc(s.id)}">
-                <td><strong>${esc(s.name)}</strong></td>
+                <td>${s.priority_match ? `<span title="Matches a priority thesis (e.g. SÜDPACK's flexible/foil + medical packaging focus)">⭐</span> ` : ""}<strong>${esc(s.name)}</strong></td>
                 ${thesisActive ? `<td class="mono" title="${esc((s.matched_signals || []).join('; '), 'semantic match only')}">${s.relevance_score?.toFixed(2) ?? "—"}</td>` : ""}
                 <td class="dim">${esc(s.industry, "—")}</td>
                 <td class="dim">${esc(s.tech_cluster, "—")}</td>

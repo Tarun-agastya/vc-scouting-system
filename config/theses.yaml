@@ -224,7 +224,15 @@ theses:
     name: SÜDPACK
     kind: stakeholder
     active: true
+    priority: true
     summary: >
+      SÜDPACK's two priority scouting focuses are (1) FLEXIBLE / FOIL
+      PACKAGING FILMS — co-extruded high-barrier and functional-coating films
+      that replace aluminium foil and multilayer laminates, mono-material
+      recyclable films, skin/vacuum/modified-atmosphere/lidding films and the
+      technology to make and print them — and (2) HEALTHCARE: STERILE MEDICAL,
+      PHARMACEUTICAL AND DIAGNOSTICS PACKAGING (its Medica sterile-barrier
+      division). Everything below serves those two verticals first.
       SÜDPACK is a technology-leading manufacturer of flexible high-performance
       packaging films, made by co-extrusion, for food, medical, pharmaceutical
       and technical products — product lines include skin-packaging (SkinPro),
@@ -270,6 +278,11 @@ theses:
     keywords:
       - packaging
       - flexible packaging
+      - foil
+      - foil packaging
+      - aluminium replacement
+      - aluminum replacement
+      - high-barrier film
       - film
       - co-extrusion
       - mono-material
@@ -305,6 +318,11 @@ theses:
       - sterile barrier
       - blister packaging
       - medical packaging
+      - medical device packaging
+      - pharmaceutical packaging
+      - diagnostics packaging
+      - thermoforming
+      - form-fill-seal
       - cleanroom
       - gmp
       - materials science

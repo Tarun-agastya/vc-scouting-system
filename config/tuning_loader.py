@@ -144,6 +144,10 @@ DEFAULTS = {
             "singapore", "silicon valley", "san francisco",
         ],
     },
+    "priority_scouting": {
+        "enabled": True,
+        "boost": 1,
+    },
 }
 
 # ── mtime cache ──────────────────────────────────────────────────────────────
@@ -181,6 +185,7 @@ def _load() -> dict:
             "scoring":          {**DEFAULTS["scoring"], **(raw.get("scoring") or {})},
             "grounding":        {**DEFAULTS["grounding"], **(raw.get("grounding") or {})},
             "geo_scope":        {**DEFAULTS["geo_scope"], **(raw.get("geo_scope") or {})},
+            "priority_scouting": {**DEFAULTS["priority_scouting"], **(raw.get("priority_scouting") or {})},
         }
         # nested signals dict: merge per-group so a partial edit keeps the rest
         cf = raw.get("candidate_filter") or {}
@@ -225,5 +230,12 @@ def get_grounding_config() -> dict:
 def get_geo_scope_config() -> dict:
     """{'enabled': bool, 'non_europe_signals': [...], '_mtime': float}"""
     cfg = dict(_load()["geo_scope"])
+    cfg["_mtime"] = _cache_mtime  # lets candidate_filter cache its compiled pattern
+    return cfg
+
+
+def get_priority_scouting_config() -> dict:
+    """{'enabled': bool, 'boost': int, '_mtime': float}"""
+    cfg = dict(_load()["priority_scouting"])
     cfg["_mtime"] = _cache_mtime  # lets candidate_filter cache its compiled pattern
     return cfg

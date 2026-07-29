@@ -150,6 +150,10 @@ def _load_theses() -> list:
                 "name":          t.get("name") or str(t["id"]),
                 "kind":          t.get("kind") or "theme",
                 "active":        bool(t.get("active", True)),
+                # Phase P-1: a priority thesis biases scouting (its keywords
+                # boost the pre-LLM candidate filter) and its startups surface
+                # first in Browse. Optional; defaults False.
+                "priority":      bool(t.get("priority", False)),
                 "summary":       (t.get("summary") or "").strip(),
                 "industries":    list(t.get("industries") or []),
                 "tech_clusters": list(t.get("tech_clusters") or []),
@@ -177,12 +181,58 @@ def get_theses(active_only: bool = True) -> list:
     return [t for t in theses if t["active"]] if active_only else list(theses)
 
 
+def get_theses_mtime() -> Optional[float]:
+    """
+    Raw mtime of the last successful theses.yaml parse — mirrors the `_mtime`
+    tuning_loader attaches to get_candidate_filter_config()/get_geo_scope_config(),
+    so a caller with its own derived cache (e.g. ingestion/candidate_filter.py's
+    priority-keyword pattern) can cheaply detect "did theses.yaml change" without
+    re-deriving anything itself.
+    """
+    _load_theses()  # ensure freshness before reading the module-level mtime
+    return _theses_mtime
+
+
 def get_thesis(thesis_id: str) -> Optional[dict]:
     """One thesis by id, or None if unknown/misspelled."""
     for t in _load_theses():
         if t["id"] == thesis_id:
             return t
     return None
+
+
+# ── Priority accessors (Phase P-1) ─────────────────────────────────────────
+# A thesis marked `priority: true` in theses.yaml biases scouting toward it:
+# its keywords soften the pre-LLM candidate filter (ingestion/candidate_filter.py)
+# so more matching chunks reach the LLM, and its industries rank startups
+# first in Browse (api/routes/scout.py). Merged across ALL priority theses
+# (not hardcoded to one partner) so the mechanism stays general.
+
+def get_priority_theses(active_only: bool = True) -> list:
+    """Active theses with priority=true."""
+    return [t for t in get_theses(active_only=active_only) if t["priority"]]
+
+
+def get_priority_keywords() -> list:
+    """Deduped keyword union across every priority thesis (primary keywords only)."""
+    seen, out = set(), []
+    for t in get_priority_theses():
+        for kw in t["keywords"]:
+            if kw not in seen:
+                seen.add(kw)
+                out.append(kw)
+    return out
+
+
+def get_priority_industries() -> list:
+    """Deduped industry union across every priority thesis (primary industries only)."""
+    seen, out = set(), []
+    for t in get_priority_theses():
+        for ind in t["industries"]:
+            if ind not in seen:
+                seen.add(ind)
+                out.append(ind)
+    return out
 
 
 # ── Writes (comment-preserving round-trip, Phase V-4 — ad-hoc themes) ─────────
