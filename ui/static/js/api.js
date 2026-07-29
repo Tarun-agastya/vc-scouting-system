@@ -72,6 +72,8 @@ export const api = {
    * confirm; never writes anything itself (see api.editStartup to apply).
    */
   webVerifyStartup: (id) => post(`/scout/startup/${id}/web-verify`, null, { timeout: 320000 }),
+  /** Phase P-4: similar-startup table + AI "which is stronger to suggest" verdict. Same extended timeout as web-verify — one LLM call, 100-300s. */
+  compareStartup: (id, limit = 5) => post(`/scout/startup/${id}/compare?limit=${limit}`, null, { timeout: 320000 }),
 
   // ── Reviews ───────────────────────────────────────────────────────────
   listReviews: (filters) => get("/reviews", filters),

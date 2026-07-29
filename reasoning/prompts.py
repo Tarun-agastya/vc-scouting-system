@@ -110,6 +110,33 @@ Format as a professional investor briefing:
 
 Keep it sharp and evidence-based."""
 
+# ── Compare similar startups (Phase P-4) ────────────────────────────────────
+# Distinct from SCOUT_SYNTHESIS_PROMPT: that summarizes a broad search result
+# set; this does a focused head-to-head over a SMALL group of startups doing
+# basically the same thing, to help decide which one (if any) to suggest to
+# a stakeholder. Data quality caveats matter here — say so if evidence is thin.
+
+COMPARISON_PROMPT = """A user is deciding which of these startups — all doing
+basically the same thing — is the strongest candidate to suggest to a
+stakeholder. Here is the target startup and {count} similar ones found in
+the database:
+
+TARGET:
+{target}
+
+SIMILAR STARTUPS:
+{similar_list}
+
+Write a short, direct verdict (max 5 sentences):
+1. Name which one (if any) looks like the stronger candidate to suggest, and why —
+   cite concrete differentiators (score, funding stage, verification status,
+   completeness of the profile, what the description actually says they do
+   differently).
+2. If the group is too similar to call, or the data is too thin/unverified
+   to trust a recommendation, say so plainly instead of forcing a pick.
+3. Do not invent facts not present above. If a startup shows verification_status
+   'unverified' or 'flagged', treat its data as less trustworthy and say so."""
+
 # ── Verification recheck (Phase H-3) ────────────────────────────────────────
 # Distinct from every prompt above: this one produces a VERDICT (which
 # fields does the source text actually support), not investor commentary.

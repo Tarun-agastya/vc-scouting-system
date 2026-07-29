@@ -313,6 +313,87 @@ async def web_verify_startup(startup_id: str, db: Session = Depends(get_db)):
     }
 
 
+def _compare_row_dict(s: Startup) -> dict:
+    return {
+        "id": str(s.id), "name": s.name, "industry": s.industry, "tech_cluster": s.tech_cluster,
+        "city": s.city, "country": s.country, "funding_stage": s.funding_stage,
+        "employee_count": s.employee_count, "enrichment_score": s.enrichment_score,
+        "score_tier": s.score_tier, "verification_status": s.verification_status or "unverified",
+        "website": s.website, "description": s.description, "short_description": s.short_description,
+    }
+
+
+@router.post("/startup/{startup_id}/compare")
+async def compare_startup(startup_id: str, limit: int = 5, db: Session = Depends(get_db)):
+    """
+    Phase P-4: "compare similar startups" — for a target startup, find
+    others in the database doing basically the same thing (vector-neighbour
+    retrieval on the target's own embedding, the same primitive
+    processing/matcher.py::_block_candidates uses for dedup blocking) plus a
+    short AI verdict on which is the stronger candidate to suggest to a
+    stakeholder. Computed on demand, never stored — same "always fresh"
+    stance as thesis relevance (Phase V-3).
+
+    Table is deterministic and always returned; the AI verdict degrades to
+    a note (never blocks the response) if Ollama is unreachable.
+    """
+    import asyncio
+    from vector_db.qdrant_store import qdrant_store
+    from processing.scout_controller import scout_controller
+    from reasoning.qwen_client import qwen_client
+
+    target = db.query(Startup).filter(Startup.id == startup_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Startup not found")
+
+    loop = asyncio.get_event_loop()
+    vectors = await loop.run_in_executor(None, qdrant_store.get_vectors, [startup_id])
+    target_vector = vectors.get(startup_id)
+    if not target_vector:
+        raise HTTPException(
+            status_code=404,
+            detail="No vector on file for this startup yet — it may not be indexed. Try again shortly.",
+        )
+
+    hits = await loop.run_in_executor(
+        None, lambda: qdrant_store.search_startups(target_vector, limit=limit + 1)
+    )
+    # +1 above to absorb the target itself (always its own nearest neighbour,
+    # cosine=1.0) — drop it here rather than ask Qdrant to exclude by id.
+    neighbour_ids = [str(h.id) for h in hits if str(h.id) != str(target.id)][:limit]
+
+    similar_rows = db.query(Startup).filter(Startup.id.in_(neighbour_ids)).all() if neighbour_ids else []
+    order = {sid: i for i, sid in enumerate(neighbour_ids)}  # SQL IN() doesn't preserve similarity order
+    similar_rows.sort(key=lambda s: order.get(str(s.id), len(neighbour_ids)))
+    similar = [_compare_row_dict(s) for s in similar_rows]
+
+    if not similar:
+        return {
+            "target": _compare_row_dict(target), "similar": [],
+            "ai_verdict": "No similar startups found in the database yet.",
+        }
+
+    fallback_verdict = "AI verdict unavailable right now (Ollama busy or unreachable) — the table above is still accurate."
+    try:
+        async with scout_controller.gpu_mutex:
+            ai_verdict = await loop.run_in_executor(
+                None, qwen_client.compare_startups, _compare_row_dict(target), similar
+            )
+        # Found live 29 Jul: a too-tight max_tokens let the model exhaust its
+        # whole budget inside <think>...</think> and return "" — no
+        # exception, so this can't rely on the except block below. Treat an
+        # empty result the same as a failure rather than showing a blank
+        # verdict silently.
+        if not (ai_verdict or "").strip():
+            logger.warning(f"[Scout] Compare AI verdict was empty for '{target.name}' ({startup_id})")
+            ai_verdict = fallback_verdict
+    except Exception as exc:
+        logger.warning(f"[Scout] Compare AI verdict failed for '{target.name}' ({startup_id}): {exc}")
+        ai_verdict = fallback_verdict
+
+    return {"target": _compare_row_dict(target), "similar": similar, "ai_verdict": ai_verdict}
+
+
 @router.delete("/startup/{startup_id}")
 async def delete_startup(startup_id: str, confirm: bool = False, db: Session = Depends(get_db)):
     """

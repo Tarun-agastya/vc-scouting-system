@@ -661,6 +661,39 @@ class QwenClient:
         )
         return self.generate(prompt, system=SYSTEM_VC_ANALYST, temperature=0.2, max_tokens=1200)
 
+    def compare_startups(self, target: Dict, similar: List[Dict]) -> str:
+        """
+        Phase P-4: a focused head-to-head verdict over a small group of
+        startups doing basically the same thing as `target` — "which is the
+        stronger candidate to suggest, and why." Distinct from
+        synthesize_scout_results (that's a broad search-result summary, not
+        a comparison). Reuses the same generate() primitive + persona.
+        """
+        from reasoning.prompts import COMPARISON_PROMPT, SYSTEM_VC_ANALYST
+
+        def _fmt(s: Dict) -> str:
+            return (
+                f"**{s.get('name', 'Unknown')}** ({s.get('city', '')}, {s.get('country', '')})\n"
+                f"Industry: {s.get('industry', '')} / {s.get('tech_cluster', '')}\n"
+                f"Stage: {s.get('funding_stage', 'unknown')} | Employees: {s.get('employee_count', 'unknown')}\n"
+                f"Score: {s.get('enrichment_score', 'n/a')} ({s.get('score_tier', 'unscored')}) | "
+                f"Verification: {s.get('verification_status', 'unverified')}\n"
+                f"Description: {str(s.get('description') or s.get('short_description') or '')[:250]}"
+            )
+
+        prompt = COMPARISON_PROMPT.format(
+            count=len(similar),
+            target=_fmt(target),
+            similar_list="\n\n".join(_fmt(s) for s in similar),
+        )
+        # max_tokens=800 (first attempt, 29 Jul) silently produced an EMPTY
+        # verdict live — no exception, just "". Same bug class already
+        # documented on recheck_record/extract_startups: Qwen3's <think>
+        # reasoning alone can run several hundred tokens, and a tight cap
+        # exhausts the whole budget before the model ever reaches the actual
+        # answer. Bumped to 2000 to match that established lesson.
+        return self.generate(prompt, system=SYSTEM_VC_ANALYST, temperature=0.2, max_tokens=2000)
+
     def generate_sector_report(self, sector: str, startups: List[Dict]) -> str:
         """Generate a full sector intelligence report."""
         from reasoning.prompts import SECTOR_REPORT_PROMPT, SYSTEM_VC_ANALYST

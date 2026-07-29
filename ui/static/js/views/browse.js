@@ -424,6 +424,36 @@ export default {
       });
     }
 
+    /** Phase P-4: render the similar-startups table + AI verdict from a compare response. */
+    function renderComparePanel(panel, res) {
+      const rows = res.similar || [];
+      if (!rows.length) {
+        panel.innerHTML = `<div class="dim" style="font-size:12px;padding:8px 0">${esc(res.ai_verdict || "No similar startups found in the database yet.")}</div>`;
+        return;
+      }
+      panel.innerHTML = `
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Name</th><th>Industry / Cluster</th><th>Location</th><th>Stage</th><th>Score</th><th>Verified</th></tr></thead>
+            <tbody>
+              ${rows.map((s) => `
+                <tr>
+                  <td><strong>${esc(s.name)}</strong>${s.website ? ` <a href="${esc(s.website)}" target="_blank" rel="noopener" style="font-size:11px">↗</a>` : ""}</td>
+                  <td class="dim">${esc(s.industry, "—")} / ${esc(s.tech_cluster, "—")}</td>
+                  <td class="dim">${esc(s.city, "—")}, ${esc(s.country, "—")}</td>
+                  <td class="dim">${esc(s.funding_stage, "—")}</td>
+                  <td class="mono">${s.enrichment_score ?? "—"}</td>
+                  <td>${verificationBadge(s.verification_status)}</td>
+                </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+        <div class="card" style="background:var(--surface-2);margin-top:10px">
+          <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">🤖 AI verdict — which to suggest</div>
+          <div style="font-size:13px;line-height:1.6;white-space:pre-wrap">${esc(res.ai_verdict, "—")}</div>
+        </div>`;
+    }
+
     async function openDetail(cell, id) {
       cell.innerHTML = `<div class="row" style="padding:16px;gap:8px"><span class="spinner"></span><span class="dim">Loading…</span></div>`;
       let s;
@@ -502,6 +532,16 @@ export default {
             <div id="web-verify-panel" style="margin-top:10px"></div>
           </div>
 
+          <div class="card">
+            <div class="card__head">
+              <span class="card__title">Compare similar</span>
+              <button class="btn btn--sm" style="margin-left:auto" id="compare-btn" title="Find other startups doing basically the same thing, with an AI verdict on which is stronger to suggest">
+                ⚖️ Compare similar
+              </button>
+            </div>
+            <div id="compare-panel"></div>
+          </div>
+
           <div class="card" id="edit-card">
             <div class="card__head"><span class="card__title">Edit</span></div>
             <form id="edit-form" class="stack" style="gap:10px">
@@ -568,6 +608,23 @@ export default {
         } finally {
           btn.disabled = false;
           btn.textContent = "🌐 Verify now (web)";
+        }
+      });
+
+      cell.querySelector("#compare-btn").addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        const panel = cell.querySelector("#compare-panel");
+        btn.disabled = true;
+        btn.textContent = "⚖️ Comparing… (up to a few minutes)";
+        panel.innerHTML = `<div class="row" style="gap:8px;padding:8px 0"><span class="spinner"></span><span class="dim" style="font-size:12px">Finding similar startups + AI verdict in progress…</span></div>`;
+        try {
+          const res = await api.compareStartup(id);
+          renderComparePanel(panel, res);
+        } catch (err) {
+          panel.innerHTML = `<div class="dim" style="font-size:12px">Compare failed: ${esc(err.message)}</div>`;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "⚖️ Compare similar";
         }
       });
     }
