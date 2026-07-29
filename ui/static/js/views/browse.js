@@ -20,6 +20,7 @@ const COLUMNS = [
   ["score_tier", "Tier", true],
   ["enrichment_score", "Score", true],
   ["verification_status", "Verified", false],
+  ["interest_status", "Interest", false],
   ["source_url", "Source", false],
 ];
 
@@ -47,6 +48,15 @@ function verificationBadge(status) {
   const cls = s === "verified" ? "chip--brand" : s === "flagged" ? "chip--danger" : "";
   const label = s === "verified" ? "✓ verified" : s === "flagged" ? "🚩 flagged" : "⚠ unverified";
   return `<span class="chip ${cls}">${label}</span>`;
+}
+
+/* Phase Q3: manual Interested/Not Interested badge — distinct from the
+   verification badge (that's about data trust; this is a human's business
+   judgment). Unset renders as a dim dash, never hidden. */
+function interestBadge(status) {
+  if (status === "interested") return `<span class="chip chip--brand">👍 interested</span>`;
+  if (status === "not_interested") return `<span class="chip">👎 not interested</span>`;
+  return `<span class="dim">—</span>`;
 }
 
 const EDITABLE_FIELDS = [
@@ -96,7 +106,7 @@ export default {
     const state = {
       mode: "keyword",           // "keyword" | "semantic"
       q: "",
-      filters: { industry: "", country: "", city: "", tech_cluster: "", funding_stage: "", score_tier: "", employee_count: "", verification_status: "", source_url: "" },
+      filters: { industry: "", country: "", city: "", tech_cluster: "", funding_stage: "", score_tier: "", employee_count: "", verification_status: "", source_url: "", interest_status: "" },
       thesis: "",           // Phase V-3: selected thesis id — "" means normal sort/order browsing
       priorityFirst: false, // Phase P-1: sort=priority — startups matching a priority thesis (e.g. SÜDPACK) first
       sort: "created_at", order: "desc",
@@ -106,16 +116,55 @@ export default {
       aiAnalysis: null,
       sourceSites: null,   // [{label, count}] — fetched once, populates the source-website filter
       theses: null,        // [{id, name, kind, summary}] — fetched once, populates the "Relevant to" dropdown
+      selectedIds: new Set(), // Phase Q2/Q3: row-checkbox selection, shared by bulk verify/recheck + bulk interest marking
     };
 
     el.innerHTML = `
       <div class="stack">
         <div class="card" id="search-card"></div>
+        <div id="selection-toolbar"></div>
         <div id="results-region"></div>
       </div>`;
 
     const searchCard = el.querySelector("#search-card");
+    const selectionToolbar = el.querySelector("#selection-toolbar");
     const resultsRegion = el.querySelector("#results-region");
+
+    /* Phase Q2/Q3: shared bulk-action toolbar — appears only when ≥1 row is
+       selected. Q3's mark-interest buttons are wired here now; Q2's bulk
+       verify/recheck buttons slot into the same toolbar. */
+    function renderSelectionToolbar() {
+      const n = state.selectedIds.size;
+      if (!n) { selectionToolbar.innerHTML = ""; return; }
+      selectionToolbar.innerHTML = `
+        <div class="card row wrap" style="gap:10px;align-items:center;background:var(--surface-2)">
+          <strong style="font-size:13px">${n} selected</strong>
+          <button class="btn btn--sm" id="sel-mark-interested">👍 Mark Interested</button>
+          <button class="btn btn--sm" id="sel-mark-not-interested">👎 Mark Not Interested</button>
+          <button class="btn btn--ghost btn--sm" id="sel-clear-interest" title="Clear interest marking back to unset">— Clear marking</button>
+          <span class="grow"></span>
+          <button class="btn btn--ghost btn--sm" id="sel-clear">Clear selection</button>
+        </div>`;
+
+      const markInterest = async (status) => {
+        const ids = [...state.selectedIds];
+        try {
+          const res = await api.markInterest(ids, status);
+          toast(`Marked ${res.updated} startup${res.updated === 1 ? "" : "s"}`);
+          state.selectedIds.clear();
+          load();
+        } catch (err) {
+          toast(`Mark failed: ${err.message}`, "error");
+        }
+      };
+      selectionToolbar.querySelector("#sel-mark-interested").addEventListener("click", () => markInterest("interested"));
+      selectionToolbar.querySelector("#sel-mark-not-interested").addEventListener("click", () => markInterest("not_interested"));
+      selectionToolbar.querySelector("#sel-clear-interest").addEventListener("click", () => markInterest(null));
+      selectionToolbar.querySelector("#sel-clear").addEventListener("click", () => {
+        state.selectedIds.clear();
+        renderResults();
+      });
+    }
 
     function buildSearchCard() {
       searchCard.innerHTML = `
@@ -157,6 +206,11 @@ export default {
               <option value="">Any verification</option>
               ${["unverified", "verified", "flagged"].map((s) =>
                 `<option value="${s}" ${state.filters.verification_status === s ? "selected" : ""}>${s}</option>`).join("")}
+            </select>
+            <select class="select" style="max-width:150px" id="f-interest_status" title="Manual Interested/Not Interested marking">
+              <option value="">Any interest</option>
+              ${[["interested", "👍 Interested"], ["not_interested", "👎 Not interested"], ["unset", "— Unmarked"]].map(([v, label]) =>
+                `<option value="${v}" ${state.filters.interest_status === v ? "selected" : ""}>${label}</option>`).join("")}
             </select>
             <select class="select" style="max-width:200px" id="f-source_url" title="Filter to startups extracted from one source website — useful for a manual verification pass, site by site">
               <option value="">${state.sourceSites ? "All source websites" : "Loading sources…"}</option>
@@ -282,11 +336,19 @@ export default {
       const sortLocked = thesisActive || state.priorityFirst; // both override the clickable-column sort with their own ordering
       const cols = thesisActive ? [COLUMNS[0], RELEVANCE_COLUMN, ...COLUMNS.slice(1)] : COLUMNS;
 
+      // Phase Q2/Q3: a checkbox column, not part of `cols` (which drives the
+      // sortable-header logic) — prepended directly in the markup, +1 on
+      // every colspan. Selection is shared infrastructure: Q3's bulk
+      // interest-marking uses it now, Q2's bulk verify/recheck reuses the
+      // same state.selectedIds and toolbar.
+      const allOnPageSelected = rows.length > 0 && rows.every((s) => state.selectedIds.has(s.id));
+
       const wrap = document.createElement("div");
       wrap.className = "table-wrap";
       wrap.innerHTML = `
         <table class="table">
           <thead><tr>
+            <th style="width:28px"><input type="checkbox" id="select-all-page" ${allOnPageSelected ? "checked" : ""}></th>
             ${cols.map(([key, label, sortable]) => `
               <th ${sortable && !sortLocked ? `data-sort="${key}"` : ""}>
                 ${esc(label)}${!sortLocked && state.sort === key ? (state.order === "asc" ? " ↑" : " ↓") : ""}
@@ -295,6 +357,7 @@ export default {
           <tbody>
             ${rows.map((s) => `
               <tr data-id="${esc(s.id)}">
+                <td><input type="checkbox" class="row-select" data-id="${esc(s.id)}" ${state.selectedIds.has(s.id) ? "checked" : ""}></td>
                 <td>${s.priority_match ? `<span title="Matches a priority thesis (e.g. SÜDPACK's flexible/foil + medical packaging focus)">⭐</span> ` : ""}<strong>${esc(s.name)}</strong></td>
                 ${thesisActive ? `<td class="mono" title="${esc((s.matched_signals || []).join('; '), 'semantic match only')}">${s.relevance_score?.toFixed(2) ?? "—"}</td>` : ""}
                 <td class="dim">${esc(s.industry, "—")}</td>
@@ -306,15 +369,35 @@ export default {
                 <td>${s.score_tier ? `<span class="chip ${tierChipClass(s.score_tier)}">${esc(s.score_tier.replace(/_/g, " "))}</span>` : "—"}</td>
                 <td class="mono">${s.enrichment_score ?? "—"}</td>
                 <td>${verificationBadge(s.verification_status)}</td>
+                <td>${interestBadge(s.interest_status)}</td>
                 <td class="dim truncate" style="max-width:160px">${s.source_url
                   ? `<a href="${esc(s.source_url)}" target="_blank" rel="noopener" title="${esc(s.source_url)}" onclick="event.stopPropagation()">${esc(sourceLabel(s.source_url, s.source))}</a>`
                   : esc(sourceLabel(s.source_url, s.source))}</td>
               </tr>
-              <tr class="detail-row hidden" data-detail-for="${esc(s.id)}"><td colspan="${cols.length}"></td></tr>
+              <tr class="detail-row hidden" data-detail-for="${esc(s.id)}"><td colspan="${cols.length + 1}"></td></tr>
             `).join("")}
           </tbody>
         </table>`;
       resultsRegion.appendChild(wrap);
+
+      renderSelectionToolbar();
+
+      wrap.querySelector("#select-all-page").addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (e.target.checked) rows.forEach((s) => state.selectedIds.add(s.id));
+        else rows.forEach((s) => state.selectedIds.delete(s.id));
+        renderResults();
+      });
+      wrap.querySelectorAll(".row-select").forEach((cb) => {
+        cb.addEventListener("click", (e) => e.stopPropagation());
+        cb.addEventListener("change", (e) => {
+          const id = e.target.dataset.id;
+          if (e.target.checked) state.selectedIds.add(id);
+          else state.selectedIds.delete(id);
+          renderSelectionToolbar();
+          wrap.querySelector("#select-all-page").checked = rows.every((s) => state.selectedIds.has(s.id));
+        });
+      });
 
       if (!state.aiAnalysis) {
         const footer = document.createElement("div");
@@ -463,6 +546,13 @@ export default {
       const breakdown = s.score_breakdown?.categories || {};
       cell.innerHTML = `
         <div class="stack" style="padding:16px;gap:16px;background:var(--surface-2);border-radius:var(--radius-sm)">
+          <div class="row" style="gap:10px;align-items:center">
+            ${interestBadge(s.interest_status)}
+            <span class="grow"></span>
+            <button class="btn btn--sm" id="mark-interested-btn">👍 Interested</button>
+            <button class="btn btn--sm" id="mark-not-interested-btn">👎 Not interested</button>
+            ${s.interest_status ? `<button class="btn btn--ghost btn--sm" id="mark-clear-btn">— Clear</button>` : ""}
+          </div>
           <div class="grid-2">
             <div class="card">
               <div class="card__head"><span class="card__title">Profile</span></div>
@@ -593,6 +683,19 @@ export default {
           toast(`Delete failed: ${err.message}`, "error");
         }
       });
+
+      const markOne = async (status) => {
+        try {
+          await api.editStartup(id, { interest_status: status });
+          toast(status ? `Marked ${status.replace("_", " ")}` : "Cleared marking");
+          load();
+        } catch (err) {
+          toast(`Mark failed: ${err.message}`, "error");
+        }
+      };
+      cell.querySelector("#mark-interested-btn").addEventListener("click", () => markOne("interested"));
+      cell.querySelector("#mark-not-interested-btn").addEventListener("click", () => markOne("not_interested"));
+      cell.querySelector("#mark-clear-btn")?.addEventListener("click", () => markOne(null));
 
       cell.querySelector("#web-verify-btn").addEventListener("click", async (e) => {
         const btn = e.currentTarget;

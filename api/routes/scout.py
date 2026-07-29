@@ -35,6 +35,11 @@ class StartupAddRequest(BaseModel):
     tags: Optional[List[str]] = None
 
 
+class MarkInterestRequest(BaseModel):
+    ids: List[str]
+    status: Optional[str] = None  # "interested" | "not_interested" | None (clears it back to unset)
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.post("/search")
@@ -226,6 +231,8 @@ async def edit_startup(startup_id: str, changes: dict, db: Session = Depends(get
         "sub_industry", "tech_cluster", "country", "city", "address",
         "funding_stage", "founded_year", "employee_count", "contact_info",
         "linkedin", "tags",
+        "business_model", "is_gmbh",         # Phase Q1
+        "interest_status",                    # Phase Q3 — single-record marking reuses this same apply-directly path
     }
     applied = {}
     for field, value in (changes or {}).items():
@@ -394,6 +401,48 @@ async def compare_startup(startup_id: str, limit: int = 5, db: Session = Depends
     return {"target": _compare_row_dict(target), "similar": similar, "ai_verdict": ai_verdict}
 
 
+@router.post("/mark-interest")
+async def mark_interest(request: MarkInterestRequest, db: Session = Depends(get_db)):
+    """
+    Phase Q3: bulk Interested/Not Interested marking from Browse's
+    selection toolbar (single-record marking reuses PATCH /scout/startup/{id}
+    instead — interest_status is just another editable field there).
+
+    Always a direct write (no LLM, no staging, no GPU mutex — this is a
+    human's explicit judgment call, cheap enough to apply inline) and never
+    hides anything: a "not_interested" row stays fully visible/editable
+    everywhere, only badged + filterable, same philosophy as every other
+    priority/status signal in this pipeline.
+    """
+    from datetime import datetime
+    from api.routes.reviews import _reindex
+
+    if request.status not in (None, "interested", "not_interested"):
+        raise HTTPException(
+            status_code=422,
+            detail="status must be 'interested', 'not_interested', or null",
+        )
+    if not request.ids:
+        raise HTTPException(status_code=422, detail="ids must not be empty")
+
+    rows = db.query(Startup).filter(Startup.id.in_(request.ids)).all()
+    found_ids = {str(r.id) for r in rows}
+
+    for r in rows:
+        r.interest_status = request.status
+        r.updated_at = datetime.utcnow()
+    db.commit()
+
+    for r in rows:
+        try:
+            _reindex(db, r)
+        except Exception as exc:
+            logger.warning(f"[Scout] Re-index after mark-interest failed for {r.id}: {exc}")
+
+    missing = [i for i in request.ids if i not in found_ids]
+    return {"status": "ok", "updated": len(rows), "missing": missing}
+
+
 @router.delete("/startup/{startup_id}")
 async def delete_startup(startup_id: str, confirm: bool = False, db: Session = Depends(get_db)):
     """
@@ -490,6 +539,9 @@ async def list_startups(
     source: Optional[str] = None,
     source_url: Optional[str] = None,      # filter by the specific site a record was extracted from
     verification_status: Optional[str] = None,   # unverified | verified | flagged (Phase H-2)
+    interest_status: Optional[str] = None,       # interested | not_interested | "unset" (Phase Q3)
+    business_model: Optional[str] = None,        # B2B | B2C | B2B2C | Unclear (Phase Q1)
+    is_gmbh: Optional[bool] = None,               # Phase Q1
     founded_year_min: Optional[int] = None,
     founded_year_max: Optional[int] = None,
     thesis: Optional[str] = None,          # Phase V-3: rank by relevance to this thesis id instead of `sort`
@@ -539,6 +591,12 @@ async def list_startups(
             Startup.source.ilike(f"%{source_url}%"),
         ))
     if verification_status: query = query.filter(Startup.verification_status == verification_status)
+    if interest_status == "unset":
+        query = query.filter(Startup.interest_status.is_(None))
+    elif interest_status:
+        query = query.filter(Startup.interest_status == interest_status)
+    if business_model: query = query.filter(Startup.business_model == business_model)
+    if is_gmbh is not None: query = query.filter(Startup.is_gmbh == is_gmbh)
     if founded_year_min is not None: query = query.filter(Startup.founded_year >= founded_year_min)
     if founded_year_max is not None: query = query.filter(Startup.founded_year <= founded_year_max)
 
@@ -591,6 +649,9 @@ async def list_startups(
                 "created_at": s.created_at,
                 "verification_status": s.verification_status or "unverified",
                 "priority_match": s.industry in priority_industries,
+                "interest_status": s.interest_status,
+                "business_model": s.business_model,
+                "is_gmbh": s.is_gmbh,
                 "vector": vectors.get(str(s.id)),
             }
             for s in matched
@@ -654,6 +715,9 @@ async def list_startups(
                 "created_at": s.created_at,
                 "verification_status": s.verification_status or "unverified",
                 "priority_match": s.industry in priority_industries,
+                "interest_status": s.interest_status,
+                "business_model": s.business_model,
+                "is_gmbh": s.is_gmbh,
             }
             for s in startups
         ],

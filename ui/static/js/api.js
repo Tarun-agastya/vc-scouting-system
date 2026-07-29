@@ -61,6 +61,8 @@ export const api = {
   /** Distinct source websites actually present in the DB, with counts — powers the Browse source filter. */
   listSourceSites: () => get("/scout/source-sites"),
   editStartup: (id, changes) => patch(`/scout/startup/${id}`, changes),
+  /** Phase Q3: bulk Interested/Not Interested marking. status: "interested" | "not_interested" | null (clears back to unset). */
+  markInterest: (ids, status) => post("/scout/mark-interest", { ids, status }),
   deleteStartup: (id) => del(`/scout/startup/${id}`, { confirm: "true" }),
   /** Semantic (vector) search — different endpoint + shape from listStartups. */
   semanticSearch: (query, opts = {}) =>

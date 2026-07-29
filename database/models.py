@@ -91,6 +91,22 @@ class Startup(Base):
     # ("original_industry"/"original_tech_cluster") for audit, never lost.
     classified_at          = Column(DateTime, nullable=True, index=True)
 
+    # Priority scouting signals (Phase Q1, 29 Jul) — B2B and GmbH startups are
+    # the owner's stated priority; B2C/non-GmbH are never hidden or excluded,
+    # just ranked lower (same soft-deprioritize philosophy as Phase P-1's
+    # priority theses, applied here as a blanket criterion). business_model
+    # is classified by the same taxonomy LLM call as industry/tech_cluster
+    # (reuses classified_at as its own resumability marker — no separate
+    # backlog tracking needed); is_gmbh is a cheap deterministic
+    # name/description/address check, no LLM involved.
+    is_gmbh = Column(Boolean, nullable=True, index=True)
+
+    # Manual interest marking (Phase Q3, 29 Jul) — a human decision, never
+    # auto-set. NULL = unset (the default). Startups marked "not_interested"
+    # are NEVER hidden from Browse by default — only badged/filterable, same
+    # never-hide-data philosophy as everything else in this pipeline.
+    interest_status = Column(String(20), nullable=True, index=True)  # interested | not_interested | NULL
+
     # AI-generated insights
     ai_summary = Column(Text)
     investment_thesis = Column(Text)
