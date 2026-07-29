@@ -520,13 +520,16 @@ class QwenClient:
         deep reasoning, and it runs once per startup at ingest plus across the
         whole reclassify backlog, so cost matters.
 
-        Returns {"industry": str|None, "tech_cluster": str|None}. tech_cluster
-        is nulled (not the model's raw pick) if it doesn't actually belong
-        under the chosen industry — a deterministic Python cross-check, since
-        JSON-schema enums alone can't express "cluster must belong to
-        industry" as a hard grammar constraint. industry stays set either way;
-        losing tech_cluster to an inconsistent pick is the same
-        correct-and-less-over-wrong-and-more tradeoff as H-1 grounding.
+        Returns {"industry": str|None, "tech_cluster": str|None,
+        "business_model": str|None}. tech_cluster is nulled (not the model's
+        raw pick) if it doesn't actually belong under the chosen industry —
+        a deterministic Python cross-check, since JSON-schema enums alone
+        can't express "cluster must belong to industry" as a hard grammar
+        constraint. industry stays set either way; losing tech_cluster to an
+        inconsistent pick is the same correct-and-less-over-wrong-and-more
+        tradeoff as H-1 grounding. business_model (Phase Q1, 29 Jul) is the
+        owner's stated scouting priority (B2B > B2C) — classified in this
+        SAME call, no extra Ollama round-trip.
 
         Raises on failure — the caller (ingest path / processing/reclassifier.py)
         decides how to handle an unreachable/failing Ollama.
@@ -538,15 +541,16 @@ class QwenClient:
         industries = tax["industries"]
         all_clusters = tax["all_clusters"]
         if not industries or not all_clusters:
-            return {"industry": None, "tech_cluster": None}
+            return {"industry": None, "tech_cluster": None, "business_model": None}
 
         schema = {
             "type": "object",
             "properties": {
-                "industry":     {"type": "string", "enum": industries},
-                "tech_cluster": {"type": "string", "enum": all_clusters},
+                "industry":       {"type": "string", "enum": industries},
+                "tech_cluster":   {"type": "string", "enum": all_clusters},
+                "business_model": {"type": "string", "enum": ["B2B", "B2C", "B2B2C", "Unclear"]},
             },
-            "required": ["industry", "tech_cluster"],
+            "required": ["industry", "tech_cluster", "business_model"],
         }
         taxonomy_text = "\n".join(
             f"- {industry}: " + ", ".join(clusters)
@@ -568,14 +572,15 @@ class QwenClient:
                         model=settings.ollama_extract_model,
                         messages=messages,
                         format=schema,
-                        options={"temperature": 0, "num_predict": 200},
+                        options={"temperature": 0, "num_predict": 250},
                     )
                 data = json.loads(response["message"]["content"])
                 industry = data.get("industry")
                 cluster = data.get("tech_cluster")
+                business_model = data.get("business_model")
                 if cluster and tax["cluster_to_industry"].get(cluster) != industry:
                     cluster = None
-                return {"industry": industry, "tech_cluster": cluster}
+                return {"industry": industry, "tech_cluster": cluster, "business_model": business_model}
             except Exception as exc:
                 last_exc = exc
                 if attempt == 0:

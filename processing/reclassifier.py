@@ -40,6 +40,20 @@ def _classify_record(record) -> dict:
     )
 
 
+def _detect_gmbh(name, description, short_description, address) -> bool:
+    """
+    Phase Q1 (29 Jul): deterministic (no LLM) check for a GmbH legal form —
+    one of the owner's two stated scouting priorities (the other, B2B, is
+    classified by the LLM call above since it needs judgment, not a
+    substring match). A startup's extracted `name` is often the brand alone
+    ("cleverwatt", not "cleverwatt GmbH"), so this checks every text field
+    that might carry the full legal name rather than name alone — cheap and
+    reliable, no extra Ollama call.
+    """
+    text = " ".join(str(v or "") for v in (name, description, short_description, address)).lower()
+    return "gmbh" in text
+
+
 async def reclassify_pending(limit: int = 20, progress=None) -> dict:
     """
     Re-classify up to `limit` startups whose classified_at is still NULL.
@@ -54,14 +68,23 @@ async def reclassify_pending(limit: int = 20, progress=None) -> dict:
     """
     from database.connection import SessionLocal
     from database.models import Startup
+    from sqlalchemy import or_
     from api.routes.reviews import _reindex
 
     db = SessionLocal()
     counts = {"classified": 0, "errors": 0}
     try:
+        # classified_at IS NULL is the primary marker, but Phase Q1 (29 Jul)
+        # extended what one classification pass produces (added
+        # business_model) — a record classified BEFORE that change has
+        # classified_at set yet is still missing business_model. Catch that
+        # gap too, so extending the pass's scope doesn't strand the ~690
+        # already-classified records forever. is_gmbh is deterministic and
+        # cheap so it's always recomputed alongside business_model here
+        # regardless — no separate condition needed for it.
         pending = (
             db.query(Startup)
-            .filter(Startup.classified_at.is_(None))
+            .filter(or_(Startup.classified_at.is_(None), Startup.business_model.is_(None)))
             .order_by(Startup.created_at.asc())
             .limit(limit)
             .all()
@@ -91,6 +114,10 @@ async def reclassify_pending(limit: int = 20, progress=None) -> dict:
 
                 record.industry = result.get("industry")
                 record.tech_cluster = result.get("tech_cluster")
+                record.business_model = result.get("business_model")
+                record.is_gmbh = _detect_gmbh(
+                    record.name, record.description, record.short_description, record.address
+                )
                 record.classified_at = datetime.utcnow()
 
                 _reindex(db, record)  # re-score/re-embed — commits internally

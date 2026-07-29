@@ -306,7 +306,7 @@ fixed list of valid industries and tech clusters. Pick the single best-fitting
 industry and the single best-fitting tech cluster FROM THAT LIST — never
 invent a new category, never combine two, never leave either blank if a
 reasonable fit exists. The tech cluster you pick must genuinely belong under
-the industry you pick.
+the industry you pick. Also classify the business model (B2B/B2C/B2B2C/Unclear).
 Return ONLY valid JSON matching the required schema. No markdown, no prose
 outside the JSON."""
 
@@ -323,7 +323,17 @@ Classify this company:
 - tech_cluster: the single best-fitting tech cluster from the list above,
   exactly as written, and it MUST be one of the clusters listed under the
   industry you chose.
+- business_model: who the company actually sells to.
+  "B2B" — sells to other businesses/organizations (most enterprise software,
+  industrial tech, manufacturing equipment, professional services tooling).
+  "B2C" — sells directly to individual consumers (consumer apps, retail
+  products, personal finance apps for individuals).
+  "B2B2C" — sells to businesses who then serve end consumers through it
+  (e.g. a platform businesses use to serve their own customers).
+  "Unclear" — the description genuinely doesn't say enough to tell. Do not
+  guess — most B2B SaaS/industrial/enterprise companies really are B2B, but
+  if there's no real signal either way, say Unclear rather than defaulting.
 
 If the company is genuinely generic or doesn't fit any specific tech cluster,
-use "Other / Uncategorized" for both. Do not guess a specific-sounding
-category that doesn't actually match the description."""
+use "Other / Uncategorized" for both industry and tech_cluster. Do not guess a
+specific-sounding category that doesn't actually match the description."""

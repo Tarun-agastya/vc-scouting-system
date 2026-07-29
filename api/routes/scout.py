@@ -671,15 +671,24 @@ async def list_startups(
         return {"total": total, "offset": offset, "limit": limit, "startups": page}
 
     if sort == "priority":
-        # Phase P-1: priority-industry rows first, enrichment_score as the
-        # tiebreak within each group — a compound ORDER BY, so it's handled
-        # separately from the single-column dict lookup below. `order` is
-        # ignored here (priority-first only makes sense one way); ASC/DESC
-        # toggling stays meaningful for every other sort option.
-        from sqlalchemy import case
-        priority_rank = case((Startup.industry.in_(priority_industries), 0), else_=1) if priority_industries else 1
+        # Phase P-1 + Q1: an additive compound priority score, not a strict
+        # hierarchy — a startup matching MORE priority signals ranks higher,
+        # rather than one signal always trumping the others regardless of
+        # the rest (the owner introduced B2B/GmbH as their own priority
+        # criteria without saying they outrank the per-stakeholder thesis
+        # match, so treat all three as equally-weighted points rather than
+        # presuming an order). enrichment_score is the final tiebreak.
+        # `order` is ignored here (priority-first only makes sense one way);
+        # ASC/DESC toggling stays meaningful for every other sort option.
+        from sqlalchemy import case, literal
+        priority_score = (
+            case((Startup.industry.in_(priority_industries), 1), else_=0)
+            if priority_industries else literal(0)
+        )
+        priority_score = priority_score + case((Startup.business_model == "B2B", 1), else_=0)
+        priority_score = priority_score + case((Startup.is_gmbh.is_(True), 1), else_=0)
         startups = (
-            query.order_by(priority_rank, Startup.enrichment_score.desc())
+            query.order_by(priority_score.desc(), Startup.enrichment_score.desc())
             .offset(offset).limit(limit).all()
         )
     else:

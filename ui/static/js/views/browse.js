@@ -106,7 +106,7 @@ export default {
     const state = {
       mode: "keyword",           // "keyword" | "semantic"
       q: "",
-      filters: { industry: "", country: "", city: "", tech_cluster: "", funding_stage: "", score_tier: "", employee_count: "", verification_status: "", source_url: "", interest_status: "" },
+      filters: { industry: "", country: "", city: "", tech_cluster: "", funding_stage: "", score_tier: "", employee_count: "", verification_status: "", source_url: "", interest_status: "", business_model: "", is_gmbh: "" },
       thesis: "",           // Phase V-3: selected thesis id — "" means normal sort/order browsing
       priorityFirst: false, // Phase P-1: sort=priority — startups matching a priority thesis (e.g. SÜDPACK) first
       sort: "created_at", order: "desc",
@@ -188,7 +188,7 @@ export default {
             </select>
             ${!state.thesis ? `
               <button class="btn btn--sm ${state.priorityFirst ? "btn--primary" : "btn--ghost"}" id="priority-toggle"
-                title="Sort startups matching a priority thesis (e.g. SÜDPACK's flexible/foil + medical packaging focus) first">
+                title="Sort by priority signals first: a stakeholder thesis match (e.g. SÜDPACK's packaging focus), B2B, and GmbH each count — more matches ranks higher">
                 ⭐ Priority first
               </button>` : ""}
             <input class="input" style="max-width:150px" id="f-industry" placeholder="Industry" value="${esc(state.filters.industry)}">
@@ -211,6 +211,16 @@ export default {
               <option value="">Any interest</option>
               ${[["interested", "👍 Interested"], ["not_interested", "👎 Not interested"], ["unset", "— Unmarked"]].map(([v, label]) =>
                 `<option value="${v}" ${state.filters.interest_status === v ? "selected" : ""}>${label}</option>`).join("")}
+            </select>
+            <select class="select" style="max-width:130px" id="f-business_model" title="B2B is the stated scouting priority">
+              <option value="">Any model</option>
+              ${["B2B", "B2C", "B2B2C", "Unclear"].map((v) =>
+                `<option value="${v}" ${state.filters.business_model === v ? "selected" : ""}>${v}</option>`).join("")}
+            </select>
+            <select class="select" style="max-width:130px" id="f-is_gmbh" title="GmbH is the stated scouting priority">
+              <option value="">Any legal form</option>
+              <option value="true" ${state.filters.is_gmbh === "true" ? "selected" : ""}>🏢 GmbH only</option>
+              <option value="false" ${state.filters.is_gmbh === "false" ? "selected" : ""}>Non-GmbH only</option>
             </select>
             <select class="select" style="max-width:200px" id="f-source_url" title="Filter to startups extracted from one source website — useful for a manual verification pass, site by site">
               <option value="">${state.sourceSites ? "All source websites" : "Loading sources…"}</option>
@@ -358,7 +368,7 @@ export default {
             ${rows.map((s) => `
               <tr data-id="${esc(s.id)}">
                 <td><input type="checkbox" class="row-select" data-id="${esc(s.id)}" ${state.selectedIds.has(s.id) ? "checked" : ""}></td>
-                <td>${s.priority_match ? `<span title="Matches a priority thesis (e.g. SÜDPACK's flexible/foil + medical packaging focus)">⭐</span> ` : ""}<strong>${esc(s.name)}</strong></td>
+                <td>${s.priority_match ? `<span title="Matches a priority thesis (e.g. SÜDPACK's flexible/foil + medical packaging focus)">⭐</span> ` : ""}${s.business_model === "B2B" ? `<span title="B2B — the stated scouting priority">🤝</span> ` : ""}${s.is_gmbh ? `<span title="GmbH — the stated scouting priority">🏢</span> ` : ""}<strong>${esc(s.name)}</strong></td>
                 ${thesisActive ? `<td class="mono" title="${esc((s.matched_signals || []).join('; '), 'semantic match only')}">${s.relevance_score?.toFixed(2) ?? "—"}</td>` : ""}
                 <td class="dim">${esc(s.industry, "—")}</td>
                 <td class="dim">${esc(s.tech_cluster, "—")}</td>

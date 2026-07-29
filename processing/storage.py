@@ -208,6 +208,7 @@ def _insert_master(db, startup, name, website, fingerprint, stable_id,
     # rather than blocking the insert — processing/reclassifier.py's backlog
     # pass picks it up later, exactly like any other unclassified legacy row.
     classified_industry, classified_cluster, classified_at = None, None, None
+    classified_business_model, detected_is_gmbh = None, None
     # Skipped under pytest (PYTEST_CURRENT_TEST is set automatically by
     # pytest for every test) — classify_startup is a heavy structured-output
     # call (a 114-value enum grammar) that both slows the suite dramatically
@@ -226,11 +227,23 @@ def _insert_master(db, startup, name, website, fingerprint, stable_id,
             )
             classified_industry = result.get("industry")
             classified_cluster = result.get("tech_cluster")
+            classified_business_model = result.get("business_model")
             if classified_industry:
                 classified_at = datetime.utcnow()
         except Exception as exc:
             logger.warning(f"[Storage] Classification failed for '{name}': {exc} — "
                            f"left for the reclassify backlog")
+
+    # Phase Q1: GmbH detection is deterministic (no LLM, no Ollama call) —
+    # unlike business_model above, it doesn't need the pytest skip and runs
+    # unconditionally so test-created rows get it too.
+    try:
+        from processing.reclassifier import _detect_gmbh
+        detected_is_gmbh = _detect_gmbh(
+            name, startup.get("description"), startup.get("one_liner"), startup.get("address")
+        )
+    except Exception as exc:
+        logger.warning(f"[Storage] GmbH detection failed for '{name}': {exc}")
 
     # stable_id is name-derived; two different same-named no-website companies
     # would collide on it — mint a fresh id if it's already taken. As of
@@ -264,6 +277,8 @@ def _insert_master(db, startup, name, website, fingerprint, stable_id,
         sub_industry=startup.get("sub_industry"),
         tech_cluster=classified_cluster,
         classified_at=classified_at,
+        business_model=classified_business_model,
+        is_gmbh=detected_is_gmbh,
         country=startup.get("country"),
         city=startup.get("city"),
         address=startup.get("address"),
@@ -318,6 +333,13 @@ def _score_and_index(row, startup, vector, fingerprint, source, source_url,
         # though the Postgres row already holds the taxonomy-constrained ones.
         "industry": row.industry,
         "tech_cluster": row.tech_cluster,
+        # Phase Q1/Q3: same reasoning — the row's current values, not
+        # whatever (if anything) the free-form startup dict happened to
+        # carry, so semantic search results (which render straight from
+        # this Qdrant payload, not a fresh Postgres read) stay accurate.
+        "business_model": row.business_model,
+        "is_gmbh": row.is_gmbh,
+        "interest_status": row.interest_status,
     })
 
 

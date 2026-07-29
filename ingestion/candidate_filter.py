@@ -81,7 +81,15 @@ def _build_priority(cfg: dict) -> None:
     _priority_enabled = bool(cfg.get("enabled", True))
     _priority_boost = int(cfg.get("boost", 1))
     from config.thesis_loader import get_priority_keywords
-    keywords = get_priority_keywords()
+    # Phase Q1 (29 Jul): "gmbh" is a blanket boost keyword, not theses-derived
+    # — the owner's GmbH scouting priority applies everywhere, not just to
+    # one stakeholder's vertical. It's cheap and reliable as a raw-chunk-text
+    # signal (a literal legal-form suffix), unlike B2B/B2C — that needs real
+    # judgment about who the company sells to, which a keyword can't
+    # reliably tell from a chunk of text before extraction even happens, so
+    # it's deliberately NOT added here; B2B prioritization only ever happens
+    # post-classification (api/routes/scout.py's sort=priority).
+    keywords = list(get_priority_keywords()) + ["gmbh"]
     if not keywords:
         _priority_pattern = None
         return

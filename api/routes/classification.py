@@ -10,6 +10,7 @@ Controlled-taxonomy classification API (Phase V-2, 27 Jul).
 """
 import logging
 from fastapi import APIRouter, Depends
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from database.connection import get_db
@@ -31,7 +32,18 @@ async def trigger_reclassify(limit: int = 20):
 
 @router.get("/status")
 async def classification_status(db: Session = Depends(get_db)):
-    """Counts: how much of the DB is on the controlled taxonomy vs still pending."""
+    """
+    Counts: how much of the DB is on the controlled taxonomy vs still
+    pending. Must match reclassify_pending()'s own definition of "pending"
+    exactly, or this becomes a repeat of the same misleading-counter bug
+    already found and fixed once this session on the web-verify backlog:
+    classified_at IS NULL is the primary marker, but Phase Q1 (29 Jul)
+    extended what one pass produces (added business_model) without
+    resetting classified_at on the ~690 records classified before that —
+    they'd otherwise read "0 pending" forever despite genuinely lacking it.
+    """
     total = db.query(Startup).count()
-    pending = db.query(Startup).filter(Startup.classified_at.is_(None)).count()
+    pending = db.query(Startup).filter(
+        or_(Startup.classified_at.is_(None), Startup.business_model.is_(None))
+    ).count()
     return {"total": total, "classified": total - pending, "pending": pending}

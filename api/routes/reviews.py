@@ -84,6 +84,13 @@ def _reindex(db, master: Startup) -> None:
         "source_confidence": master.source_confidence or 0.0,
         "score_tier": master.score_tier or "WEAK_SIGNAL",
         "verification_status": master.verification_status or "unverified",
+        # Phase Q1/Q3: this is the SINGLE reindex path every update flows
+        # through (edits, mark-interest, reclassify, recheck, web-verify) —
+        # keep semantic-search results (rendered straight from this Qdrant
+        # payload) as accurate as Browse's SQL reads.
+        "business_model": master.business_model,
+        "is_gmbh": master.is_gmbh,
+        "interest_status": master.interest_status,
     })
 
 
