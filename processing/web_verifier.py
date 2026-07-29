@@ -25,6 +25,7 @@ plain network I/O, not mutex-bound.
 import asyncio
 import logging
 from datetime import datetime
+from urllib.parse import urlparse
 
 from sqlalchemy import cast
 from sqlalchemy.dialects.postgresql import JSONB
@@ -32,11 +33,16 @@ from sqlalchemy.dialects.postgresql import JSONB
 logger = logging.getLogger(__name__)
 
 # Same field set H-3's Layer 2 judges (processing/verifier.py::_RECHECK_FIELDS)
-# minus name/website, which identity_match and the search query already cover.
+# minus name, which identity_match and the search query already cover.
+# website WAS also excluded (comment used to read "minus name/website") —
+# added back in Phase P-2 (29 Jul): it's almost always empty in storage
+# (nothing ever populated it), and it's exactly the kind of fact web search
+# is good at finding. _is_official_website() below guards against a
+# LinkedIn/Crunchbase/etc. profile page being mistaken for the real site.
 _CHECK_FIELDS = [
     "short_description", "description", "industry", "sub_industry",
     "tech_cluster", "country", "city", "address", "funding_stage",
-    "founded_year", "employee_count", "contact_info",
+    "founded_year", "employee_count", "contact_info", "website",
 ]
 
 # Maps a web-verify finding's "field" (matched loosely against what the model
@@ -48,7 +54,45 @@ _FIELD_ALIASES = {
     "year_founded": "founded_year",
     "headquarters": "city",
     "location": "city",
+    "homepage": "website",
+    "url": "website",
+    "domain": "website",
 }
+
+# News/directory sites that aren't in settings.dedup_multitenant_domains
+# (that list is tuned for identity-matching, not "is this a company's own
+# site" — e.g. munich-startup.de is a single-tenant domain by the matcher's
+# definition, but it's still never any given startup's OWN homepage).
+_NON_OFFICIAL_WEBSITE_EXTRA = {
+    "pitchbook.com", "tracxn.com", "dealroom.co", "wikipedia.org",
+    "techcrunch.com", "sifted.eu", "tech.eu", "wellfound.com",
+    "startupticker.ch", "munich-startup.de", "gruenderszene.de",
+}
+
+
+def _is_official_website(url: str) -> bool:
+    """
+    True if `url` looks like a company's own homepage rather than a profile
+    page on someone else's platform. Reuses the dedup matcher's multi-tenant
+    blocklist (settings.dedup_multitenant_domains, processing/matcher.py) —
+    a domain that can't identify a unique company for dedup purposes can't
+    be that company's homepage either — plus a few news/directory sites
+    specific to this "is it really their own site" check.
+    """
+    from config import settings
+
+    if not url:
+        return False
+    host = urlparse(url).netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return False
+    blocklist = (
+        {d.strip().lower() for d in settings.dedup_multitenant_domains.split(",") if d.strip()}
+        | _NON_OFFICIAL_WEBSITE_EXTRA
+    )
+    return not any(host == d or host.endswith("." + d) for d in blocklist)
 
 
 def _build_search_query(record) -> str:
@@ -162,6 +206,12 @@ def apply_verdict(db, record, results: list, verdict: dict) -> str:
         old_val = getattr(record, attr, None)
         new_val = f.get("correct_value")
         if not new_val or str(new_val).strip() == str(old_val or "").strip():
+            continue
+        if attr == "website" and not _is_official_website(new_val):
+            logger.warning(
+                f"[WebVerifier] Rejected non-official website proposal for "
+                f"'{record.name}': {new_val!r} (aggregator/social/news domain)"
+            )
             continue
         proposed[attr] = {
             "old": old_val, "new": new_val,

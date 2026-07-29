@@ -222,6 +222,12 @@ stored field:
   them together as a single location using the same official-source
   preference above, or omit all three rather than mix values pulled from
   different, disagreeing sources.
+- website is usually stored EMPTY — that is not "nothing to report," it
+  is the normal case you should try to fill in. If a genuinely-matching
+  result reveals the company's OWN official homepage (its own domain,
+  not a profile page on someone else's platform), report it as a finding
+  even though the stored value was empty. If no result reveals the
+  company's own domain, leave it alone like any other unmentioned field.
 
 Report:
 - identity_match: true if at least one result is genuinely about this named
@@ -246,6 +252,13 @@ Report:
       wrong; omit it or say "Series C").
     - employee_count: a short range or number ("2-10", "50").
     - city / country: the plain place name only.
+    - website: the bare homepage URL of the company's OWN domain only
+      (e.g. "https://www.example.com"). NEVER propose a LinkedIn,
+      Crunchbase, Tracxn, PitchBook, Dealroom, EU-Startups, Wikipedia,
+      news-article, or any other third-party-platform URL as website —
+      those are not the company's own site, even when they're the only
+      result you have. If you cannot identify the company's own domain
+      with confidence, omit the finding.
   A correct_value longer than a few words is almost always wrong — omit it.
   source_url must be one of the results you confirmed in Step 1 is
   genuinely about this company — never cite a discarded result.
