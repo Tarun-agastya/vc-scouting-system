@@ -302,7 +302,14 @@ export default {
                 <button class="btn btn--ghost" id="delete-master-btn" style="margin-left:auto">
                   🗑 Delete this record
                 </button>` : ""}
-            </div>` : `<div class="chip">Already ${rv.status}</div>`}
+            </div>` : `
+            <div class="row wrap" style="gap:10px;align-items:center">
+              <span class="chip">Already ${esc(rv.status)}</span>
+              ${rv.status === "approved" && rv.review_type !== "field_update" ? `
+                <button class="btn btn--ghost btn--sm" id="undo-merge-btn" title="Reinsert the deleted record from this review's saved snapshot; the record it was merged into is left as-is">
+                  ↩️ Undo merge
+                </button>` : ""}
+            </div>`}
         </div>`;
 
       detailEl.querySelector("#approve-btn")?.addEventListener("click", () => act("approve"));
@@ -311,6 +318,8 @@ export default {
         act("delete", "master", rv.master_name || rv.master?.name));
       detailEl.querySelector("#delete-incoming-btn")?.addEventListener("click", () =>
         act("delete", "incoming", rv.incoming_name || rv.incoming?.name));
+      detailEl.querySelector("#undo-merge-btn")?.addEventListener("click", () =>
+        act("undo-merge", null, rv.incoming_name));
     }
 
     async function act(kind, target, recordName) {
@@ -319,20 +328,26 @@ export default {
         const label = recordName ? `"${recordName}"` : "this record";
         if (!confirmAction(`Permanently delete ${label}? This removes it from the database entirely — not a merge, not a reject. This cannot be undone.`)) return;
       }
+      if (kind === "undo-merge") {
+        const label = recordName ? `"${recordName}"` : "the merged-away record";
+        if (!confirmAction(`Undo this merge? ${label} will be reinserted as its own record from the review's saved data. The record it was merged into is left as-is.`)) return;
+      }
       state.busy = true;
       try {
         if (kind === "approve") await api.approveReview(state.selectedId);
         else if (kind === "reject") await api.rejectReview(state.selectedId);
+        else if (kind === "undo-merge") await api.undoMerge(state.selectedId);
         else await api.deleteReview(state.selectedId, target);
         toast(
           kind === "approve" ? "Approved" :
           kind === "reject" ? "Rejected — won't be flagged again" :
+          kind === "undo-merge" ? "Merge undone — record restored" :
           "Deleted"
         );
         await loadCounts();
         await loadList();
       } catch (err) {
-        toast(`${kind === "approve" ? "Approve" : kind === "reject" ? "Reject" : "Delete"} failed: ${err.message}`, "error");
+        toast(`${kind === "approve" ? "Approve" : kind === "reject" ? "Reject" : kind === "undo-merge" ? "Undo" : "Delete"} failed: ${err.message}`, "error");
       } finally {
         state.busy = false;
       }

@@ -146,6 +146,15 @@ def upsert_startup(
                 return str(master.id), "no_op"
             # master vanished — fall through to insert as new
 
+        # _insert_master pops H-1's internal "_source_excerpt"/"_grounding" keys
+        # out of `startup` IN PLACE (they become row.source_excerpt, not part
+        # of raw_data). Save it before that happens so a possible_duplicate's
+        # incoming_data snapshot below still carries it — otherwise a later
+        # merge-then-undo can restore every structured field but never the
+        # source text needed to re-verify the restored row (found live 29 Jul
+        # recovering an accidental merge by hand).
+        saved_excerpt = startup.get("_source_excerpt")
+
         # ── Insert the incoming as its own master (new / duplicate / anomaly) ──
         new_row = _insert_master(
             db, startup, name, website, fingerprint, stable_id,
@@ -162,7 +171,8 @@ def upsert_startup(
             rtype = "anomaly" if report.outcome == "anomaly" else "possible_duplicate"
             _create_review(
                 db, review_type=rtype, master=master, incoming_row=new_row,
-                incoming_data=startup, proposed_changes=None, evidence=report.evidence,
+                incoming_data={**startup, "_source_excerpt": saved_excerpt},
+                proposed_changes=None, evidence=report.evidence,
                 risk_level=report.risk_level, confidence=report.confidence, source=source,
                 run_id=source_entry["run_id"],
             )
@@ -628,6 +638,55 @@ def _create_review(db, *, review_type, master, incoming_row, incoming_data,
 
 # ── Misc helpers ──────────────────────────────────────────────────────────────
 
+def _sanitize_for_column(field: str, value):
+    """
+    Make a proposed value safe to write to `Startup.<field>`, or reject it.
+
+    Returns (ok, cleaned_value). ok=False means the caller must SKIP this
+    field (never write garbage, never crash the whole approve/merge).
+
+    Shared by every path that writes an LLM-sourced value onto an existing
+    master outside the initial insert: reviews.py's field_update approve
+    (_apply_field_updates) and the possible_duplicate/anomaly merge path
+    below (_fill_empty_fields) — both can receive a raw extraction value
+    that violates the target column's constraints (prose stuffed into a
+    varchar(50), a sentence where an int is expected). Two seen live:
+      - founded_year (Integer): "2023 (implied by 'start-up journey began'
+        ...)"  -> InvalidTextRepresentation (28 Jul)
+      - funding_stage (varchar 50): "$13.7 billion in venture capital
+        (valuation over $40 billion)"  -> StringDataRightTruncation (29 Jul,
+        via the field_update path; _fill_empty_fields carried the same
+        unguarded exposure via the merge path until this was shared here)
+    """
+    import re
+    from sqlalchemy import Integer as SAInteger
+    from database.models import Startup
+
+    col = Startup.__table__.columns.get(field)
+    if col is None:
+        return True, value  # not a plain scalar column (founders/tags handled by caller)
+    if value is None:
+        return True, None
+
+    # Integer columns → must be a real int; extract one or reject.
+    if isinstance(col.type, SAInteger):
+        if isinstance(value, int):
+            return True, value
+        # founded_year wants a plausible year specifically; other ints, any integer.
+        pattern = r"\b(1[89]\d{2}|20\d{2})\b" if field == "founded_year" else r"-?\d+"
+        m = re.search(pattern, str(value))
+        return (True, int(m.group())) if m else (False, None)
+
+    # String columns with a declared length → reject anything that wouldn't
+    # fit. A value that long is the LLM stuffing prose into a typed field;
+    # truncating it to the limit would store a garbage fragment, so skip it.
+    length = getattr(col.type, "length", None)
+    if length is not None and len(str(value)) > length:
+        return False, None
+
+    return True, value
+
+
 def _fill_empty_fields(existing, new_data: dict) -> None:
     """
     Copy fields from new_data into an existing Startup row only when the
@@ -651,11 +710,22 @@ def _fill_empty_fields(existing, new_data: dict) -> None:
     }
     for model_field, dict_key in field_map.items():
         current = getattr(existing, model_field, None)
-        if not current and new_data.get(dict_key):
-            setattr(existing, model_field, new_data[dict_key])
+        incoming = new_data.get(dict_key)
+        if current or not incoming:
+            continue
+        ok, cleaned = _sanitize_for_column(model_field, incoming)
+        if not ok:
+            logger.warning(
+                f"[Storage] Skipping field '{model_field}' on merge fill for "
+                f"'{existing.name}': value doesn't fit the column ({incoming!r})"
+            )
+            continue
+        setattr(existing, model_field, cleaned)
 
     if not existing.founded_year and new_data.get("founded_year"):
-        existing.founded_year = _safe_int(new_data["founded_year"])
+        ok, cleaned = _sanitize_for_column("founded_year", new_data["founded_year"])
+        if ok:
+            existing.founded_year = cleaned
 
     if new_data.get("tags"):
         current_tags = set(existing.tags or [])

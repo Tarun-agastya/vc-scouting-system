@@ -82,6 +82,8 @@ export const api = {
   getReview: (id) => get(`/reviews/${id}`),
   approveReview: (id) => post(`/reviews/${id}/approve`),
   rejectReview: (id) => post(`/reviews/${id}/reject`),
+  /** Reverses an approved possible_duplicate/anomaly merge — reinserts the deleted row, leaves the master untouched. */
+  undoMerge: (id) => post(`/reviews/${id}/undo-merge`),
   /** target: "incoming" | "master" | "both" — neither merge nor keep, just remove the data */
   deleteReview: (id, target) => post(`/reviews/${id}/delete?target=${target}`),
 

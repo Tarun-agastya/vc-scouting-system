@@ -16,7 +16,6 @@ Nothing in the master DB changes except through an explicit approve here.
                                   company that should never have been stored)
 """
 import logging
-import re
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
@@ -26,6 +25,7 @@ from fastapi import Depends
 
 from database.connection import get_db
 from database.models import Startup, DuplicateReview, SuppressedMatch
+from processing.storage import _sanitize_for_column
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -92,52 +92,6 @@ def _reindex(db, master: Startup) -> None:
         "is_gmbh": master.is_gmbh,
         "interest_status": master.interest_status,
     })
-
-
-def _sanitize_for_column(field: str, value):
-    """
-    Make a proposed value safe to write to `Startup.<field>`, or reject it.
-
-    Returns (ok, cleaned_value). ok=False means the caller must SKIP this
-    field (never write garbage, never crash the whole approve).
-
-    Why this exists (general, not one-field): a web-verify LLM proposal can
-    violate the target column's constraints in more than one way, and each
-    such violation is a raw Postgres error that 500s the entire approve —
-    blocking every other good field in the same review. Two seen live:
-      - founded_year (Integer): "2023 (implied by 'start-up journey began'
-        ...)"  -> InvalidTextRepresentation (28 Jul)
-      - funding_stage (varchar 50): "$13.7 billion in venture capital
-        (valuation over $40 billion)"  -> StringDataRightTruncation (29 Jul)
-    Rather than patch each field as it surfaces, validate every value
-    against the actual column type: coerce Integers, reject over-length
-    strings (truncating would store a meaningless fragment), pass the rest.
-    """
-    from sqlalchemy import Integer as SAInteger
-
-    col = Startup.__table__.columns.get(field)
-    if col is None:
-        return True, value  # not a plain scalar column (founders/tags handled by caller)
-    if value is None:
-        return True, None
-
-    # Integer columns → must be a real int; extract one or reject.
-    if isinstance(col.type, SAInteger):
-        if isinstance(value, int):
-            return True, value
-        # founded_year wants a plausible year specifically; other ints, any integer.
-        pattern = r"\b(1[89]\d{2}|20\d{2})\b" if field == "founded_year" else r"-?\d+"
-        m = re.search(pattern, str(value))
-        return (True, int(m.group())) if m else (False, None)
-
-    # String columns with a declared length → reject anything that wouldn't
-    # fit. A value that long is the LLM stuffing prose into a typed field;
-    # truncating it to 50 chars would store a garbage fragment, so skip it.
-    length = getattr(col.type, "length", None)
-    if length is not None and len(str(value)) > length:
-        return False, None
-
-    return True, value
 
 
 def _apply_field_updates(db, master: Startup, proposed: dict) -> None:
@@ -259,9 +213,15 @@ async def list_reviews(
             DuplicateReview.master_name.ilike(like),
             DuplicateReview.incoming_name.ilike(like),
         ))
+    # `total` must be the real count of everything matching the filters, not
+    # len(rows) — that was capped by `limit` (200 from the sidebar badge poll,
+    # app.js), so once the true pending count passed 200 the badge/KPI froze
+    # at 200 forever regardless of how many reviews got resolved (found live
+    # 29 Jul — the "pending count never changes" report, true count was 594).
+    total = query.count()
     rows = query.order_by(DuplicateReview.created_at.desc()).limit(limit).all()
     return {
-        "total": len(rows),
+        "total": total,
         "reviews": [
             {
                 "id": str(r.id),
@@ -342,6 +302,109 @@ async def approve_review(review_id: str, db: Session = Depends(get_db)):
     r.resolved_at = datetime.utcnow()
     db.commit()
     return {"status": "approved", "review_type": r.review_type, **result}
+
+
+@router.post("/{review_id}/undo-merge")
+async def undo_merge(review_id: str, db: Session = Depends(get_db)):
+    """
+    Reverse an approved possible_duplicate/anomaly merge: reinsert the
+    deleted "incoming" row from the review's own incoming_data snapshot
+    (kept even after approval, specifically for this) under its original
+    deterministic id, re-embed it to Qdrant, then flip the review back to
+    rejected + record a known-different suppression so it won't be
+    re-flagged the next time this source is re-ingested.
+
+    The master it was merged into is left untouched — _fill_empty_fields
+    only ever fills fields that were blank, so the merge could not have
+    overwritten already-populated master data; there's nothing to revert
+    there. This mirrors the manual recovery done live 29 Jul for an
+    accidental Swiss Founders Fund / BLP Digital merge.
+
+    Best-effort, disclosed limits: the original source_url/source_name
+    aren't preserved in incoming_data (never were), so the restored row's
+    provenance says "restored via undo" rather than the true original
+    source; source_excerpt is only recoverable for merges that happened
+    after this endpoint shipped (earlier snapshots never captured it) —
+    older restores come back "unverified, no excerpt on file", same as any
+    pre-H-1 legacy record.
+    """
+    r = db.query(DuplicateReview).filter(DuplicateReview.id == review_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Review not found")
+    if r.review_type not in ("possible_duplicate", "anomaly"):
+        raise HTTPException(status_code=400, detail="Only a possible-duplicate/anomaly merge can be undone")
+    if r.status != "approved":
+        raise HTTPException(status_code=409, detail=f"Review is {r.status}, not approved — nothing to undo")
+    if not r.incoming_id or not r.incoming_data:
+        raise HTTPException(status_code=422, detail="This review has no recoverable incoming-record data")
+
+    if db.query(Startup).filter(Startup.id == r.incoming_id).first() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="The incoming record still exists — approving this review didn't merge/delete anything, so there's nothing to undo",
+        )
+    master = db.query(Startup).filter(Startup.id == r.master_id).first()
+    if master is None:
+        raise HTTPException(status_code=410, detail="The record this was merged into no longer exists — can't safely undo")
+
+    from processing.deduplicator import extract_domain, generate_fingerprint, name_to_stable_uuid
+    from processing.storage import _insert_master, _score_and_index
+    from embeddings.embedder import embedder
+    from vector_db.qdrant_store import qdrant_store
+
+    startup = dict(r.incoming_data)
+    name = (startup.get("name") or r.incoming_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Incoming data has no name — can't reinsert")
+
+    website = startup.get("website") or ""
+    domain = extract_domain(website)
+    fingerprint = generate_fingerprint(name, website) if domain else None
+    stable_id = name_to_stable_uuid(name, website)
+    if not stable_id:
+        raise HTTPException(status_code=422, detail="Could not derive an identity for the incoming record")
+    if db.query(Startup).filter(Startup.id == stable_id).first() is not None:
+        raise HTTPException(status_code=409, detail="A record with this identity already exists — can't safely reinsert")
+    if str(stable_id) != str(r.incoming_id):
+        logger.warning(
+            f"[Reviews] Undo-merge id mismatch for '{name}': incoming_data now "
+            f"derives {stable_id}, review recorded {r.incoming_id} — reinserting "
+            f"under the freshly-derived id."
+        )
+
+    now = datetime.utcnow()
+    source = r.source or "manual"
+    source_entry = {
+        "source": source,
+        "source_name": None,
+        "url": "",
+        "date": now.isoformat(),
+        "extracted_at": r.created_at.isoformat() if r.created_at else now.isoformat(),
+        "run_id": r.run_id,
+        "note": "Restored via Undo merge — original source_url wasn't preserved in the review snapshot",
+    }
+    published_date = startup.get("published_date")
+
+    incoming_vector = embedder.embed(embedder.build_startup_text(startup))
+    row = _insert_master(db, startup, name, website, fingerprint, stable_id,
+                          source, "", source_entry, published_date, now)
+    row.created_at = r.created_at or now
+    row.extracted_at = r.created_at or now
+    db.commit()
+    _score_and_index(row, startup, incoming_vector, fingerprint, source, "",
+                      published_date, db, qdrant_store, flag_modified)
+
+    db.add(SuppressedMatch(kind="known_different", master_id=r.master_id, other_id=row.id))
+    r.status = "rejected"
+    r.resolved_at = datetime.utcnow()
+    db.commit()
+
+    return {
+        "status": "undone",
+        "restored_id": str(row.id),
+        "restored_name": name,
+        "review_status": r.status,
+    }
 
 
 @router.post("/{review_id}/reject")
