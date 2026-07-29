@@ -108,6 +108,9 @@ export const api = {
   verificationStatus: () => get("/verification/status"),
   runRecheck: (limit = 20) => post(`/verification/recheck?limit=${limit}`),
   runWebVerify: (limit = 15) => post(`/verification/web-verify?limit=${limit}`),
+  /** Phase Q2: run recheck/web-verify on an explicit human-selected set of startups from Browse (fire-and-forget; find the run via /ingestion/status). */
+  recheckSelected: (ids) => post("/verification/recheck-selected", { ids }),
+  webVerifySelected: (ids) => post("/verification/web-verify-selected", { ids }),
 
   // ── Classification (Phase V-2) ────────────────────────────────────────
   classificationStatus: () => get("/classification/status"),

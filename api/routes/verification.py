@@ -12,7 +12,9 @@ Verification/recheck status API (Phase H-3).
                                 much of the DB has bad data, and where."
 """
 import logging
-from fastapi import APIRouter, Depends
+from typing import List
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -23,6 +25,10 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _STATUSES = ("unverified", "verified", "flagged")
+
+
+class SelectedIdsRequest(BaseModel):
+    ids: List[str]
 
 
 def _classify_source(raw) -> str:
@@ -67,6 +73,46 @@ async def trigger_web_verify(limit: int = 15):
 
     asyncio.create_task(scout_controller.run_web_verify(limit=limit))
     return {"status": "started", "message": "Web verification batch queued via controller"}
+
+
+@router.post("/recheck-selected")
+async def trigger_recheck_selected(request: SelectedIdsRequest):
+    """
+    Phase Q2 (29 Jul): recheck an explicit, human-selected set of startups
+    from Browse's bulk-selection toolbar — no status filter (a human can
+    re-check an already-verified record on purpose). Fire-and-forget like
+    every other trigger endpoint; find the run_id via GET /ingestion/status
+    (current_run.kind == "recheck_selected") once it starts, same as the
+    live-progress panel already does for every other run kind.
+    """
+    import asyncio
+    from processing.scout_controller import scout_controller
+
+    if not request.ids:
+        raise HTTPException(status_code=422, detail="ids must not be empty")
+
+    asyncio.create_task(scout_controller.run_recheck_selected(request.ids))
+    return {"status": "started", "message": "Selected-startup recheck queued via controller"}
+
+
+@router.post("/web-verify-selected")
+async def trigger_web_verify_selected(request: SelectedIdsRequest):
+    """
+    Phase Q2 (29 Jul): web-verify an explicit, human-selected set of
+    startups — not restricted to the no_source_excerpt backlog. Every
+    review this produces is tagged with the run's run_id
+    (GET /reviews?run_id=...) so results stay separable from the general
+    Review Inbox, even though the response here doesn't carry it directly —
+    same fire-and-forget contract as every other trigger endpoint.
+    """
+    import asyncio
+    from processing.scout_controller import scout_controller
+
+    if not request.ids:
+        raise HTTPException(status_code=422, detail="ids must not be empty")
+
+    asyncio.create_task(scout_controller.run_web_verify_selected(request.ids))
+    return {"status": "started", "message": "Selected-startup web-verify queued via controller"}
 
 
 @router.get("/status")

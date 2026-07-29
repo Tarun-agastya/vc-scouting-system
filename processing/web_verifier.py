@@ -183,7 +183,7 @@ def build_proposal(record, verdict: dict) -> dict:
     return proposed
 
 
-def apply_verdict(db, record, results: list, verdict: dict) -> str:
+def apply_verdict(db, record, results: list, verdict: dict, run_id=None) -> str:
     """
     Apply one already-computed web-verify verdict to a record: stage a
     field_update review on a real contradiction, mark 'verified' on a clean
@@ -196,6 +196,11 @@ def apply_verdict(db, record, results: list, verdict: dict) -> str:
     already computed elsewhere — e.g. an ad-hoc verification pass run
     outside the normal no_source_excerpt-only backlog — can be staged
     through the exact same, tested path instead of duplicating this logic.
+
+    `run_id`: the batch's real run id, threaded into the staged review for
+    Phase Q2's batch-tagging (GET /reviews?run_id=...) — was always passed
+    None here before 29 Jul despite DuplicateReview.run_id existing as a
+    column since Phase S-3b; nothing had ever actually populated it.
 
     Returns the outcome key: "unchanged" | "verified" | "staged".
     """
@@ -251,7 +256,7 @@ def apply_verdict(db, record, results: list, verdict: dict) -> str:
             risk_level="high",
             confidence=None,
             source="web_verification",
-            run_id=None,
+            run_id=run_id,
         )
         record.verification_notes = verdict.get("summary") or ""
         record.verification_evidence = {
@@ -273,7 +278,7 @@ def apply_verdict(db, record, results: list, verdict: dict) -> str:
     return "verified"
 
 
-async def web_verify_pending(limit: int = 15, progress=None) -> dict:
+async def web_verify_pending(limit: int = 15, run_id=None, progress=None) -> dict:
     """
     Process up to `limit` records from the no_source_excerpt backlog:
     verification_status='flagged' with verification_evidence.reason ==
@@ -347,7 +352,7 @@ async def web_verify_pending(limit: int = 15, progress=None) -> dict:
                 verdict = await loop.run_in_executor(None, _verify_record, record, results)
                 consecutive_timeouts = 0
 
-                outcome = apply_verdict(db, record, results, verdict)
+                outcome = apply_verdict(db, record, results, verdict, run_id=run_id)
                 counts[outcome] += 1
 
             except Exception as exc:
@@ -372,6 +377,81 @@ async def web_verify_pending(limit: int = 15, progress=None) -> dict:
                     progress.processed += 1
 
         logger.info(f"[WebVerifier] Batch: {counts}")
+        return counts
+    finally:
+        db.close()
+
+
+async def web_verify_ids(ids: list, run_id=None, progress=None) -> dict:
+    """
+    Phase Q2 (29 Jul): web-verify an explicit, human-selected set of
+    startups from Browse's bulk-selection toolbar — NOT restricted to the
+    no_source_excerpt backlog (web_verify_pending's SQL filter): a human
+    explicitly picking a record should be checkable regardless of whether
+    it already has a source_excerpt or is already verified. Same
+    search -> verify -> apply_verdict sequence, same consecutive-timeout
+    circuit breaker, `run_id` threaded through for batch tagging.
+
+    Returns {"verified": n, "staged": n, "unchanged": n, "errors": n}.
+    Never raises. If Ollama fails partway through, remaining records in
+    this batch are left as-is (retried on the next explicit run).
+    """
+    from database.connection import SessionLocal
+    from database.models import Startup
+
+    db = SessionLocal()
+    counts = {"verified": 0, "staged": 0, "unchanged": 0, "errors": 0}
+    try:
+        records = db.query(Startup).filter(Startup.id.in_(ids)).all()
+        if progress is not None:
+            progress.total = len(records)
+
+        loop = asyncio.get_event_loop()
+        ollama_down = False
+        consecutive_timeouts = 0
+        CONSECUTIVE_TIMEOUT_THRESHOLD = 3
+
+        for record in records:
+            if progress is not None:
+                progress.current_name = record.name
+            try:
+                results = await loop.run_in_executor(None, _search_record, record)
+                if not results:
+                    counts["unchanged"] += 1
+                    continue
+
+                if ollama_down:
+                    counts["unchanged"] += 1
+                    continue
+
+                verdict = await loop.run_in_executor(None, _verify_record, record, results)
+                consecutive_timeouts = 0
+
+                outcome = apply_verdict(db, record, results, verdict, run_id=run_id)
+                counts[outcome] += 1
+
+            except Exception as exc:
+                db.rollback()
+                logger.warning(
+                    f"[WebVerifier] Selected web-verify failed for {record.id} ({record.name}): {exc}"
+                )
+                counts["errors"] += 1
+                msg = str(exc).lower()
+                if any(s in msg for s in ("connect", "timeout", "timed out", "refused", "unreachable")):
+                    consecutive_timeouts += 1
+                    if consecutive_timeouts >= CONSECUTIVE_TIMEOUT_THRESHOLD:
+                        ollama_down = True
+                        logger.warning(
+                            f"[WebVerifier] {CONSECUTIVE_TIMEOUT_THRESHOLD} consecutive timeouts — "
+                            f"treating Ollama as down for the rest of this batch"
+                        )
+                else:
+                    consecutive_timeouts = 0
+            finally:
+                if progress is not None:
+                    progress.processed += 1
+
+        logger.info(f"[WebVerifier] Selected batch: {counts}")
         return counts
     finally:
         db.close()

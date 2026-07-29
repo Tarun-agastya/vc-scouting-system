@@ -59,13 +59,46 @@ export function startRouter() {
 
 /* ── Toasts ─────────────────────────────────────────────────────────────── */
 
-export function toast(message, kind = "ok") {
+/** onClick is optional — used by Q2's bulk verify/recheck to jump straight to
+ *  the Review Inbox pre-filtered to the batch that was just queued. Message
+ *  stays plain text (textContent), so this stays XSS-safe like every other
+ *  toast call. */
+export function toast(message, kind = "ok", onClick) {
   const wrap = document.getElementById("toasts");
   const el = document.createElement("div");
   el.className = `toast ${kind === "error" ? "toast--error" : ""}`;
   el.textContent = message;
+  if (onClick) {
+    el.style.cursor = "pointer";
+    el.addEventListener("click", onClick);
+  }
   wrap.appendChild(el);
-  setTimeout(() => el.remove(), kind === "error" ? 6000 : 3200);
+  setTimeout(() => el.remove(), onClick ? 8000 : kind === "error" ? 6000 : 3200);
+}
+
+/* ── Recent batches (Q2) ────────────────────────────────────────────────────
+   A human-selected bulk verify/recheck queues under a real run_id (see
+   api.recheckSelected / api.webVerifySelected), but the trigger endpoints are
+   fire-and-forget and don't return it synchronously — Browse discovers it by
+   polling /ingestion/status right after triggering. Stashing the last few
+   batches here (localStorage, survives navigation/reload) is what lets the
+   Review Inbox offer a "recent batches" picker instead of forcing a raw
+   run_id paste. */
+const BATCHES_KEY = "scout_recent_batches";
+const MAX_BATCHES = 8;
+
+export function recordBatch(batch) {
+  const list = getRecentBatches();
+  list.unshift({ ...batch, ts: new Date().toISOString() });
+  localStorage.setItem(BATCHES_KEY, JSON.stringify(list.slice(0, MAX_BATCHES)));
+}
+
+export function getRecentBatches() {
+  try {
+    return JSON.parse(localStorage.getItem(BATCHES_KEY) || "[]");
+  } catch {
+    return [];
+  }
 }
 
 /* ── Confirm dialog (native, but centralised so it's swappable) ─────────── */

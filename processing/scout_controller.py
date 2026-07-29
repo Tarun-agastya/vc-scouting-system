@@ -378,6 +378,30 @@ class ScoutController:
         rec.live_metrics = progress
         return await web_verify_pending(limit=limit, progress=progress)
 
+    async def _work_recheck_selected(self, ids: list, rec: RunRecord) -> dict:
+        """
+        Phase Q2 (29 Jul): recheck an explicit, human-selected set of
+        startups from Browse's bulk-selection toolbar — see
+        processing.verifier.recheck_ids for why this has no status filter,
+        unlike the backlog drain (_work_recheck above).
+        """
+        from processing.verifier import recheck_ids
+        progress = RecordProgress(total=len(ids))
+        rec.live_metrics = progress
+        return await recheck_ids(ids, progress=progress)
+
+    async def _work_web_verify_selected(self, ids: list, rec: RunRecord) -> dict:
+        """
+        Phase Q2 (29 Jul): web-verify an explicit, human-selected set of
+        startups — not restricted to the no_source_excerpt backlog, unlike
+        _work_web_verify above. rec.run_id is threaded through as the
+        review batch tag (GET /reviews?run_id=...).
+        """
+        from processing.web_verifier import web_verify_ids
+        progress = RecordProgress(total=len(ids))
+        rec.live_metrics = progress
+        return await web_verify_ids(ids, run_id=rec.run_id, progress=progress)
+
     async def _work_reclassify(self, limit: int, rec: RunRecord) -> dict:
         """
         Phase V-2. reclassify_pending() does its own GPU calls without
@@ -440,6 +464,16 @@ class ScoutController:
         rec = self._new_run("web_verify", "web-verification-sweep",
                             batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
         return await self._execute(rec, lambda: self._work_web_verify(limit, rec))
+
+    async def run_recheck_selected(self, ids: list) -> RunRecord:
+        """Phase Q2: recheck an explicit, human-selected set of startups, under the GPU mutex."""
+        rec = self._new_run("recheck_selected", f"selected-recheck ({len(ids)})")
+        return await self._execute(rec, lambda: self._work_recheck_selected(ids, rec))
+
+    async def run_web_verify_selected(self, ids: list) -> RunRecord:
+        """Phase Q2: web-verify an explicit, human-selected set of startups, under the GPU mutex."""
+        rec = self._new_run("web_verify_selected", f"selected-web-verify ({len(ids)})")
+        return await self._execute(rec, lambda: self._work_web_verify_selected(ids, rec))
 
     async def run_web_source(
         self, url: str, source_type: str = "general", label: Optional[str] = None, *,

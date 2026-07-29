@@ -6,7 +6,7 @@
    ══════════════════════════════════════════════════════════════════════════ */
 
 import { api, fmt, esc } from "../api.js";
-import { toast, confirmAction, poll } from "../router.js";
+import { toast, confirmAction, poll, getRecentBatches } from "../router.js";
 
 const RISK = {
   high:    { mark: "🔴", label: "Conflict", chip: "chip--danger" },
@@ -33,9 +33,10 @@ function rowLabel(rv) {
 export default {
   title: "Review Inbox",
 
-  mount(el) {
+  mount(el, params = {}) {
     const state = {
       status: "pending", type: "", risk: "", q: "",
+      runId: params.run_id || "", // Phase Q2: batch filter — either deep-linked from Browse or picked below
       reviews: [], selectedId: null, busy: false,
     };
 
@@ -65,6 +66,7 @@ export default {
             </select>
             <span class="dim" style="margin-left:auto;font-size:12px">j/k navigate · a approve · r reject</span>
           </div>
+          <div class="row wrap" style="gap:8px;margin-top:8px" id="batch-row"></div>
         </div>
         <div class="inbox-grid" id="inbox-grid" style="align-items:start">
           <div class="card" id="review-list" style="padding:0;max-height:70vh;overflow-y:auto"></div>
@@ -80,6 +82,26 @@ export default {
     el.querySelector("#f-type").addEventListener("change", (e) => { state.type = e.target.value; loadList(); });
     el.querySelector("#f-risk").addEventListener("change", (e) => { state.risk = e.target.value; loadList(); });
     el.querySelector("#f-q").addEventListener("input", debounce((e) => { state.q = e.target.value; loadList(); }, 300));
+
+    // Re-render just the batch row (picker selection / clear button visibility)
+    // without rebuilding the whole filter card.
+    function mountBatchRow() {
+      const row = el.querySelector("#batch-row");
+      row.innerHTML = `
+        <select class="select" id="f-batch-pick" style="max-width:260px" title="Jump to a bulk verify/recheck batch triggered from Browse's selection toolbar">
+          <option value="">Filter by recent batch…</option>
+          ${getRecentBatches().map((b) =>
+            `<option value="${esc(b.run_id)}" ${state.runId === b.run_id ? "selected" : ""}>
+              ${esc(b.label)} · ${b.count} startup${b.count === 1 ? "" : "s"} · ${fmt.dateTime(b.ts)}
+            </option>`).join("")}
+        </select>
+        <input class="input mono" id="f-batch-id" placeholder="or paste a batch/run id…" style="max-width:280px;font-size:12px" value="${esc(state.runId)}">
+        ${state.runId ? `<button class="btn btn--ghost btn--sm" id="f-batch-clear">✕ Clear batch filter</button>` : ""}
+        ${state.runId ? `<span class="chip" style="font-size:11px">Showing only this batch</span>` : ""}`;
+      row.querySelector("#f-batch-pick").addEventListener("change", (e) => { state.runId = e.target.value; mountBatchRow(); loadList(); });
+      row.querySelector("#f-batch-id").addEventListener("input", debounce((e) => { state.runId = e.target.value.trim(); loadList(); }, 300));
+      row.querySelector("#f-batch-clear")?.addEventListener("click", () => { state.runId = ""; mountBatchRow(); loadList(); });
+    }
 
     async function loadCounts() {
       try {
@@ -101,6 +123,7 @@ export default {
           review_type: state.type || undefined,
           risk_level: state.risk || undefined,
           q: state.q || undefined,
+          run_id: state.runId || undefined,
           limit: 200,
         });
         state.reviews = res.reviews || [];
@@ -337,6 +360,7 @@ export default {
     }
     document.addEventListener("keydown", onKeydown);
 
+    mountBatchRow();
     loadCounts();
     loadList();
 

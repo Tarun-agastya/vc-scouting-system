@@ -237,6 +237,7 @@ async def list_reviews(
     review_type: Optional[str] = None,
     risk_level: Optional[str] = None,
     q: Optional[str] = None,       # company name filter — matches master_name or incoming_name
+    run_id: Optional[str] = None,  # Phase Q2: filter to one bulk-verify/recheck batch's results
     limit: int = 100,
     db: Session = Depends(get_db),
 ):
@@ -250,6 +251,8 @@ async def list_reviews(
         query = query.filter(DuplicateReview.review_type == review_type)
     if risk_level:
         query = query.filter(DuplicateReview.risk_level == risk_level)
+    if run_id:
+        query = query.filter(DuplicateReview.run_id == run_id)
     if q:
         like = f"%{q}%"
         query = query.filter(or_(
@@ -270,6 +273,7 @@ async def list_reviews(
                 "changed_fields": list((r.proposed_changes or {}).keys()),
                 "confidence": r.confidence,
                 "source": r.source,
+                "run_id": r.run_id,
                 "llm_explanation": r.llm_explanation,
                 "status": r.status,
                 "created_at": r.created_at,

@@ -7,7 +7,7 @@
    ══════════════════════════════════════════════════════════════════════════ */
 
 import { api, fmt, esc } from "../api.js";
-import { toast, confirmAction } from "../router.js";
+import { toast, confirmAction, navigate, recordBatch } from "../router.js";
 
 const COLUMNS = [
   ["name", "Name", false],
@@ -142,6 +142,9 @@ export default {
           <button class="btn btn--sm" id="sel-mark-interested">👍 Mark Interested</button>
           <button class="btn btn--sm" id="sel-mark-not-interested">👎 Mark Not Interested</button>
           <button class="btn btn--ghost btn--sm" id="sel-clear-interest" title="Clear interest marking back to unset">— Clear marking</button>
+          <span style="width:1px;height:20px;background:var(--border)"></span>
+          <button class="btn btn--sm" id="sel-recheck" title="Re-run the deterministic + AI verification pass on exactly these startups, even if already verified">🔁 Recheck selected</button>
+          <button class="btn btn--sm" id="sel-web-verify" title="Search the live web to verify/correct these startups — results stage in the Review Inbox, tagged to this batch">🌐 Web-verify selected</button>
           <span class="grow"></span>
           <button class="btn btn--ghost btn--sm" id="sel-clear">Clear selection</button>
         </div>`;
@@ -160,10 +163,57 @@ export default {
       selectionToolbar.querySelector("#sel-mark-interested").addEventListener("click", () => markInterest("interested"));
       selectionToolbar.querySelector("#sel-mark-not-interested").addEventListener("click", () => markInterest("not_interested"));
       selectionToolbar.querySelector("#sel-clear-interest").addEventListener("click", () => markInterest(null));
+      selectionToolbar.querySelector("#sel-recheck").addEventListener("click", () => runSelectedVerification("recheck"));
+      selectionToolbar.querySelector("#sel-web-verify").addEventListener("click", () => runSelectedVerification("web-verify"));
       selectionToolbar.querySelector("#sel-clear").addEventListener("click", () => {
         state.selectedIds.clear();
         renderResults();
       });
+    }
+
+    /* Phase Q2: bulk verify/recheck on the human-selected set. Both trigger
+       endpoints are fire-and-forget (queue on the GPU mutex, no synchronous
+       run_id) — the SAME convention every other trigger in this dashboard
+       already follows, so we discover the real run_id by polling
+       /ingestion/status right after triggering, matching current_run.kind.
+       Once found it's stashed via recordBatch() so the Review Inbox can
+       offer it as a "recent batch" to filter by (see reviews.js). */
+    async function runSelectedVerification(kind) {
+      const ids = [...state.selectedIds];
+      const n = ids.length;
+      const isWebVerify = kind === "web-verify";
+      const runKind = isWebVerify ? "web_verify_selected" : "recheck_selected";
+      const label = isWebVerify ? "Web-verify" : "Recheck";
+
+      try {
+        await (isWebVerify ? api.webVerifySelected(ids) : api.recheckSelected(ids));
+      } catch (err) {
+        toast(`${label} failed to start: ${err.message}`, "error");
+        return;
+      }
+      toast(`${label} queued for ${n} startup${n === 1 ? "" : "s"} — finding its batch id…`);
+      state.selectedIds.clear();
+      renderResults();
+
+      // Poll briefly for the run to appear as current_run — it may already
+      // be queued behind another GPU-mutex job, so tolerate a short wait.
+      let runId = null;
+      for (let i = 0; i < 10 && !runId; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        try {
+          const status = await api.ingestionStatus();
+          if (status.current_run?.kind === runKind) runId = status.current_run.run_id;
+        } catch { /* transient — keep trying */ }
+      }
+
+      if (runId) {
+        recordBatch({ run_id: runId, kind: runKind, label, count: n });
+        toast(`${label} batch queued (${n} startup${n === 1 ? "" : "s"}) — click to watch it in the Review Inbox`, "ok", () => {
+          navigate(`#/reviews?run_id=${runId}`);
+        });
+      } else {
+        toast(`${label} is running — check the Ingestion page for progress, then filter the Review Inbox by batch once it completes`);
+      }
     }
 
     function buildSearchCard() {
