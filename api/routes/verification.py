@@ -93,10 +93,23 @@ async def verification_status(db: Session = Depends(get_db)):
         by_source.setdefault(bucket, {s: 0 for s in _STATUSES})
         by_source[bucket][status] += count
 
+    # The TRUE remaining web-verify queue must match exactly what
+    # web_verify_pending() actually processes — flagged + no excerpt AND
+    # reason still 'no_source_excerpt'. The looser "flagged + no excerpt"
+    # count (used until 29 Jul) also swept in records web-verify had ALREADY
+    # handled — they stay flagged with a staged correction and, by design,
+    # never gain a stored excerpt (they're checked against live search, not
+    # text) — so the dashboard countdown barely moved after a full drain and
+    # read as a failure. Filtering on the reason makes it the honest count of
+    # what's genuinely left to process.
+    from sqlalchemy import cast
+    from sqlalchemy.dialects.postgresql import JSONB
+
     no_source_excerpt = (
         db.query(func.count(Startup.id))
         .filter(Startup.verification_status == "flagged")
         .filter(Startup.source_excerpt.is_(None) | (Startup.source_excerpt == ""))
+        .filter(cast(Startup.verification_evidence, JSONB)["reason"].astext == "no_source_excerpt")
         .scalar()
     ) or 0
 
