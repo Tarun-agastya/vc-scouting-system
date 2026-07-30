@@ -215,6 +215,20 @@ priority_scouting:
   enabled: true
   boost: 1
 
+
+chunking:
+  # Logo-grid portfolio pages (each company is just a logo + alt-text name)
+  # are extracted in name batches. Each name in a batch costs a full
+  # 17-field JSON record of output, so batch size directly drives per-call
+  # latency against the 75s extract timeout.
+  #
+  # Measured 30 Jul, zollhof.de portfolio (120 names):
+  #   12 names/chunk -> 70-75s per call, at the timeout edge. Quiet machine
+  #                     93/120 (78%); under load 62/120 (52%), 3 chunks lost.
+  #    6 names/chunk -> roughly half the output, comfortable margin.
+  # Raise only if calls are finishing well under the timeout.
+  names_per_chunk: 6
+
 scoring:
   # Best source-type contribution (Category A). Unknown types default to 4.
   source_type_score:

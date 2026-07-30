@@ -173,6 +173,7 @@ async def chunker_task(
     Exits when it receives the None sentinel from the crawler.
     """
     from ingestion.chunker import split_web_page as split_chunks
+    from ingestion.chunker import LOGO_GRID_CHUNK_HEADER
     from ingestion.candidate_filter import is_relevant
 
     while True:
@@ -186,7 +187,13 @@ async def chunker_task(
 
         chunks = split_chunks(item.text)
         total = len(chunks)
-        relevant = [c for c in chunks if is_relevant(c)]
+        # Logo-grid name batches bypass the heuristic filter — see
+        # LOGO_GRID_CHUNK_HEADER's comment. Every other chunk is judged
+        # exactly as before.
+        relevant = [
+            c for c in chunks
+            if c.startswith(LOGO_GRID_CHUNK_HEADER) or is_relevant(c)
+        ]
         kept = len(relevant)
         filtered = total - kept
 

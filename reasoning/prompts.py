@@ -43,6 +43,21 @@ CRITICAL — per-company grounding (if the text mentions more than one company):
   always correct; a guessed one is not — do not infer, estimate, round, or
   pattern-match a "plausible" value from general knowledge or from context.
 
+BARE NAME LISTS (portfolio / logo grids):
+If the text says it is a list of company names shown as logos in a portfolio
+grid with no further description, then it is exactly that — a curated list of
+real companies, already vetted by the incubator or accelerator whose page it
+came from. In that case:
+- Extract EVERY name in the list as its own record, one per name.
+- Fill `name` only; leave every other field "" or 0. That is the correct,
+  expected output here, not a failure — you have no other information, and a
+  name-only record is genuinely useful.
+- Do NOT skip a name because you don't recognise it, can't tell what the
+  company does, or can't confirm it meets the INCLUDE rules. You cannot judge
+  those from a name alone, and the page's own curation is the evidence.
+- Do NOT invent an industry, description, location, or year to fill the gap.
+- Returning an empty list for such a text is always wrong.
+
 For all other unknown fields use "" (strings) or 0 (founded_year). Never guess a value.
 Return an empty startups list only if the text contains absolutely no matching companies.
 
@@ -255,6 +270,23 @@ stored field:
   not a profile page on someone else's platform), report it as a finding
   even though the stored value was empty. If no result reveals the
   company's own domain, leave it alone like any other unmentioned field.
+- short_description and description are ALSO commonly stored empty, for
+  the same reason: many records come from portfolio/logo-grid pages that
+  list only a company name and nothing else. Treat them like website —
+  an empty value is an invitation to fill it in, not a field to skip.
+  If the genuinely-matching results describe what this company actually
+  does, report it:
+    - short_description: ONE plain sentence saying what the company does
+      ("Builds AI-powered logistics routing software for freight
+      forwarders.").
+    - description: 2-4 sentences with more substance — what it does, who
+      it serves, and anything notable that the results actually state
+      (technology, market, traction). Never pad it with speculation.
+  Write both in neutral third-person prose, stating only what the results
+  genuinely support. If the results reveal nothing about what the company
+  does, omit these two findings rather than inventing a description.
+  If a stored description already exists and the results contradict it,
+  report the corrected version exactly as you would any other field.
 
 Report:
 - identity_match: true if at least one result is genuinely about this named
@@ -286,7 +318,12 @@ Report:
       those are not the company's own site, even when they're the only
       result you have. If you cannot identify the company's own domain
       with confidence, omit the finding.
-  A correct_value longer than a few words is almost always wrong — omit it.
+    - short_description: exactly one sentence of prose.
+    - description: 2-4 sentences of prose.
+  For every field EXCEPT short_description and description, a correct_value
+  longer than a few words is almost always wrong — omit it. Those two are
+  the deliberate exception: they are prose fields and are expected to be
+  full sentences.
   source_url must be one of the results you confirmed in Step 1 is
   genuinely about this company — never cite a discarded result.
 

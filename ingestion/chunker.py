@@ -128,12 +128,26 @@ def split_blurbs(text: str, min_chars: int = 40, max_chars: int = 3000) -> List[
 # circular import; if the marker text ever changes it must change in both.
 _LOGO_GRID_MARKER = "\n\nPortfolio / logo grid entries on this page:\n"
 
+# Header every logo-grid name-batch chunk starts with. Public because
+# ingestion/worker_queue.py uses it to recognize these chunks and skip the
+# candidate filter for them: the filter's job is to judge whether ARBITRARY
+# page text plausibly contains startups, but for these chunks that question
+# is already settled — the scraper harvested them from a portfolio grid, so
+# every line IS a company name. Running the heuristic on them anyway
+# rejected real batches purely for being short (min_words=25): measured
+# 30 Jul on zollhof.de, 6-name batches came to ~23 words and 14 of 21
+# chunks were dropped before ever reaching the LLM, cutting recall to 24%.
+LOGO_GRID_CHUNK_HEADER = (
+    "The following are company/startup names shown as logos in a "
+    "portfolio grid, with no further description available:"
+)
+
 
 def split_web_page(
     text: str,
     chunk_size: int = CHUNK_SIZE,
     overlap: int = OVERLAP,
-    names_per_chunk: int = 12,
+    names_per_chunk: int = None,
 ) -> List[str]:
     """
     Chunk a crawled web page for extraction — the general entry point
@@ -158,6 +172,17 @@ def split_web_page(
     per batch, so a name-only chunk correctly yields name-only stub
     records — no fields get invented for information that was never there.
     """
+    if names_per_chunk is None:
+        # Config-driven (config/tuning.yaml `chunking.names_per_chunk`) so the
+        # batch size can be retuned without a code change — it's the main
+        # lever on logo-grid extraction recall, see that key's comment.
+        try:
+            from config.tuning_loader import get_chunking_config
+            names_per_chunk = int(get_chunking_config().get("names_per_chunk", 6))
+        except Exception:
+            names_per_chunk = 6
+    names_per_chunk = max(1, names_per_chunk)
+
     if _LOGO_GRID_MARKER not in text:
         return split(text, chunk_size, overlap)
 
@@ -167,9 +192,5 @@ def split_web_page(
     names = [n.strip() for n in name_block.strip().split("\n") if n.strip()]
     for i in range(0, len(names), names_per_chunk):
         batch = names[i:i + names_per_chunk]
-        chunks.append(
-            "The following are company/startup names shown as logos in a "
-            "portfolio grid, with no further description available:\n"
-            + "\n".join(batch)
-        )
+        chunks.append(LOGO_GRID_CHUNK_HEADER + "\n" + "\n".join(batch))
     return chunks

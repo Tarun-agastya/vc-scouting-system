@@ -148,6 +148,17 @@ DEFAULTS = {
         "enabled": True,
         "boost": 1,
     },
+    "chunking": {
+        # How many logo-grid company names go into one extraction call.
+        # Measured 30 Jul on zollhof.de's 120-name portfolio page: at 12
+        # names/chunk a call generates 12 full 17-field JSON records and
+        # takes 70-75s against the extract client's 75s timeout — right at
+        # the edge, so any GPU contention tips it over. A quiet-machine run
+        # got 93/120 (78%); the same page under load got 62/120 (52%) with
+        # 3 of 11 chunks timing out twice each. Halving the batch halves the
+        # output tokens per call, moving it well clear of the timeout.
+        "names_per_chunk": 6,
+    },
 }
 
 # ── mtime cache ──────────────────────────────────────────────────────────────
@@ -186,6 +197,7 @@ def _load() -> dict:
             "grounding":        {**DEFAULTS["grounding"], **(raw.get("grounding") or {})},
             "geo_scope":        {**DEFAULTS["geo_scope"], **(raw.get("geo_scope") or {})},
             "priority_scouting": {**DEFAULTS["priority_scouting"], **(raw.get("priority_scouting") or {})},
+            "chunking":         {**DEFAULTS["chunking"], **(raw.get("chunking") or {})},
         }
         # nested signals dict: merge per-group so a partial edit keeps the rest
         cf = raw.get("candidate_filter") or {}
@@ -239,3 +251,8 @@ def get_priority_scouting_config() -> dict:
     cfg = dict(_load()["priority_scouting"])
     cfg["_mtime"] = _cache_mtime  # lets candidate_filter cache its compiled pattern
     return cfg
+
+
+def get_chunking_config() -> dict:
+    """{'names_per_chunk': int}"""
+    return _load()["chunking"]

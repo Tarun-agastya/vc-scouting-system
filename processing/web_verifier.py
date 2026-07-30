@@ -39,9 +39,22 @@ logger = logging.getLogger(__name__)
 # (nothing ever populated it), and it's exactly the kind of fact web search
 # is good at finding. _is_official_website() below guards against a
 # LinkedIn/Crunchbase/etc. profile page being mistaken for the real site.
+# Fields web verification is allowed to check and propose corrections for.
+#
+# industry and tech_cluster are DELIBERATELY excluded (30 Jul). Since Phase
+# V-2 both hold a CONTROLLED TAXONOMY value owned by classify_startup() /
+# the reclassify pass — not free text. Left in this list, the web-verify
+# model proposed replacing a valid taxonomy value with free-form prose
+# (observed live on Clypp: "B2B SaaS & Enterprise Software" ->
+# "Video-based knowledge transfer solutions"), which an approving human
+# would then write straight into the taxonomy column, breaking thesis
+# matching and the Browse industry filter. Same root cause as the
+# _diff_fields flood fix in processing/storage.py the same day: a
+# controlled field must never be diffed against, or overwritten by, a raw
+# LLM value. sub_industry stays — it is still free-form on both sides.
 _CHECK_FIELDS = [
-    "short_description", "description", "industry", "sub_industry",
-    "tech_cluster", "country", "city", "address", "funding_stage",
+    "short_description", "description", "sub_industry",
+    "country", "city", "address", "funding_stage",
     "founded_year", "employee_count", "contact_info", "website",
 ]
 
