@@ -14,11 +14,14 @@ Nothing in the master DB changes except through an explicit approve here.
                                   record — for "neither merge nor keep, just
                                   remove this data" (e.g. an out-of-scope
                                   company that should never have been stored)
+  POST   /reviews/bulk-approve    approve N reviews in one call (Phase Q4)
+  POST   /reviews/bulk-reject     reject N reviews in one call (Phase Q4)
 """
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from fastapi import Depends
@@ -269,15 +272,14 @@ async def get_review(review_id: str, db: Session = Depends(get_db)):
     }
 
 
-@router.post("/{review_id}/approve")
-async def approve_review(review_id: str, db: Session = Depends(get_db)):
+def _do_approve(db, r: DuplicateReview) -> dict:
     """
+    Shared by the single-item and bulk approve endpoints.
     field_update       → apply the proposed changes to the master.
     duplicate/anomaly  → merge the incoming row into the master (one canonical id).
+    Raises HTTPException on invalid state — caller decides whether that
+    aborts the whole request (single) or is caught per-item (bulk).
     """
-    r = db.query(DuplicateReview).filter(DuplicateReview.id == review_id).first()
-    if not r:
-        raise HTTPException(status_code=404, detail="Review not found")
     if r.status != "pending":
         raise HTTPException(status_code=409, detail=f"Review already {r.status}")
 
@@ -302,6 +304,14 @@ async def approve_review(review_id: str, db: Session = Depends(get_db)):
     r.resolved_at = datetime.utcnow()
     db.commit()
     return {"status": "approved", "review_type": r.review_type, **result}
+
+
+@router.post("/{review_id}/approve")
+async def approve_review(review_id: str, db: Session = Depends(get_db)):
+    r = db.query(DuplicateReview).filter(DuplicateReview.id == review_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Review not found")
+    return _do_approve(db, r)
 
 
 @router.post("/{review_id}/undo-merge")
@@ -407,16 +417,13 @@ async def undo_merge(review_id: str, db: Session = Depends(get_db)):
     }
 
 
-@router.post("/{review_id}/reject")
-async def reject_review(review_id: str, db: Session = Depends(get_db)):
+def _do_reject(db, r: DuplicateReview) -> dict:
     """
-    Discard and remember the decision so the same thing is not re-flagged:
+    Shared by the single-item and bulk reject endpoints. Discard and
+    remember the decision so the same thing is not re-flagged:
       field_update       → suppress each (master_id, field, rejected value)
       duplicate/anomaly  → record the (master_id, incoming_id) known-different pair
     """
-    r = db.query(DuplicateReview).filter(DuplicateReview.id == review_id).first()
-    if not r:
-        raise HTTPException(status_code=404, detail="Review not found")
     if r.status != "pending":
         raise HTTPException(status_code=409, detail=f"Review already {r.status}")
 
@@ -436,6 +443,78 @@ async def reject_review(review_id: str, db: Session = Depends(get_db)):
     r.resolved_at = datetime.utcnow()
     db.commit()
     return {"status": "rejected", "review_type": r.review_type}
+
+
+@router.post("/{review_id}/reject")
+async def reject_review(review_id: str, db: Session = Depends(get_db)):
+    r = db.query(DuplicateReview).filter(DuplicateReview.id == review_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Review not found")
+    return _do_reject(db, r)
+
+
+class BulkReviewRequest(BaseModel):
+    ids: List[str]
+
+
+@router.post("/bulk-approve")
+async def bulk_approve_reviews(request: BulkReviewRequest, db: Session = Depends(get_db)):
+    """
+    Approve a human-selected set of reviews in one call (Phase Q4, 29 Jul —
+    built after the queue hit 1,010 pending; a bulk-select toolbar in the
+    Review Inbox calls this). Still 100% human-triggered — nothing here
+    auto-approves anything the human didn't explicitly select; this is a
+    click-count reduction, not a change to the "human approves everything"
+    rule. One bad id never aborts the rest: each review is approved
+    independently and its own failure is reported, not raised.
+    """
+    if not request.ids:
+        raise HTTPException(status_code=422, detail="ids must not be empty")
+
+    approved, failed = [], []
+    for review_id in request.ids:
+        r = db.query(DuplicateReview).filter(DuplicateReview.id == review_id).first()
+        if not r:
+            failed.append({"id": review_id, "error": "not found"})
+            continue
+        try:
+            _do_approve(db, r)
+            approved.append(review_id)
+        except HTTPException as exc:
+            db.rollback()
+            failed.append({"id": review_id, "error": exc.detail})
+        except Exception as exc:
+            db.rollback()
+            logger.error(f"[Reviews] bulk-approve failed for {review_id}: {exc}")
+            failed.append({"id": review_id, "error": str(exc)})
+
+    return {"approved": len(approved), "failed": failed, "total": len(request.ids)}
+
+
+@router.post("/bulk-reject")
+async def bulk_reject_reviews(request: BulkReviewRequest, db: Session = Depends(get_db)):
+    """Same shape as bulk-approve, for reject. See its docstring."""
+    if not request.ids:
+        raise HTTPException(status_code=422, detail="ids must not be empty")
+
+    rejected, failed = [], []
+    for review_id in request.ids:
+        r = db.query(DuplicateReview).filter(DuplicateReview.id == review_id).first()
+        if not r:
+            failed.append({"id": review_id, "error": "not found"})
+            continue
+        try:
+            _do_reject(db, r)
+            rejected.append(review_id)
+        except HTTPException as exc:
+            db.rollback()
+            failed.append({"id": review_id, "error": exc.detail})
+        except Exception as exc:
+            db.rollback()
+            logger.error(f"[Reviews] bulk-reject failed for {review_id}: {exc}")
+            failed.append({"id": review_id, "error": str(exc)})
+
+    return {"rejected": len(rejected), "failed": failed, "total": len(request.ids)}
 
 
 @router.post("/{review_id}/delete")

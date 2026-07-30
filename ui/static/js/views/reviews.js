@@ -38,6 +38,7 @@ export default {
       status: "pending", type: "", risk: "", q: "",
       runId: params.run_id || "", // Phase Q2: batch filter — either deep-linked from Browse or picked below
       reviews: [], selectedId: null, busy: false,
+      selectedIds: new Set(), // Phase Q4: bulk-select for approve/reject, cleared on any filter change
     };
 
     el.innerHTML = `
@@ -68,6 +69,7 @@ export default {
           </div>
           <div class="row wrap" style="gap:8px;margin-top:8px" id="batch-row"></div>
         </div>
+        <div id="bulk-toolbar"></div>
         <div class="inbox-grid" id="inbox-grid" style="align-items:start">
           <div class="card" id="review-list" style="padding:0;max-height:70vh;overflow-y:auto"></div>
           <div class="card" id="review-detail"></div>
@@ -75,6 +77,7 @@ export default {
       </div>`;
 
     const countsEl = el.querySelector("#counts");
+    const bulkToolbar = el.querySelector("#bulk-toolbar");
     const listEl = el.querySelector("#review-list");
     const detailEl = el.querySelector("#review-detail");
 
@@ -135,23 +138,49 @@ export default {
       if (!preserveSelection || !state.reviews.some((r) => r.id === state.selectedId)) {
         state.selectedId = state.reviews[0]?.id || null;
       }
+      // Bulk selection: a filter change starts fresh; a background poll
+      // refresh keeps it but drops any id that fell out of the loaded list
+      // (resolved by someone else, or no longer matches the filter).
+      if (!preserveSelection) {
+        state.selectedIds.clear();
+      } else {
+        const loadedIds = new Set(state.reviews.map((r) => r.id));
+        for (const id of state.selectedIds) if (!loadedIds.has(id)) state.selectedIds.delete(id);
+      }
       renderList();
       renderDetail();
     }
 
     function renderList() {
+      // Phase Q4 (29 Jul, after the queue hit 1,010 pending): bulk-select is
+      // only meaningful for pending reviews — approve/reject both require
+      // status=="pending". Recomputed every render (not a module-level
+      // const) since state.status changes live via the filter dropdown.
+      // Scoped to what's currently loaded (up to the 200 fetch limit);
+      // filter narrower + repeat for a bigger backlog.
+      const bulkEnabled = state.status === "pending";
+
       if (!state.reviews.length) {
         listEl.innerHTML = `<div class="empty" style="padding:24px"><div class="empty__title">Nothing here</div>
                              <div>${state.status === "pending" ? "All clear 🎉" : "No items match these filters"}</div></div>`;
+        renderBulkToolbar();
         return;
       }
-      listEl.innerHTML = state.reviews.map((rv) => {
+      const allLoadedSelected = state.reviews.length > 0 && state.reviews.every((rv) => state.selectedIds.has(rv.id));
+      const header = bulkEnabled ? `
+        <div class="row" style="padding:8px 12px;border-bottom:1px solid var(--border);gap:8px">
+          <input type="checkbox" id="select-all-loaded" ${allLoadedSelected ? "checked" : ""}>
+          <span class="dim" style="font-size:11px">Select all ${state.reviews.length} loaded</span>
+        </div>` : "";
+
+      listEl.innerHTML = header + state.reviews.map((rv) => {
         const risk = RISK[rv.risk_level] || RISK.none;
         const active = rv.id === state.selectedId;
         return `
           <div class="row" data-review-id="${esc(rv.id)}"
                style="padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border);gap:8px;
                       ${active ? "background:var(--brand-lime-glow);border-left:3px solid var(--brand-lime)" : "border-left:3px solid transparent"}">
+            ${bulkEnabled ? `<input type="checkbox" class="row-select" data-id="${esc(rv.id)}" ${state.selectedIds.has(rv.id) ? "checked" : ""} style="flex:none">` : ""}
             <span style="flex:none">${risk.mark}</span>
             <div class="grow" style="min-width:0">
               <div class="truncate" style="font-size:13px;font-weight:550">${rowLabel(rv)}</div>
@@ -166,6 +195,73 @@ export default {
           renderList();
           renderDetail();
         }));
+
+      if (bulkEnabled) {
+        listEl.querySelector("#select-all-loaded")?.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (e.target.checked) state.reviews.forEach((rv) => state.selectedIds.add(rv.id));
+          else state.reviews.forEach((rv) => state.selectedIds.delete(rv.id));
+          renderList();
+        });
+        listEl.querySelectorAll(".row-select").forEach((cb) => {
+          cb.addEventListener("click", (e) => e.stopPropagation());
+          cb.addEventListener("change", (e) => {
+            const id = e.target.dataset.id;
+            if (e.target.checked) state.selectedIds.add(id);
+            else state.selectedIds.delete(id);
+            renderBulkToolbar();
+          });
+        });
+      }
+      renderBulkToolbar();
+    }
+
+    function renderBulkToolbar() {
+      const n = state.selectedIds.size;
+      if (state.status !== "pending" || !n) { bulkToolbar.innerHTML = ""; return; }
+      bulkToolbar.innerHTML = `
+        <div class="card row wrap" style="gap:10px;align-items:center;background:var(--surface-2)">
+          <strong style="font-size:13px">${n} selected</strong>
+          <button class="btn btn--primary btn--sm" id="bulk-approve-btn">✅ Approve selected</button>
+          <button class="btn btn--danger btn--sm" id="bulk-reject-btn">✋ Reject selected</button>
+          <span class="grow"></span>
+          <button class="btn btn--ghost btn--sm" id="bulk-clear-btn">Clear selection</button>
+        </div>`;
+
+      bulkToolbar.querySelector("#bulk-clear-btn").addEventListener("click", () => {
+        state.selectedIds.clear();
+        renderList();
+      });
+      bulkToolbar.querySelector("#bulk-approve-btn").addEventListener("click", () => bulkAct("approve"));
+      bulkToolbar.querySelector("#bulk-reject-btn").addEventListener("click", () => bulkAct("reject"));
+    }
+
+    async function bulkAct(kind) {
+      if (state.busy) return;
+      const ids = [...state.selectedIds];
+      const verb = kind === "approve" ? "Approve" : "Reject";
+      if (!confirmAction(`${verb} ${ids.length} selected review${ids.length === 1 ? "" : "s"}? This applies to each one individually — same effect as clicking ${kind} on each, just in one step.`)) return;
+
+      state.busy = true;
+      try {
+        const res = kind === "approve" ? await api.bulkApproveReviews(ids) : await api.bulkRejectReviews(ids);
+        const done = kind === "approve" ? res.approved : res.rejected;
+        const failN = (res.failed || []).length;
+        toast(
+          failN
+            ? `${verb}d ${done} of ${res.total} — ${failN} failed (see console)`
+            : `${verb}d ${done} review${done === 1 ? "" : "s"}`,
+          failN ? "error" : "ok",
+        );
+        if (failN) console.warn(`[Reviews] bulk-${kind} failures:`, res.failed);
+        state.selectedIds.clear();
+        await loadCounts();
+        await loadList();
+      } catch (err) {
+        toast(`Bulk ${kind} failed: ${err.message}`, "error");
+      } finally {
+        state.busy = false;
+      }
     }
 
     async function renderDetail() {

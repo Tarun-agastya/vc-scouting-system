@@ -446,13 +446,24 @@ def _backfill_source_excerpt(master, startup: dict, flag_modified) -> None:
 # ── Diff (meaningful change detection) ────────────────────────────────────────
 
 # model attribute → incoming dict key
+#
+# industry/tech_cluster are DELIBERATELY excluded (29 Jul fix, was the
+# dominant source of review-queue flood — 715 of 849 pending field_update
+# reviews, 84%). Since Phase V-2, those two columns hold a controlled
+# taxonomy value written by a dedicated classify_startup() pass — NOT the
+# raw free-form string a re-extraction produces. Diffing the master's
+# controlled value against the incoming's raw value meant almost every
+# re-sighting of an existing record staged a spurious "conflict" (e.g.
+# master.industry="AI & Machine Learning" vs incoming["industry"]="Fintech
+# - ERP Automation" for the same company) — the reclassify backlog already
+# keeps these fields correct on its own; there's nothing for a human to
+# adjudicate here. sub_industry stays: it's still raw/uncontrolled, so
+# raw-vs-raw comparison is valid for it.
 _DIFF_FIELDS = {
     "short_description": "one_liner",
     "description": "description",
     "website": "website",
-    "industry": "industry",
     "sub_industry": "sub_industry",
-    "tech_cluster": "tech_cluster",
     "country": "country",
     "city": "city",
     "address": "address",

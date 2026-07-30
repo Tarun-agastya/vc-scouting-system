@@ -84,6 +84,9 @@ export const api = {
   rejectReview: (id) => post(`/reviews/${id}/reject`),
   /** Reverses an approved possible_duplicate/anomaly merge — reinserts the deleted row, leaves the master untouched. */
   undoMerge: (id) => post(`/reviews/${id}/undo-merge`),
+  /** Phase Q4: approve/reject a human-selected set of reviews in one call — still 100% human-triggered, just fewer clicks. */
+  bulkApproveReviews: (ids) => post("/reviews/bulk-approve", { ids }),
+  bulkRejectReviews: (ids) => post("/reviews/bulk-reject", { ids }),
   /** target: "incoming" | "master" | "both" — neither merge nor keep, just remove the data */
   deleteReview: (id, target) => post(`/reviews/${id}/delete?target=${target}`),
 
