@@ -148,6 +148,26 @@ DEFAULTS = {
         "enabled": True,
         "boost": 1,
     },
+    "inspector": {
+        "min_group_items": 4,
+        "card_score_threshold": 0.55,
+        "top_groups_reported": 5,
+        "name_only_text_max_chars": 24,
+        "name_only_min_fraction": 0.8,
+        "weights": {
+            "unique_identity": 0.30,
+            "has_link": 0.20,
+            "has_heading": 0.15,
+            "homogeneity": 0.15,
+            "group_size": 0.10,
+            "has_image": 0.10,
+            "nav_footer_penalty": 0.25,
+            "empty_text_penalty": 0.30,
+        },
+        "render_gain_threshold": 2.0,
+        "detail_link_min_coverage": 0.6,
+        "prose_link_density_max": 0.45,
+    },
     "chunking": {
         # How many logo-grid company names go into one extraction call.
         # Measured 30 Jul on zollhof.de's 120-name portfolio page: at 12
@@ -198,7 +218,14 @@ def _load() -> dict:
             "geo_scope":        {**DEFAULTS["geo_scope"], **(raw.get("geo_scope") or {})},
             "priority_scouting": {**DEFAULTS["priority_scouting"], **(raw.get("priority_scouting") or {})},
             "chunking":         {**DEFAULTS["chunking"], **(raw.get("chunking") or {})},
+            "inspector":        {**DEFAULTS["inspector"], **(raw.get("inspector") or {})},
         }
+        # nested weights dict: merge per-key so a partial edit keeps the rest
+        insp = raw.get("inspector") or {}
+        if isinstance(insp.get("weights"), dict):
+            merged["inspector"]["weights"] = {
+                **DEFAULTS["inspector"]["weights"], **insp["weights"]
+            }
         # nested signals dict: merge per-group so a partial edit keeps the rest
         cf = raw.get("candidate_filter") or {}
         if isinstance(cf.get("signals"), dict):
@@ -256,3 +283,12 @@ def get_priority_scouting_config() -> dict:
 def get_chunking_config() -> dict:
     """{'names_per_chunk': int}"""
     return _load()["chunking"]
+
+
+def get_inspector_config() -> dict:
+    """
+    Phase R-1 structural inspector settings:
+    {'min_group_items': int, 'card_score_threshold': float, 'weights': {...},
+     'render_gain_threshold': float, 'detail_link_min_coverage': float, ...}
+    """
+    return _load()["inspector"]

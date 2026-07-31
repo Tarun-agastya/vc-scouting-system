@@ -216,6 +216,52 @@ priority_scouting:
   boost: 1
 
 
+inspector:
+  # Phase R-1: structural page analysis. Replaces per-website tuning — the
+  # pipeline detects a page's SHAPE and picks a strategy, instead of constants
+  # hand-fitted to one site (which is how zollhof tuning wrote 72 junk records
+  # on schwaben.digital, 31 Jul).
+  #
+  # A "card group" = sibling elements sharing a class signature, i.e. the
+  # repeating unit of a portfolio grid or company directory.
+  min_group_items: 4          # fewer siblings than this is not a repeating group
+  card_score_threshold: 0.55  # below this, the page has NO grid and NO alt harvest
+  top_groups_reported: 5      # how many groups to keep in the signals payload
+
+  # A card is "name only" (a logo grid) when its text is this short — those
+  # pages yield name-only records and are the ones detail-page following helps.
+  name_only_text_max_chars: 24
+  # Fraction of a group's items that must be name-only for the group to be.
+  name_only_min_fraction: 0.8
+
+  # Group scoring weights. Tunable without code changes; see site_inspector.
+  # max(unique_href, unique_name) carries the most weight because a directory's
+  # defining property is that each item points somewhere different OR is named
+  # differently — a nav bar repeats structure but not distinct entities.
+  weights:
+    unique_identity: 0.30
+    has_link:        0.20
+    has_heading:     0.15
+    homogeneity:     0.15
+    group_size:      0.10
+    has_image:       0.10
+    nav_footer_penalty:  0.25
+    empty_text_penalty:  0.30
+
+  # Rendering: escalate to a headless browser when rendering reveals this many
+  # times more candidate entities than the static fetch. Measured on entity
+  # COUNT, not character length — zollhof's homepage shows a 48.7x char gain
+  # but the meaningful signal is that entities appear at all.
+  render_gain_threshold: 2.0
+
+  # Detail pages: fraction of a group's items that must link to a distinct URL
+  # under a common path prefix before we treat it as a detail-page pattern.
+  detail_link_min_coverage: 0.6
+
+  # A page is prose-shaped when link text is a small share of its total text.
+  prose_link_density_max: 0.45
+
+
 chunking:
   # Logo-grid portfolio pages (each company is just a logo + alt-text name)
   # are extracted in name batches. Each name in a batch costs a full
