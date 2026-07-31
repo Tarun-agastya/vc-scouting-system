@@ -48,15 +48,29 @@ If the text says it is a list of company names shown as logos in a portfolio
 grid with no further description, then it is exactly that — a curated list of
 real companies, already vetted by the incubator or accelerator whose page it
 came from. In that case:
-- Extract EVERY name in the list as its own record, one per name.
+- Extract every entry that is plausibly a COMPANY name, one record per name.
 - Fill `name` only; leave every other field "" or 0. That is the correct,
   expected output here, not a failure — you have no other information, and a
   name-only record is genuinely useful.
-- Do NOT skip a name because you don't recognise it, can't tell what the
-  company does, or can't confirm it meets the INCLUDE rules. You cannot judge
-  those from a name alone, and the page's own curation is the evidence.
+- Do NOT skip a name merely because you don't recognise it or can't tell what
+  the company does. An unfamiliar company name is still a company name, and
+  the page's own curation is the evidence.
+- DO skip entries that are plainly not companies. These lists are harvested
+  from image alt text, so they often contain non-company noise mixed in:
+    * image/file names ("Medium_20250128-raum-orange-0003", "Xlarge_2023",
+      "Article_20191505-dzs-rf-zuschnitt", "Handshake-simple-solid")
+    * individual people ("stefan.schimpfle", "clara.fischer", "Anna Treischl")
+    * the host organisation itself, its own site name or its programmes
+    * public bodies and institutions — cities, districts, universities,
+      chambers of commerce, ministries ("Stadt Augsburg", "IHK Schwaben",
+      "Technische Hochschule Augsburg", "Landkreis Augsburg")
+    * sponsors/partners that are established firms rather than startups —
+      banks, insurers, law firms, utilities ("VR-Bank", "Sonntag und
+      Partner", "Maucher Jenkins")
+  Skipping these is correct and expected; the EXCLUDE rules above still apply
+  to every entry in the list.
 - Do NOT invent an industry, description, location, or year to fill the gap.
-- Returning an empty list for such a text is always wrong.
+- If the list contains genuine company names, returning an empty list is wrong.
 
 For all other unknown fields use "" (strings) or 0 (founded_year). Never guess a value.
 Return an empty startups list only if the text contains absolutely no matching companies.

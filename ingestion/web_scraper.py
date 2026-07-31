@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from collections import deque
 from typing import Optional
 from urllib.parse import urlparse, urljoin
@@ -25,6 +26,11 @@ _HEADERS = {
 # React/Vue/etc. sites often return a 200 with a near-empty <body> and load
 # all content client-side, which a plain httpx GET can never see.
 _MIN_STATIC_TEXT_LEN = 200
+
+# How many surviving alt entries a page needs before its alt block is treated
+# as a curated portfolio/logo grid rather than incidental imagery. See the
+# use site in _extract_text for the incident that motivated it.
+_MIN_LOGO_GRID_ENTRIES = 12
 
 # Button/link text that reveals more of a paginated directory list. Matched
 # case-insensitively as a substring by Playwright's :has-text(). Bilingual
@@ -106,6 +112,47 @@ _ALT_NOISE = frozenset({
     "avatar", "placeholder", "background", "hero", "ok",
 })
 
+# Structural junk in alt text — CMS-generated image names, not company names.
+# Added 31 Jul after a schwaben.digital run wrote 72 records of which ~50 were
+# image filenames ("Medium_20250128-raum-orange-0003", "Xlarge_2023",
+# "Article_20191505-dzs-rf-zuschnitt", "Handshake-simple-solid"), because the
+# alt harvest passed anything not in the exact-match set above straight
+# through as a "portfolio / logo grid entry". Zollhof's grid is genuinely
+# company names; most sites' alt text is not, so the harvest needs real
+# structure checks, not just a wordlist.
+_ALT_JUNK_RE = re.compile(
+    r"""
+      \.(?:jpe?g|png|svg|webp|gif|avif)$          # ends in an image extension
+    | ^(?:x?large|medium|small|thumb|article|img|image|foto|photo|bild)[_-]
+                                                  # CMS size/type prefix
+    | \b20\d{6}\b                                 # embedded yyyymmdd datestamp
+    | [_-]\d{3,}$                                 # trailing sequence: -0001, _074
+    | ^\d{6,}                                     # starts with a long digit run
+    | _kopie                                      # "copy" suffix
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# A slug, not a name: 3+ separator-delimited tokens and no spaces
+# ("dzs-teamfotos-webseite-jakob", "website-besser-starten",
+# "polygon-zuschnitte-team_sk"). Real company names in this position are
+# either single tokens, contain spaces, or use at most one separator
+# ("e-laborate", "bill.less", "WeSort.AI GmbH") — so requiring 3+ tokens
+# keeps those safe.
+_ALT_SLUG_RE = re.compile(r"^[^\s]+(?:[-_][^\s]+){2,}$")
+
+
+def _is_junk_alt(alt: str) -> bool:
+    """True if this <img alt> is CMS/structural noise rather than a name."""
+    key = alt.strip().lower()
+    if len(alt.strip()) < 2 or key in _ALT_NOISE:
+        return True
+    if _ALT_JUNK_RE.search(alt):
+        return True
+    if _ALT_SLUG_RE.match(alt):
+        return True
+    return False
+
 
 def _extract_text(html: str) -> str:
     """
@@ -127,7 +174,7 @@ def _extract_text(html: str) -> str:
     for img in soup.find_all("img"):
         alt = (img.get("alt") or "").strip()
         key = alt.lower()
-        if len(alt) < 2 or key in seen_alt or key in _ALT_NOISE:
+        if key in seen_alt or _is_junk_alt(alt):
             continue
         seen_alt.add(key)
         alts.append(alt)
@@ -136,7 +183,14 @@ def _extract_text(html: str) -> str:
         tag.decompose()
     text = soup.get_text(separator="\n", strip=True)
 
-    if alts:
+    # Only claim "this is a portfolio/logo grid" when the page actually looks
+    # like one. Below the threshold the alt values are almost certainly
+    # incidental page imagery (a couple of partner logos, a team photo), and
+    # labelling them as a curated company list tells the extractor to treat
+    # each as a real startup — which is exactly how a schwaben.digital run
+    # turned staff photos and sponsor logos into 72 records (31 Jul). Genuine
+    # grids clear this easily: zollhof.de yields ~120.
+    if len(alts) >= _MIN_LOGO_GRID_ENTRIES:
         text += "\n\nPortfolio / logo grid entries on this page:\n" + "\n".join(alts)
 
     return text
