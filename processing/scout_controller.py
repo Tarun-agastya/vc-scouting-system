@@ -130,22 +130,45 @@ def _progress_to_dict(progress: RecordProgress) -> dict:
     }
 
 
+# Counters surfaced to /ingestion/status. Every PipelineMetrics field the
+# dashboard can show must be listed here or it silently reads as 0 — which is
+# exactly what happened to updates_staged/duplicates_staged: the dashboard has
+# rendered tiles for them since Phase UI-3 (ui/static/js/views/ingestion.js:30-31)
+# but this function emitted a "duplicates_detected" key that PipelineMetrics
+# has never defined, so both tiles always showed nothing. Fixed 31 Jul.
+_METRIC_FIELDS = (
+    "pages_crawled", "pages_skipped", "chunks_created", "chunks_filtered",
+    "qwen_calls", "qwen_failures", "startups_extracted", "startups_inserted",
+    "updates_staged", "duplicates_staged", "unchanged",
+    # Phase R-0 adaptive-pipeline instrumentation. Zero until later phases
+    # populate them; listed now so each phase is measurable from the start.
+    "pages_rendered", "pages_static", "pagination_clicks", "pagination_items_gained",
+    "cards_detected", "entities_expected", "entities_extracted_distinct",
+    "chunks_bypassed_filter", "name_batch_chunks", "card_chunks",
+    "detail_pages_followed", "recall_shortfalls", "retries_attempted",
+    "retries_recovered", "profile_hits", "profile_misses", "profile_probes",
+    "strategy_llm_calls", "strategy_llm_failures",
+)
+
+
 def _metrics_to_dict(metrics) -> dict:
     """Flatten a PipelineMetrics object into a plain dict for the run record."""
     if metrics is None:
         return {}
-    return {
-        "pages_crawled":         getattr(metrics, "pages_crawled", 0),
-        "pages_skipped":         getattr(metrics, "pages_skipped", 0),
-        "chunks_created":        getattr(metrics, "chunks_created", 0),
-        "chunks_filtered":       getattr(metrics, "chunks_filtered", 0),
-        "qwen_calls":            getattr(metrics, "qwen_calls", 0),
-        "qwen_failures":         getattr(metrics, "qwen_failures", 0),
-        "startups_extracted":    getattr(metrics, "startups_extracted", 0),
-        "startups_inserted":     getattr(metrics, "startups_inserted", 0),
-        "duplicates_detected":   getattr(metrics, "duplicates_detected", 0),
-        "total_processing_time": round(getattr(metrics, "total_processing_time", 0.0), 1),
-    }
+    out = {f: getattr(metrics, f, 0) for f in _METRIC_FIELDS}
+    out["total_processing_time"] = round(getattr(metrics, "total_processing_time", 0.0), 1)
+    # Legacy alias — kept so any older consumer of the run-history shape keeps
+    # working; the real field is duplicates_staged above.
+    out["duplicates_detected"] = out["duplicates_staged"]
+
+    # Per-page expected-vs-actual, only once something has populated it. This
+    # is what makes a low-recall page visible in the dashboard instead of being
+    # averaged away by a healthy-looking run total.
+    per_page = getattr(metrics, "per_page", None)
+    if per_page:
+        worst = sorted(per_page.values(), key=lambda o: o.recall)[:10]
+        out["page_outcomes"] = [o.to_dict() for o in worst]
+    return out
 
 
 # ── Controller ───────────────────────────────────────────────────────────────

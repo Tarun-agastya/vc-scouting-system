@@ -81,6 +81,45 @@ class StorageItem:
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
 @dataclass
+class PageOutcome:
+    """
+    Per-page expected-vs-actual, the unit the Phase R-5 recall audit works on.
+
+    `expected` is what the page STRUCTURALLY appears to contain (a card-group
+    size, a JSON-LD ItemList count, a clean logo-grid name count) — recomputed
+    every run, never read from a cached profile. `extracted` holds the distinct
+    lowercased names actually produced from this page's chunks.
+    """
+    url: str
+    expected: int = 0
+    extracted: set = field(default_factory=set)
+    qwen_failures: int = 0
+    page_shape: str = ""
+    retried: bool = False
+    recovered: bool = False
+
+    @property
+    def recall(self) -> float:
+        """0.0-1.0. Defined as 1.0 when nothing was expected — no expectation,
+        no shortfall (prose pages must never trigger a retry)."""
+        if self.expected <= 0:
+            return 1.0
+        return min(1.0, len(self.extracted) / self.expected)
+
+    def to_dict(self) -> dict:
+        return {
+            "url": self.url,
+            "expected": self.expected,
+            "extracted": len(self.extracted),
+            "recall": round(self.recall, 3),
+            "qwen_failures": self.qwen_failures,
+            "page_shape": self.page_shape,
+            "retried": self.retried,
+            "recovered": self.recovered,
+        }
+
+
+@dataclass
 class PipelineMetrics:
     """
     Thread-safe counters for a single ingestion run.
@@ -104,6 +143,24 @@ class PipelineMetrics:
     duplicates_staged   — possible-duplicate/anomaly pairs staged (status "staged_duplicate"/"staged_anomaly")
     unchanged           — exact re-extractions with no meaningful change (status "no_op")
     total_processing_time — wall-clock seconds from first URL fetch to last upsert
+
+    Phase R-0 (31 Jul) adaptive-pipeline instrumentation — all default to 0 and
+    stay 0 until later phases populate them, so this phase is a pure no-op on
+    behaviour. They exist first so every later phase can be measured against an
+    R-0 baseline rather than against a guess:
+    pages_rendered / pages_static  — headless-render vs plain static fetch
+    pagination_clicks / pagination_items_gained — load-more work and its yield
+    cards_detected      — repeating card-group items found by the inspector
+    entities_expected   — structurally-detected candidate entities (per run,
+                          NEVER cached — a cached count cannot notice a site
+                          redesign, which is the whole safety property)
+    entities_extracted_distinct — distinct names actually extracted
+    chunks_bypassed_filter — chunks that skipped the heuristic relevance gate
+    name_batch_chunks / card_chunks — chunks by strategy-driven kind
+    detail_pages_followed — per-company detail pages crawled
+    recall_shortfalls / retries_attempted / retries_recovered — the audit loop
+    profile_hits / profile_misses / profile_probes — SiteProfile cache behaviour
+    strategy_llm_calls / strategy_llm_failures — the one-call-per-source strategist
     """
     pages_crawled:          int   = 0
     pages_skipped:          int   = 0
@@ -118,6 +175,32 @@ class PipelineMetrics:
     unchanged:              int   = 0
     total_processing_time:  float = 0.0
 
+    # ── Phase R-0: adaptive-pipeline instrumentation ──────────────────────
+    pages_rendered:              int = 0
+    pages_static:                int = 0
+    pagination_clicks:           int = 0
+    pagination_items_gained:     int = 0
+    cards_detected:              int = 0
+    entities_expected:           int = 0
+    entities_extracted_distinct: int = 0
+    chunks_bypassed_filter:      int = 0
+    name_batch_chunks:           int = 0
+    card_chunks:                 int = 0
+    detail_pages_followed:       int = 0
+    recall_shortfalls:           int = 0
+    retries_attempted:           int = 0
+    retries_recovered:           int = 0
+    profile_hits:                int = 0
+    profile_misses:              int = 0
+    profile_probes:              int = 0
+    strategy_llm_calls:          int = 0
+    strategy_llm_failures:       int = 0
+
+    # url -> PageOutcome. The recall audit (R-5) needs per-page expected-vs-
+    # actual, not just run totals: a run can look healthy in aggregate while
+    # one page silently yields nothing.
+    per_page: dict = field(default_factory=dict, compare=False, repr=False)
+
     _lock: threading.Lock = field(
         default_factory=threading.Lock,
         compare=False,
@@ -128,6 +211,62 @@ class PipelineMetrics:
         """Atomically increment a named counter. Safe to call from any thread."""
         with self._lock:
             setattr(self, counter, getattr(self, counter) + amount)
+
+    def _page(self, url: str) -> "PageOutcome":
+        """Get-or-create this page's outcome. Caller must hold _lock."""
+        out = self.per_page.get(url)
+        if out is None:
+            out = PageOutcome(url=url)
+            self.per_page[url] = out
+        return out
+
+    def record_expectation(self, url: str, expected: int, *, shape: str = "") -> None:
+        """
+        Record how many entities this page structurally appears to contain.
+        Called once per page at fetch time, every run.
+        """
+        with self._lock:
+            out = self._page(url)
+            out.expected = expected
+            if shape:
+                out.page_shape = shape
+            self.entities_expected += expected
+
+    def record_extraction(self, url: str, name: str) -> None:
+        """Record one distinct extracted company name against its page."""
+        if not name:
+            return
+        key = name.strip().lower()
+        if not key:
+            return
+        with self._lock:
+            out = self._page(url)
+            if key not in out.extracted:
+                out.extracted.add(key)
+                self.entities_extracted_distinct += 1
+
+    def record_page_failure(self, url: str) -> None:
+        """Record a Qwen failure against a page (drives retry-ladder step 1)."""
+        with self._lock:
+            self._page(url).qwen_failures += 1
+
+    def shortfall_pages(self, *, ratio: float, min_gap: int) -> list:
+        """
+        Pages whose extraction fell materially short of what the page
+        structurally offered. `min_gap` stops thrash on small pages, where a
+        1-of-3 miss is a huge ratio but a trivial absolute loss.
+        Pages with expected == 0 (prose, no structural expectation) never
+        qualify — absence of an expectation is not evidence of a shortfall.
+        """
+        with self._lock:
+            outcomes = list(self.per_page.values())
+        out = [
+            o for o in outcomes
+            if o.expected > 0
+            and o.recall < ratio
+            and (o.expected - len(o.extracted)) >= min_gap
+        ]
+        return sorted(out, key=lambda o: o.expected - len(o.extracted), reverse=True)
 
     def report(self, source_url: str) -> None:
         """Emit a structured INFO log summarising the completed ingestion run."""
@@ -154,8 +293,37 @@ class PipelineMetrics:
             f"[Pipeline]  Duplicates staged: {self.duplicates_staged}\n"
             f"[Pipeline]  Unchanged        : {self.unchanged}\n"
             f"[Pipeline]  Total time       : {self.total_processing_time:.1f}s\n"
+            + self._adaptive_report_lines() +
             "[Pipeline] ─────────────────────────────────────────────────────"
         )
+
+    def _adaptive_report_lines(self) -> str:
+        """
+        Extra report lines for the adaptive pipeline — emitted only once
+        something has actually populated them, so a run with the adaptive
+        path disabled logs byte-identically to before Phase R-0.
+        """
+        if not self.entities_expected and not self.pages_rendered and not self.retries_attempted:
+            return ""
+        recall = (
+            round(self.entities_extracted_distinct / self.entities_expected * 100)
+            if self.entities_expected else 0
+        )
+        lines = (
+            f"[Pipeline]  Entities expected: {self.entities_expected}\n"
+            f"[Pipeline]  Entities extracted: {self.entities_extracted_distinct} ({recall}% recall)\n"
+        )
+        if self.pages_rendered or self.pages_static:
+            lines += f"[Pipeline]  Rendered/static  : {self.pages_rendered}/{self.pages_static}\n"
+        if self.pagination_clicks:
+            lines += (f"[Pipeline]  Pagination       : {self.pagination_clicks} click(s), "
+                      f"+{self.pagination_items_gained} item(s)\n")
+        if self.recall_shortfalls or self.retries_attempted:
+            lines += (f"[Pipeline]  Recall shortfalls: {self.recall_shortfalls} "
+                      f"(retried {self.retries_attempted}, recovered {self.retries_recovered})\n")
+        if self.detail_pages_followed:
+            lines += f"[Pipeline]  Detail pages     : {self.detail_pages_followed}\n"
+        return lines
 
 
 # ── Stage 2: Chunker Task ─────────────────────────────────────────────────────
