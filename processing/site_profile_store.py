@@ -441,6 +441,88 @@ def record_recall_outcome(profile_id: str, *, expected: int, extracted: int, rec
         db.close()
 
 
+def next_retry_step(profile: SiteProfile, page_outcome, metrics) -> Optional[tuple]:
+    """
+    Phase R-5 retry ladder — deterministic, most-certain evidence first.
+    Returns (new_ladder_position, PageStrategy) for the first untried
+    applicable step from profile.retry_ladder_position onward, or None when
+    every remaining step has been exhausted (the caller should treat that as
+    a plain failure, not attempt anything further).
+
+    Checking qwen_failures FIRST is essential: a timeout shortfall and a
+    fetch shortfall look identical in the raw expected-vs-extracted numbers
+    but need opposite fixes — halving the batch size fixes a timeout;
+    re-fetching with rendering fixes a genuinely-missing page. Trying
+    rendering first on a timeout-caused shortfall would burn a retry
+    attempt on a page that was already being fetched correctly.
+    """
+    from config import settings
+    from config.tuning_loader import get_chunking_config
+
+    strat = strategy_from_profile(profile)
+    start = (profile.retry_ladder_position or 0) + 1
+
+    def _default_names_per_chunk() -> int:
+        try:
+            return int(get_chunking_config().get("names_per_chunk", 6))
+        except Exception:
+            return 6
+
+    steps = (
+        (1, page_outcome.qwen_failures > 0,
+         lambda s: s.with_(names_per_chunk=max(1, (s.names_per_chunk or _default_names_per_chunk()) // 2))),
+        (2, not strat.needs_render,
+         lambda s: s.with_(needs_render=True, paginate=True)),
+        (3, strat.needs_render and not strat.paginate,
+         lambda s: s.with_(paginate=True)),
+        (4, page_outcome.url in getattr(metrics, "pagination_hit_cap", set()),
+         lambda s: s.with_(max_load_more=(s.max_load_more or settings.crawl_max_load_more) * 2)),
+        (5, strat.text_extraction == "card_structured",
+         lambda s: s.with_(text_extraction="alt_harvest", chunking="name_batch")),
+        (6, strat.text_extraction == "alt_harvest",
+         lambda s: s.with_(text_extraction="card_structured", chunking="per_card")),
+        (7, strat.text_extraction == "main_prose",
+         lambda s: s.with_(text_extraction="full_text", chunking="sliding_window")),
+    )
+    for idx, condition, transform in steps:
+        if idx < start:
+            continue
+        if condition:
+            return idx, transform(strat)
+    return None
+
+
+def apply_retry_result(profile_id: str, ladder_idx: int, new_strategy, *, recovered: bool) -> None:
+    """
+    Persist the outcome of one R-5 retry attempt. On success, the winning
+    strategy fields become the profile's live strategy (strategy_source
+    "learned") so the next real run starts there. On failure, only the
+    ladder pointer advances — the live strategy is untouched, so a
+    subsequent retry (this run or a future one, after the profile is marked
+    stale by record_recall_outcome's consecutive-shortfall handling) tries
+    the NEXT applicable step rather than repeating one already proven not to
+    help. Never touches page_shape/expected_entity_count — those stay
+    exactly what the last real structural probe determined.
+    """
+    db = SessionLocal()
+    try:
+        row = db.query(SiteProfile).filter_by(id=profile_id).first()
+        if row is None:
+            return
+        row.retry_ladder_position = ladder_idx
+        if recovered:
+            row.text_extraction = new_strategy.text_extraction
+            row.chunking_mode = new_strategy.chunking
+            row.needs_render = new_strategy.needs_render
+            row.paginate = new_strategy.paginate
+            row.names_per_chunk = new_strategy.names_per_chunk
+            row.max_load_more = new_strategy.max_load_more
+            row.strategy_source = "learned"
+        db.commit()
+    finally:
+        db.close()
+
+
 def set_pinned(profile_id: str, pinned: bool) -> Optional[SiteProfile]:
     """Dashboard pin/unpin — the human escape hatch."""
     db = SessionLocal()

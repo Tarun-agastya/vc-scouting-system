@@ -235,6 +235,13 @@ class PipelineMetrics:
     # one page silently yields nothing.
     per_page: dict = field(default_factory=dict, compare=False, repr=False)
 
+    # URLs where pagination ran out of its click budget while the page was
+    # STILL growing (never stopped naturally on two stagnant rounds) — the
+    # R-5 retry ladder's step-4 signal ("pagination hit the cap") that a
+    # higher max_load_more is worth trying, as opposed to a page that simply
+    # has no more content to reveal.
+    pagination_hit_cap: set = field(default_factory=set, compare=False, repr=False)
+
     _lock: threading.Lock = field(
         default_factory=threading.Lock,
         compare=False,

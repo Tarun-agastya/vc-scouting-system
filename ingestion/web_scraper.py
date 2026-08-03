@@ -415,9 +415,162 @@ class WebScraper:
             ),
         )
 
+        # Phase B (Phase R-5) — recall audit + bounded auto-retry on the
+        # worst shortfall pages from the Phase A crawl above. Only ever has
+        # anything to do under the adaptive pipeline: metrics.record_expectation
+        # is only ever called from the adaptive branch of _crawler_task, so
+        # shortfall_pages() is always empty otherwise.
+        if settings.adaptive_pipeline_enabled:
+            await self._recall_audit_and_retry(
+                url, source_type, metrics, validation_session=validation_session,
+            )
+
         metrics.total_processing_time = time.time() - t0
         metrics.report(url)
         return metrics
+
+    # ── Phase B: Recall audit + auto-retry (Phase R-5) ──────────────────────────
+
+    async def _recall_audit_and_retry(
+        self, source_url: str, source_type: str, metrics: "PipelineMetrics",
+        *, validation_session=None,
+    ) -> None:
+        """
+        Re-run the worst recall-shortfall pages from Phase A through the
+        SAME chunker/worker/storage stages, one deterministic retry-ladder
+        step at a time (processing.site_profile_store.next_retry_step).
+
+        Bounded two ways: only the recall_retry_max_pages worst offenders are
+        retried at all, and recall_retry_max_calls caps the TOTAL added Qwen
+        calls across every retry combined — a bad retry (e.g. a page that
+        renders into hundreds of chunks) can't silently double a run's cost.
+
+        On a successful retry (recall no longer counts as a shortfall) the
+        winning strategy is persisted immediately (`strategy_source="learned"`)
+        so the very next run of this source starts from it. On failure only
+        the ladder pointer advances, and two consecutive failed audits (this
+        run plus a future one, or two attempts within the same run's ladder)
+        flags the profile and forces a fresh probe next time — see
+        record_recall_outcome / needs_reprobe. Never loops: each page gets at
+        most one retry attempt per call to this method.
+        """
+        from config import settings
+        from processing.site_profile_store import (
+            get_profile, next_retry_step, apply_retry_result, record_recall_outcome,
+        )
+        from ingestion.worker_queue import PageItem, chunker_task, qwen_worker_task, storage_worker_task
+
+        shortfalls = metrics.shortfall_pages(
+            ratio=settings.recall_shortfall_ratio, min_gap=settings.recall_shortfall_min_gap,
+        )
+        if not shortfalls:
+            return
+
+        # Snapshot BEFORE any retry runs — metrics.per_page holds live
+        # PageOutcome references, not copies, and a retry mutates `extracted`
+        # on the SAME object (record_extraction just grows the set), so the
+        # pre-retry count must be captured now or it's lost.
+        candidates = [(o, o.expected, len(o.extracted)) for o in shortfalls[:settings.recall_retry_max_pages]]
+        calls_budget = settings.recall_retry_max_calls
+
+        async with httpx.AsyncClient(
+            headers=_HEADERS, timeout=self._http_timeout, follow_redirects=True, max_redirects=5,
+        ) as client:
+            for outcome, expected, old_count in candidates:
+                metrics.inc("recall_shortfalls")
+                if calls_budget <= 0:
+                    logger.info("[Scraper] Recall retry call budget exhausted — skipping remaining shortfalls")
+                    break
+
+                profile = get_profile(outcome.url)
+                if profile is None:
+                    continue  # defensive: expected>0 should always imply a profile exists
+
+                step = next_retry_step(profile, outcome, metrics)
+                if step is None:
+                    logger.info(f"[Scraper] Retry ladder exhausted for {outcome.url} — recording failure")
+                    record_recall_outcome(str(profile.id), expected=expected, extracted=old_count, recovered=False)
+                    continue
+
+                ladder_idx, new_strategy = step
+                metrics.inc("retries_attempted")
+                logger.info(
+                    f"[Scraper] Recall retry step {ladder_idx} for {outcome.url} "
+                    f"({old_count}/{expected} extracted so far)"
+                )
+
+                html = await self._fetch_page(
+                    client, outcome.url,
+                    force_render=new_strategy.needs_render, paginate=new_strategy.paginate,
+                    metrics=metrics,
+                )
+                if not html:
+                    apply_retry_result(str(profile.id), ladder_idx, new_strategy, recovered=False)
+                    record_recall_outcome(str(profile.id), expected=expected, extracted=old_count, recovered=False)
+                    continue
+
+                content = extract_content(html, outcome.url, new_strategy)
+
+                # Pre-flight cost check for the two structural chunk kinds,
+                # where the exact call count is knowable before running
+                # anything (one call per card, or ceil(names/batch_size) for
+                # a name batch) — found live 3 Aug: halving names_per_chunk
+                # on zollhof's 117-item grid alone needed 39 calls, already
+                # over the whole batch's 30-call ceiling on its own. The
+                # per-candidate budget check above only stops the NEXT
+                # candidate, not one already in flight, so this page would
+                # have silently overshot without a pre-flight estimate.
+                if new_strategy.chunking == "name_batch" and content.entity_names:
+                    n = new_strategy.names_per_chunk or 6
+                    est_calls = -(-len(content.entity_names) // max(1, n))  # ceil
+                elif new_strategy.chunking == "per_card" and content.entity_blocks:
+                    est_calls = len(content.entity_blocks)
+                else:
+                    est_calls = None  # prose/full_text: bounded by content length in practice, not pre-estimated
+
+                if est_calls is not None and est_calls > calls_budget:
+                    logger.info(
+                        f"[Scraper] Recall retry for {outcome.url} would need ~{est_calls} calls, "
+                        f"only {calls_budget} left in budget — skipping rather than overshoot"
+                    )
+                    record_recall_outcome(str(profile.id), expected=expected, extracted=old_count, recovered=False)
+                    continue
+
+                page_item = PageItem(
+                    url=outcome.url, text=content.text, source_type=source_type, source_url=source_url,
+                    strategy=new_strategy, entity_names=content.entity_names, entity_blocks=content.entity_blocks,
+                    expected_entity_count=expected,
+                )
+
+                # A tiny dedicated single-page mini-pipeline through the SAME
+                # stage functions the real crawl used — guarantees identical
+                # filter-bypass rules, StorageItem construction, and real
+                # upsert_startup writes, with no duplicated logic.
+                pq, cq, sq = asyncio.Queue(), asyncio.Queue(), asyncio.Queue()
+                await pq.put(page_item)
+                await pq.put(None)
+                calls_before = metrics.qwen_calls
+                await asyncio.gather(
+                    chunker_task(pq, cq, metrics),
+                    qwen_worker_task(cq, sq, metrics, 0, validation_session=validation_session),
+                    storage_worker_task(sq, metrics, 1, validation_session=validation_session),
+                )
+                calls_budget -= (metrics.qwen_calls - calls_before)
+
+                new_count = len(outcome.extracted)  # same PageOutcome, now grown by the retry
+                new_ratio = (new_count / expected) if expected else 1.0
+                recovered = (
+                    new_ratio >= settings.recall_shortfall_ratio
+                    or (expected - new_count) < settings.recall_shortfall_min_gap
+                )
+                if recovered:
+                    metrics.inc("retries_recovered")
+                    logger.info(f"[Scraper] Recall retry recovered {outcome.url}: {new_count}/{expected}")
+                else:
+                    logger.info(f"[Scraper] Recall retry did not recover {outcome.url}: {new_count}/{expected}")
+
+                apply_retry_result(str(profile.id), ladder_idx, new_strategy, recovered=recovered)
+                record_recall_outcome(str(profile.id), expected=expected, extracted=new_count, recovered=recovered)
 
     # ── BFS Crawler Task ──────────────────────────────────────────────────────
 
@@ -445,7 +598,7 @@ class WebScraper:
         """
         from ingestion.worker_queue import PageItem
         from config import settings
-        from ingestion.strategy import PageStrategy
+        from ingestion.strategy import PageStrategy, ENTITY_SHAPES
 
         adaptive = settings.adaptive_pipeline_enabled
 
@@ -526,6 +679,24 @@ class WebScraper:
                         metrics.inc("profile_probes")
                     except Exception as exc:
                         logger.debug(f"[Scraper] deterministic profile derivation failed for {current_url}: {exc}")
+                elif adaptive and known_profile is not None and strategy.page_shape in ENTITY_SHAPES:
+                    # expected_entity_count must be recomputed fresh from
+                    # THIS page's actual current content on every run — never
+                    # trusted from the cached profile — so a site redesign is
+                    # noticed even though the STRATEGY (how to process the
+                    # page) is still reused from the cache. This is the R-0
+                    # safety property ("a cached count cannot notice a
+                    # redesign"); the R-5 recall audit depends on it being
+                    # real, not stale, or a shortfall would only ever measure
+                    # "did we match the last probe" rather than "did we match
+                    # what's actually here right now."
+                    try:
+                        from ingestion.site_inspector import probe_html
+                        from config.tuning_loader import get_inspector_config
+                        fresh_sig = probe_html(html, current_url, get_inspector_config())
+                        strategy = strategy.with_(expected_entity_count=fresh_sig.candidate_entity_count)
+                    except Exception as exc:
+                        logger.debug(f"[Scraper] fresh entity-count recompute failed for {current_url}: {exc}")
 
                 content = extract_content(html, current_url, strategy) if adaptive else PageContent(text=_extract_text(html))
 
@@ -739,6 +910,14 @@ class WebScraper:
                     break  # nothing new twice running — list is exhausted
             else:
                 stagnant = 0
+        else:
+            # Loop ran out of its click budget WITHOUT any break above — the
+            # page was still growing when the cap stopped us, not naturally
+            # exhausted. Phase R-5's retry-ladder step 4 signal: a higher
+            # max_load_more is worth trying, as opposed to a page that
+            # simply had nothing more to reveal.
+            if metrics is not None and clicks > 0:
+                metrics.pagination_hit_cap.add(url)
 
         if clicks:
             logger.info(f"[Scraper] Paginated {url} — {clicks} 'load more' step(s)")

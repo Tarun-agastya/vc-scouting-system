@@ -73,6 +73,18 @@ class Settings(BaseSettings):
     # live crawl/chunk/extract path yet. True threads the learned/adjudicated
     # strategy through fetch → chunk → extract for real.
     adaptive_pipeline_enabled: bool = False
+    # Phase R-5 — recall audit + auto-retry. A page is a "shortfall" when it
+    # expected entities, actual recall fell below this ratio, AND the
+    # absolute gap clears recall_shortfall_min_gap (the floor stops thrash
+    # on small pages, where a 1-of-3 miss is a huge ratio but a trivial
+    # absolute loss). Phase B retries at most recall_retry_max_pages worst
+    # offenders, spending at most recall_retry_max_calls added Qwen calls
+    # across all of them combined — a hard ceiling so a bad retry can't
+    # silently double a run's cost.
+    recall_shortfall_ratio: float = 0.6
+    recall_shortfall_min_gap: int = 5
+    recall_retry_max_pages: int = 3
+    recall_retry_max_calls: int = 30
 
     # Deduplication / entity matching (Phase S-3 — multi-signal matcher)
     # All tunable via .env so matching behaviour can be calibrated against real
