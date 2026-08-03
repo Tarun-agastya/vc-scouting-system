@@ -84,28 +84,45 @@ def get_profile(url: str, db=None, *, strict: bool = False) -> Optional[SiteProf
     """
     Most specific match: exact path pattern -> domain default -> None.
 
-    strict=True skips the domain-default fallback — only an exact pattern
-    match counts, else None. Phase R-6: a detail page reached from a
-    listing's card ("one entity, described in depth") is almost always
-    structurally DIFFERENT from that listing page, so inheriting the
-    listing's own strategy (e.g. alt_harvest, appropriate for the grid, not
-    for an individual company's own page) is actively wrong — confirmed
-    live on baystartup.de, where detail pages fell back to the homepage's
-    logo_grid/alt_harvest profile and extracted nav/section-heading
-    fragments as if they were more portfolio-grid company names. Detail
-    pages must get their OWN fresh classification (store_deterministic)
-    unless a real, pattern-specific profile already exists for them.
+    strict=True skips the domain-default FALLBACK — a pattern that doesn't
+    have its own row never borrows the domain default's strategy, only an
+    exact pattern match counts (or the domain-default page itself, pattern
+    == "", which is always an exact match against its own row, never a
+    fallback). Two real bugs found live confirm the fallback is unsafe as a
+    general default, not just for Phase R-6's detail pages:
+
+    1. (R-6) A detail page reached from a listing's card ("one entity,
+       described in depth") is almost always structurally DIFFERENT from
+       that listing page — baystartup.de's detail pages fell back to the
+       homepage's logo_grid/alt_harvest profile and extracted nav/section-
+       heading fragments as more portfolio entries.
+    2. (R-7) An ORDINARY BFS-discovered subpage is just as likely to differ
+       from its domain's entry-page shape — techfounders.com's homepage
+       profiles as article_feed (correctly — it's a CTA/editorial page),
+       but its real portfolio page (/portfolio-start-ups/, 135 companies,
+       card_directory) silently inherited that article_feed/main_prose
+       strategy and lost 97 of 135 real companies to ordinary prose
+       chunking + the heuristic filter, entirely bypassing the structural
+       extraction that would have caught them.
+
+    Given a fresh store_deterministic probe is free (no LLM, ~20ms), there
+    is no real upside to guessing via a stale, possibly-unrelated sibling
+    page's strategy over just classifying the page actually in hand — so
+    strict is now the default at every call site in _crawler_task, not only
+    for detail pages.
     """
     owns = db is None
     db = db or SessionLocal()
     try:
         domain = normalize_domain(url)
         pattern = normalize_path_pattern(url)
-        if pattern:
-            hit = db.query(SiteProfile).filter_by(domain=domain, url_pattern=pattern).first()
-            if hit:
-                return hit
-        if strict:
+        # pattern == "" means THIS page IS the domain default — checking its
+        # own row here is an exact match, never a fallback, so it must run
+        # even under strict=True.
+        hit = db.query(SiteProfile).filter_by(domain=domain, url_pattern=pattern).first()
+        if hit:
+            return hit
+        if strict or not pattern:
             return None
         return db.query(SiteProfile).filter_by(domain=domain, url_pattern="").first()
     finally:

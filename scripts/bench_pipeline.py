@@ -103,6 +103,10 @@ def _print_report(r: dict) -> None:
         pct = round(secs / wall * 100) if wall else 0
         bar = "#" * min(50, round(pct / 2))
         print(f"    {stage:16s} {secs:7.1f}s  ({pct:4d}% of wall)  {bar}")
+    if r["names"]:
+        print(f"\n  Names ({len(r['names'])}):")
+        for n in r["names"]:
+            print(f"    - {n}")
 
 
 def _print_comparison(off: dict, on: dict) -> None:

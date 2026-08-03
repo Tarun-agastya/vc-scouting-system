@@ -101,8 +101,20 @@ SKIP_PATTERNS: frozenset = frozenset({
 # ── URL Utilities ─────────────────────────────────────────────────────────────
 
 def _base_domain(url: str) -> str:
-    """Return the lowercase netloc of a URL (used for domain-isolation checks)."""
-    return urlparse(url).netloc.lower()
+    """
+    Lowercase netloc, "www." stripped (used for domain-isolation checks).
+
+    Found live 3 Aug profiling techfounders.com for Phase R-7: the
+    registered primary_url is "https://www.techfounders.com", but the site
+    301-redirects to the bare "techfounders.com" and every internal link on
+    every page uses the bare form — so an exact-string domain comparison
+    made EVERY internal link look like a different domain and the crawl
+    could never expand past the entry page at all, regardless of anything
+    Phase R does. Same normalization site_profile_store.normalize_domain
+    already applies for exactly this reason.
+    """
+    netloc = urlparse(url).netloc.lower()
+    return netloc[4:] if netloc.startswith("www.") else netloc
 
 
 # Generic UI/icon alt text to drop when harvesting <img alt="..."> names —
@@ -681,15 +693,18 @@ class WebScraper:
                 known_profile = None
                 if adaptive:
                     from processing.site_profile_store import get_profile, strategy_from_profile
-                    # A detail page (parent_entity_name set) must never
-                    # silently inherit the domain-default profile — it's
-                    # almost always a structurally different shape than the
-                    # listing page that linked to it. strict=True means only
-                    # an exact-pattern profile counts as a hit; otherwise
-                    # this falls through to the same fresh
-                    # store_deterministic path an ordinary first-time page
-                    # uses below.
-                    known_profile = get_profile(current_url, strict=(parent_entity_name is not None))
+                    # strict=True unconditionally (Phase R-7): a page never
+                    # silently inherits the domain-default profile's
+                    # strategy just because it lacks its own — confirmed
+                    # live on techfounders.com (an ordinary BFS-discovered
+                    # subpage, not just R-6's detail-link case) that the
+                    # fallback can silently misclassify a genuinely
+                    # different-shaped page and lose most of its recall to
+                    # plain prose chunking. A "miss" here always falls
+                    # through to the same fresh store_deterministic path
+                    # below, which is free (no LLM) and reads the page's
+                    # own actual content instead of guessing from a sibling.
+                    known_profile = get_profile(current_url, strict=True)
                     if known_profile is not None:
                         metrics.inc("profile_hits")
                         strategy = strategy_from_profile(known_profile)
