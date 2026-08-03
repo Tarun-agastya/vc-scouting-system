@@ -214,6 +214,22 @@ class PipelineMetrics:
     strategy_llm_calls:          int = 0
     strategy_llm_failures:       int = 0
 
+    # ── Bottleneck-testing instrumentation (3 Aug) ────────────────────────
+    # Cumulative wall-clock seconds spent inside each stage. Pure
+    # instrumentation, no behaviour change — always on, unrelated to the
+    # adaptive_pipeline_enabled flag. Because the 4-stage pipeline overlaps
+    # stages (that's the whole point of the queue architecture), these sum
+    # to MORE than total_processing_time when stages run concurrently —
+    # read them as "how much total work landed in this stage", not as a
+    # partition of wall-clock time. qwen_time_s vs total_processing_time is
+    # the most direct read of the GPU-mutex ceiling: with
+    # max_qwen_workers=1, qwen_time_s approaching total_processing_time
+    # means the extraction stage IS the bottleneck.
+    fetch_time_s:   float = 0.0   # crawler: static + Playwright fetch/render
+    chunk_time_s:   float = 0.0   # chunker: split + candidate-filter
+    qwen_time_s:    float = 0.0   # extraction worker: actual Ollama call time
+    storage_time_s: float = 0.0   # storage worker: upsert_startup calls
+
     # url -> PageOutcome. The recall audit (R-5) needs per-page expected-vs-
     # actual, not just run totals: a run can look healthy in aggregate while
     # one page silently yields nothing.
@@ -380,6 +396,7 @@ async def chunker_task(
             and strategy is not PageStrategy.DEFAULT
         )
 
+        _t0 = time.time()
         if adaptive:
             chunks, chunk_kind = _adaptive_chunks(item, strategy)
         else:
@@ -400,6 +417,7 @@ async def chunker_task(
             ]
         kept = len(relevant)
         filtered = total - kept
+        metrics.inc("chunk_time_s", time.time() - _t0)
 
         metrics.inc("chunks_created", total)
         metrics.inc("chunks_filtered", filtered)
@@ -495,6 +513,7 @@ def _qwen_extract_sync(
                     s["published_date"] = item.published_date
 
         metrics.inc("startups_extracted", len(startups))
+        metrics.inc("qwen_time_s", elapsed)
         for s in startups:
             metrics.record_extraction(item.page_url or item.source_url, s.get("name") or "")
         return startups, elapsed
@@ -502,6 +521,7 @@ def _qwen_extract_sync(
     except Exception as exc:
         elapsed = time.time() - t0
         metrics.inc("qwen_failures")
+        metrics.inc("qwen_time_s", elapsed)
         metrics.record_page_failure(item.page_url or item.source_url)
         logger.error(
             f"[Extract Worker] Chunk {item.chunk_num}/{item.total_chunks} failed "
@@ -625,6 +645,7 @@ async def storage_worker_task(
                 return
             continue
 
+        t0 = time.time()
         record_id, status = upsert_startup(
             item.startup_dict,
             item.source,
@@ -632,6 +653,7 @@ async def storage_worker_task(
             item.published_date,
             origin_url=item.origin_url or None,
         )
+        metrics.inc("storage_time_s", time.time() - t0)
 
         # ── Validation capture ────────────────────────────────────────────────
         if validation_session is not None:

@@ -148,6 +148,10 @@ _METRIC_FIELDS = (
     "detail_pages_followed", "recall_shortfalls", "retries_attempted",
     "retries_recovered", "profile_hits", "profile_misses", "profile_probes",
     "strategy_llm_calls", "strategy_llm_failures",
+    # Bottleneck-testing instrumentation (3 Aug) — cumulative per-stage
+    # wall-clock seconds, always on. See PipelineMetrics' own docstring for
+    # why these sum to more than total_processing_time (stages overlap).
+    "fetch_time_s", "chunk_time_s", "qwen_time_s", "storage_time_s",
 )
 
 
@@ -157,6 +161,8 @@ def _metrics_to_dict(metrics) -> dict:
         return {}
     out = {f: getattr(metrics, f, 0) for f in _METRIC_FIELDS}
     out["total_processing_time"] = round(getattr(metrics, "total_processing_time", 0.0), 1)
+    for _f in ("fetch_time_s", "chunk_time_s", "qwen_time_s", "storage_time_s"):
+        out[_f] = round(out[_f], 1)
     # Legacy alias — kept so any older consumer of the run-history shape keeps
     # working; the real field is duplicates_staged above.
     out["duplicates_detected"] = out["duplicates_staged"]

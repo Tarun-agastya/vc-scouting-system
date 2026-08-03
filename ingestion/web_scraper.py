@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -498,11 +499,13 @@ class WebScraper:
                 # its first crawl is never worse than before this phase.
                 page_force_render = force_render or (known_profile is not None and strategy.needs_render)
                 page_paginate = force_render or (known_profile is not None and strategy.paginate)
+                _fetch_t0 = time.time()
                 html = await self._fetch_page(
                     client, current_url,
                     force_render=page_force_render, paginate=page_paginate,
                     metrics=metrics if adaptive else None,
                 )
+                metrics.inc("fetch_time_s", time.time() - _fetch_t0)
                 if not html:
                     metrics.inc("pages_skipped")
                     continue
