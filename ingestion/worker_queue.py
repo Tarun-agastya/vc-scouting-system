@@ -447,6 +447,7 @@ async def chunker_task(
                 total_chunks=kept,
                 published_date=item.published_date,
                 chunk_kind=chunk_kind,
+                entity_hint=item.parent_entity_name,
                 page_url=item.url,
             ))
 

@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     recall_shortfall_min_gap: int = 5
     recall_retry_max_pages: int = 3
     recall_retry_max_calls: int = 30
+    # Phase R-6 — detail-page following. A name-only logo grid's per-company
+    # detail links come out of the SAME max_pages budget as everything else
+    # (never a separate allowance), capped at this share so enrichment can
+    # never starve the listing crawl itself of its own page budget.
+    crawl_detail_page_share: float = 0.6
 
     # Deduplication / entity matching (Phase S-3 — multi-signal matcher)
     # All tunable via .env so matching behaviour can be calibrated against real

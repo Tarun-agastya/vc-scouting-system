@@ -80,8 +80,22 @@ def _resolve_source_id(url: str) -> Optional[str]:
     return None
 
 
-def get_profile(url: str, db=None) -> Optional[SiteProfile]:
-    """Most specific match: exact path pattern -> domain default -> None."""
+def get_profile(url: str, db=None, *, strict: bool = False) -> Optional[SiteProfile]:
+    """
+    Most specific match: exact path pattern -> domain default -> None.
+
+    strict=True skips the domain-default fallback — only an exact pattern
+    match counts, else None. Phase R-6: a detail page reached from a
+    listing's card ("one entity, described in depth") is almost always
+    structurally DIFFERENT from that listing page, so inheriting the
+    listing's own strategy (e.g. alt_harvest, appropriate for the grid, not
+    for an individual company's own page) is actively wrong — confirmed
+    live on baystartup.de, where detail pages fell back to the homepage's
+    logo_grid/alt_harvest profile and extracted nav/section-heading
+    fragments as if they were more portfolio-grid company names. Detail
+    pages must get their OWN fresh classification (store_deterministic)
+    unless a real, pattern-specific profile already exists for them.
+    """
     owns = db is None
     db = db or SessionLocal()
     try:
@@ -91,6 +105,8 @@ def get_profile(url: str, db=None) -> Optional[SiteProfile]:
             hit = db.query(SiteProfile).filter_by(domain=domain, url_pattern=pattern).first()
             if hit:
                 return hit
+        if strict:
+            return None
         return db.query(SiteProfile).filter_by(domain=domain, url_pattern="").first()
     finally:
         if owns:

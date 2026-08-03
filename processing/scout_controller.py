@@ -364,6 +364,7 @@ class ScoutController:
                         force_render: bool = False) -> dict:
         from ingestion.web_scraper import web_scraper
         from ingestion.worker_queue import PipelineMetrics
+        from config import settings
 
         # Create the metrics object here (not inside scrape_source) and attach
         # it to the run record BEFORE the scrape starts, so /ingestion/status
@@ -371,8 +372,28 @@ class ScoutController:
         # not just after it finishes.
         live = PipelineMetrics()
         rec.live_metrics = live
+
+        # Phase R-6: a source's own domain-default SiteProfile can override
+        # the global crawl_max_pages/crawl_max_depth (NULL = no override,
+        # the global default applies exactly as before this existed — every
+        # profile today has NULL here, so this is a no-op until a profile
+        # actually sets one). Previously nothing ever passed these through,
+        # so no source could have its own reach regardless of what a profile
+        # said.
+        max_pages = max_depth = None
+        if settings.adaptive_pipeline_enabled:
+            try:
+                from processing.site_profile_store import get_profile
+                profile = get_profile(url)
+                if profile is not None:
+                    max_pages = profile.max_pages
+                    max_depth = profile.max_depth
+            except Exception as exc:
+                logger.debug(f"[ScoutController] profile lookup failed for {url}: {exc}")
+
         result = await web_scraper.scrape_source(
-            url, source_type, force_render=force_render, metrics=live
+            url, source_type, max_depth=max_depth, max_pages=max_pages,
+            force_render=force_render, metrics=live,
         )
         return _metrics_to_dict(result)
 

@@ -218,6 +218,7 @@ class PageContent:
     text: str = ""
     entity_names: list = field(default_factory=list)
     entity_blocks: list = field(default_factory=list)  # [(name_or_None, text), ...]
+    entity_links: list = field(default_factory=list)   # [(name_or_None, absolute_href_or_None), ...]
     structural_count: int = 0
 
 
@@ -286,10 +287,18 @@ def extract_content(html: str, url: str, strategy=None) -> "PageContent":
         if g is None:
             return PageContent(text=_extract_text(html))
         names = g.names()
+        # (name, absolute href) per card, regardless of mode — Phase R-6's
+        # detail-page following needs to know which company a link came
+        # from, and this is the one place that information (card membership)
+        # is available; _extract_links() has no such scoping.
+        links = [
+            (i.name, urljoin(url, i.href) if i.href else None)
+            for i in g.items
+        ]
         if mode == "alt_harvest":
-            return PageContent(text="", entity_names=names, structural_count=g.n)
+            return PageContent(text="", entity_names=names, entity_links=links, structural_count=g.n)
         blocks = [(i.name, i.text) for i in g.items if i.text]
-        return PageContent(text="", entity_names=names, entity_blocks=blocks, structural_count=g.n)
+        return PageContent(text="", entity_names=names, entity_blocks=blocks, entity_links=links, structural_count=g.n)
 
     return PageContent(text=_extract_text(html))
 
@@ -327,6 +336,20 @@ def _is_irrelevant_url(url: str) -> bool:
     """
     path_parts = urlparse(url).path.lower().strip("/").split("/")
     return any(part in SKIP_PATTERNS for part in path_parts if part)
+
+
+def _matches_detail_pattern(url: str, pattern: str) -> bool:
+    """
+    True if url's path falls genuinely UNDER a detail_link_pattern like
+    "/startupdate/*" (the shape site_inspector._detail_link_pattern
+    produces) — the prefix itself doesn't count as a match, only a real
+    sub-path beneath it (Phase R-6).
+    """
+    if not pattern or not pattern.endswith("/*"):
+        return False
+    prefix = pattern[:-1]  # keep the trailing "/"
+    path = urlparse(url).path
+    return path.startswith(prefix) and len(path) > len(prefix)
 
 
 # ── Scraper ───────────────────────────────────────────────────────────────────
@@ -605,15 +628,33 @@ class WebScraper:
         allowed_domain = _base_domain(start_url)
         visited: set = set()
         queued: set = {start_url}   # everything ever enqueued (dedupe the frontier)
-        # Two-tier priority frontier: high-value startup/portfolio pages
-        # (_url_priority == 0) are drained BEFORE generic section/nav pages, so
-        # the page budget reaches actual startup content instead of being spent
-        # on "about / events / news" first. FIFO within each tier keeps the
-        # crawl breadth-first and stable.
+        # Three-tier priority frontier. frontier_detail (Phase R-6) drains
+        # FIRST — per-company detail pages from a name-only logo grid are the
+        # single highest-value thing this crawl can spend its budget on, more
+        # so than even a generic "startup/portfolio" nav link. Capped
+        # separately (detail_budget below) so enrichment can never starve the
+        # listing crawl of its own reach. frontier_high/frontier_low keep
+        # their existing meaning unchanged.
+        frontier_detail: deque = deque()
         frontier_high: deque = deque()
-        frontier_low: deque = deque([(start_url, 0)])
+        frontier_low: deque = deque([(start_url, 0, None)])
+        detail_pages_visited = 0
+        detail_budget = int(max_pages * settings.crawl_detail_page_share)
+
+        def _detail_available() -> bool:
+            return bool(frontier_detail) and detail_pages_visited < detail_budget
+
+        def _has_more() -> bool:
+            # Mirrors _next()'s own availability logic exactly — frontier_detail
+            # counts as "available" only under budget, so once its budget is
+            # exhausted its leftover entries are correctly abandoned rather
+            # than causing _next() to return None while the while-loop still
+            # thinks there's something to pop.
+            return _detail_available() or bool(frontier_high) or bool(frontier_low)
 
         def _next():
+            if _detail_available():
+                return frontier_detail.popleft()
             if frontier_high:
                 return frontier_high.popleft()
             if frontier_low:
@@ -626,18 +667,29 @@ class WebScraper:
             follow_redirects=True,
             max_redirects=5,
         ) as client:
-            while (frontier_high or frontier_low) and len(visited) < max_pages:
-                current_url, depth = _next()
+            while _has_more() and len(visited) < max_pages:
+                current_url, depth, parent_entity_name = _next()
 
                 if current_url in visited:
                     continue
                 visited.add(current_url)
+                if parent_entity_name is not None:
+                    detail_pages_visited += 1
+                    metrics.inc("detail_pages_followed")
 
                 strategy = PageStrategy.DEFAULT
                 known_profile = None
                 if adaptive:
                     from processing.site_profile_store import get_profile, strategy_from_profile
-                    known_profile = get_profile(current_url)
+                    # A detail page (parent_entity_name set) must never
+                    # silently inherit the domain-default profile — it's
+                    # almost always a structurally different shape than the
+                    # listing page that linked to it. strict=True means only
+                    # an exact-pattern profile counts as a hit; otherwise
+                    # this falls through to the same fresh
+                    # store_deterministic path an ordinary first-time page
+                    # uses below.
+                    known_profile = get_profile(current_url, strict=(parent_entity_name is not None))
                     if known_profile is not None:
                         metrics.inc("profile_hits")
                         strategy = strategy_from_profile(known_profile)
@@ -700,28 +752,58 @@ class WebScraper:
 
                 content = extract_content(html, current_url, strategy) if adaptive else PageContent(text=_extract_text(html))
 
-                if content.text or content.entity_names or content.entity_blocks:
+                page_text = content.text
+                if parent_entity_name:
+                    # Phase R-6: this page was reached as a per-company
+                    # detail link harvested from inside a listing card — the
+                    # name is a string literally harvested from that card
+                    # (H-1 grounding applies verbatim, nothing invented). The
+                    # prefix is the only signal the extractor needs to
+                    # correctly attribute this page's fields to that company;
+                    # everything downstream (upsert_startup, the matcher)
+                    # runs completely unchanged.
+                    page_text = f"Company: {parent_entity_name}\n\n{page_text}" if page_text else f"Company: {parent_entity_name}"
+
+                if page_text or content.entity_names or content.entity_blocks:
                     if adaptive and strategy.expects_entities:
                         metrics.record_expectation(
                             current_url, strategy.expected_entity_count, shape=strategy.page_shape,
                         )
                     await page_queue.put(PageItem(
                         url=current_url,
-                        text=content.text,
+                        text=page_text,
                         source_type=source_type,
                         source_url=start_url,
                         strategy=strategy if adaptive else None,
                         entity_names=content.entity_names,
                         entity_blocks=content.entity_blocks,
                         expected_entity_count=strategy.expected_entity_count if adaptive else 0,
+                        parent_entity_name=parent_entity_name,
                     ))
                     metrics.inc("pages_crawled")
                     logger.debug(
                         f"[Scraper] [{depth}] Crawled {current_url} "
-                        f"({len(content.text)} chars, {len(content.entity_names)} entities)"
+                        f"({len(page_text)} chars, {len(content.entity_names)} entities)"
                     )
                 else:
                     metrics.inc("pages_skipped")
+
+                # Phase R-6: harvest per-company detail links from THIS
+                # page's own primary group, if its strategy says to. Gated
+                # deterministically (strategy.follow_detail_links is only
+                # ever True for a name-only logo grid the LLM confirmed
+                # benefits from it — see next_retry_step's sibling logic in
+                # derive_strategy_deterministic/_adjudicate_with_llm) — never
+                # decided here, this block only acts on what was already
+                # decided.
+                if adaptive and strategy.follow_detail_links and strategy.detail_link_pattern and content.entity_links:
+                    for name, href in content.entity_links:
+                        if not href or href in queued or _base_domain(href) != allowed_domain:
+                            continue
+                        if not _matches_detail_pattern(href, strategy.detail_link_pattern):
+                            continue
+                        queued.add(href)
+                        frontier_detail.append((href, depth + 1, name))
 
                 # Only enqueue children if we haven't reached max depth
                 if depth < max_depth:
@@ -732,7 +814,7 @@ class WebScraper:
                             logger.debug(f"[Scraper] Skipping irrelevant URL: {link}")
                             continue
                         queued.add(link)
-                        item = (link, depth + 1)
+                        item = (link, depth + 1, None)
                         if _url_priority(link) == 0:
                             frontier_high.append(item)
                         else:
