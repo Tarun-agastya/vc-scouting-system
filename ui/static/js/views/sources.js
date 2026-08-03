@@ -41,10 +41,12 @@ function entryProfileFor(profiles, primaryUrl) {
   return profiles.find((p) => p.domain === domain && p.url_pattern === "") || null;
 }
 
+const ENTITY_SHAPES = new Set(["logo_grid", "card_directory", "detail_page"]);
+
 function shapeChip(profile) {
   if (!profile) return `<span class="dim" style="font-size:12px">not profiled yet</span>`;
   const label = SHAPE_LABEL[profile.page_shape] || profile.page_shape;
-  const expects = profile.expected_entity_count > 0;
+  const expects = ENTITY_SHAPES.has(profile.page_shape) && profile.expected_entity_count > 0;
   return `<span class="row" style="gap:5px;font-size:12px" title="${esc(profile.reason)}">
     <span>${esc(label)}</span>
     ${expects ? `<span class="dim">· ${profile.expected_entity_count} expected</span>` : ""}

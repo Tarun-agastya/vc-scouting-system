@@ -239,6 +239,67 @@ def _ground_startup(s: dict, source_text: str, cfg: dict) -> dict:
 logger = logging.getLogger(__name__)
 
 
+def _site_strategy_context(url: str, signals: dict, deterministic: dict, own_pattern: str) -> dict:
+    """
+    Turn StructuralSignals.to_dict() / PageStrategy.to_dict() into the exact
+    kwargs SITE_STRATEGY_PROMPT expects — a compact, human-readable summary,
+    never raw HTML, never the full nested dicts (a 7B model does better with
+    a short prose-like card than with dumped JSON, the same lesson every
+    other prompt in this module already follows).
+    """
+    def pct(v) -> str:
+        return f"{round((v or 0) * 100)}%"
+
+    group = signals.get("primary_group")
+    if group:
+        group_summary = (
+            f"{group['signature']}  n={group['n']}  score={group['score']}\n"
+            f"  linked: {pct(group['frac_with_link'])}  distinct links: {pct(group['frac_unique_href'])}  "
+            f"distinct names: {pct(group['frac_unique_name'])}\n"
+            f"  with image: {pct(group['frac_with_img'])}  with heading: {pct(group['frac_with_heading'])}  "
+            f"headline-shaped names: {pct(group['frac_headline_names'])}\n"
+            f"  median item text: {group['median_text_len']} chars  name-only: {group['name_only']}\n"
+            f"  sample names: {group['sample_names']}"
+        )
+    else:
+        group_summary = "none — no repeating structural group cleared the detection threshold"
+
+    others = signals.get("other_groups") or []
+    other_groups_summary = (
+        "; ".join(f"{g['signature']} n={g['n']} score={g['score']}" for g in others[:4])
+        if others else "none"
+    )
+
+    jsonld_types = signals.get("jsonld_types") or {}
+    jsonld_summary = (
+        f"{signals.get('jsonld_item_count', 0)} item(s), types: {jsonld_types}"
+        if jsonld_types else "none found"
+    )
+
+    render_gain = signals.get("render_gain")
+    render_gain_str = f"{render_gain}x" if render_gain is not None else "not tested (rendered directly)"
+
+    return {
+        "url": url,
+        "own_pattern": own_pattern or "(domain default)",
+        "text_len": signals.get("text_len", 0),
+        "render_gain": render_gain_str,
+        "prose_density": signals.get("prose_density", 0),
+        "link_density": signals.get("link_density", 0),
+        "jsonld_summary": jsonld_summary,
+        "pagination_kind": signals.get("pagination_kind") or "none detected",
+        "group_summary": group_summary,
+        "other_groups_summary": other_groups_summary,
+        "detail_link_pattern": signals.get("detail_link_pattern") or "none detected",
+        "detail_link_coverage": pct(signals.get("detail_link_coverage")),
+        "det_page_shape": deterministic.get("page_shape", "unknown"),
+        "det_text_extraction": deterministic.get("text_extraction", "full_text"),
+        "det_chunking": deterministic.get("chunking", "sliding_window"),
+        "det_needs_render": deterministic.get("needs_render", False),
+        "det_reason": deterministic.get("reason", ""),
+    }
+
+
 class QwenClient:
     """
     Thin wrapper around Ollama for Qwen3:14b inference.
@@ -258,6 +319,7 @@ class QwenClient:
         self._verify_ollama_client = None  # lazy verify client (14B, 180s timeout)
         self._classify_ollama_client = None # lazy classify client (7B, 120s timeout)
         self._web_verify_ollama_client = None  # lazy web-verify client (14B, 300s timeout)
+        self._site_strategy_ollama_client = None  # lazy site-strategist client (14B, 240s timeout)
         # Derived from max_qwen_workers so config and semaphore stay in sync.
         self._semaphore = threading.Semaphore(settings.max_qwen_workers)
 
@@ -343,6 +405,40 @@ class QwenClient:
                 timeout=120,
             )
         return self._classify_ollama_client
+
+    def _site_strategy_client(self):
+        """
+        Separate client for Phase R-3's site strategist. Runs on the 14B
+        REASONING model (self.model), not the 7B extraction model the rest
+        of this file's docstring/plan initially specified — deviation
+        confirmed necessary live, 3 Aug: the 7B model agreed with every
+        deterministic verdict handed to it verbatim, INCLUDING two real,
+        already-known-wrong ones (uni-augsburg.de and cdtm.de's homepage
+        hero/CTA sections, whose sample names are literally "Newsletter",
+        "Social Media", "Meet them" — not companies), even after a
+        strengthened prompt with an explicit worked counter-example. The 14B
+        model, given the EXACT SAME prompt, correctly caught both
+        (page_shape: non_content, "sample names include UI labels, page
+        copy, and asset labels"). This is a genuine judgment task — telling
+        a marketing block from a real company directory from short text
+        samples — not the simple enum-pick classify_startup() does, and it
+        matches this project's own established two-tier split (14B for
+        judgment, dozens of calls; 7B for volume, thousands of calls): this
+        call happens once per (domain, url_pattern), cached for
+        settings.site_profile_ttl_days, so 14B's extra latency (~78s
+        observed) is negligible at the actual call volume.
+
+        240s timeout, matching _verify_client() — same model, same
+        <think>-then-structured-output shape, same empirically-needed
+        headroom.
+        """
+        if self._site_strategy_ollama_client is None:
+            import ollama
+            self._site_strategy_ollama_client = ollama.Client(
+                host=self.base_url,
+                timeout=240,
+            )
+        return self._site_strategy_ollama_client
 
     def extract_startups(self, text: str) -> list:
         """
@@ -585,6 +681,108 @@ class QwenClient:
                 last_exc = exc
                 if attempt == 0:
                     logger.warning(f"[Classify] Attempt 1 failed ({exc}), retrying in 2s…")
+                    time.sleep(2)
+
+        raise last_exc
+
+    def decide_site_strategy(self, url: str, signals: dict, deterministic: dict, own_pattern: str) -> list:
+        """
+        Phase R-3: ask the small model to confirm or correct the deterministic
+        page-shape verdict (Phase R-1) for one already-probed page, given only
+        its STRUCTURAL SIGNALS — never raw HTML, never a second fetch. Cheap
+        enough to cache indefinitely per (domain, url_pattern): this call
+        happens once per source pattern, not once per crawl.
+
+        `signals` / `deterministic` are StructuralSignals.to_dict() /
+        PageStrategy.to_dict() for the SAME probe (see
+        ingestion/site_inspector.py, ingestion/strategy.py). `own_pattern` is
+        the normalized url_pattern this specific page represents (see
+        processing/site_profile_store.py::normalize_path_pattern).
+
+        expected_entity_count is deliberately never asked for — the model
+        must never invent a count (the H-1 grounding lesson applied one layer
+        up). Counts stay purely structural, recomputed fresh per page per
+        crawl by the caller, never from this call's output.
+
+        Returns a list of 1-3 profile dicts (see the schema below); the
+        first always describes `own_pattern` itself, and an optional second
+        may describe a detail_link_pattern this page links to — how "one
+        call per source" survives a domain whose listing and detail pages
+        need different handling.
+
+        Raises on repeated failure — the caller
+        (processing/site_profile_store.py) always has the deterministic
+        strategy as a safe, non-LLM fallback and decides whether to use it;
+        this call is an adjudication, never a requirement.
+
+        Runs on the 14B REASONING model (see _site_strategy_client's
+        docstring for why: this is a genuine judgment task the 7B extraction
+        model demonstrably fails at, confirmed live on real pages).
+        """
+        from ingestion.strategy import PAGE_SHAPES, TEXT_MODES, CHUNK_MODES
+        from reasoning.prompts import SYSTEM_SITE_STRATEGIST, SITE_STRATEGY_PROMPT
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "profiles": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "url_pattern":             {"type": "string"},
+                            "page_shape":              {"type": "string", "enum": list(PAGE_SHAPES)},
+                            "text_extraction":         {"type": "string", "enum": list(TEXT_MODES)},
+                            "chunking":                {"type": "string", "enum": list(CHUNK_MODES)},
+                            "needs_render":            {"type": "boolean"},
+                            "paginate":                {"type": "boolean"},
+                            "follow_detail_links":     {"type": "boolean"},
+                            "bypass_candidate_filter": {"type": "boolean"},
+                            "confidence":              {"type": "string", "enum": ["high", "medium", "low"]},
+                            "reason":                  {"type": "string"},
+                        },
+                        "required": [
+                            "url_pattern", "page_shape", "text_extraction", "chunking",
+                            "needs_render", "paginate", "follow_detail_links",
+                            "bypass_candidate_filter", "confidence", "reason",
+                        ],
+                    },
+                },
+            },
+            "required": ["profiles"],
+        }
+
+        prompt = SITE_STRATEGY_PROMPT.format(**_site_strategy_context(url, signals, deterministic, own_pattern))
+        messages = [
+            {"role": "system", "content": SYSTEM_SITE_STRATEGIST},
+            {"role": "user", "content": prompt},
+        ]
+        last_exc: Exception = RuntimeError("no attempts made")
+        for attempt in range(2):
+            try:
+                with self._semaphore:
+                    response = self._site_strategy_client().chat(
+                        model=self.model,
+                        messages=messages,
+                        format=schema,
+                        # num_predict generous like recheck_record's, not classify_startup's
+                        # 250: Qwen3's <think> block can run several hundred tokens before
+                        # the model reaches the actual JSON, and a tight cap here was the
+                        # documented cause of empty/truncated output on other 14B calls.
+                        options={"temperature": 0, "num_predict": 1500, "num_ctx": 8192},
+                    )
+                content = self._strip_thinking(response["message"]["content"])
+                data = json.loads(content)
+                profiles = data.get("profiles") or []
+                if not profiles:
+                    raise ValueError("model returned an empty profiles array")
+                return profiles
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 0:
+                    logger.warning(f"[SiteStrategy] Attempt 1 failed ({exc}), retrying in 2s…")
                     time.sleep(2)
 
         raise last_exc

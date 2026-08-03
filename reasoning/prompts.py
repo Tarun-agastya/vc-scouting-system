@@ -388,3 +388,118 @@ Classify this company:
 If the company is genuinely generic or doesn't fit any specific tech cluster,
 use "Other / Uncategorized" for both industry and tech_cluster. Do not guess a
 specific-sounding category that doesn't actually match the description."""
+
+# ── Phase R-3: site strategist (adaptive web extraction) ───────────────────
+# One cached call per source. The deterministic structural inspector (Phase
+# R-1) always runs first and produces a verdict on its own — this call only
+# confirms or corrects it, and is never load-bearing (Ollama down / a
+# malformed response / the settings.site_strategy_llm_enabled kill switch all
+# fall back to the deterministic verdict with no loss of function). See
+# ingestion/site_inspector.py::derive_strategy_deterministic and
+# processing/site_profile_store.py for the callers.
+
+SYSTEM_SITE_STRATEGIST = """You are a web-page structure classifier for a
+startup-scouting crawler. You are given a compact STATISTICAL SUMMARY of a
+page's structure — counts, ratios, and a few sample item names — never the
+raw HTML. You are not browsing the page; reason only from the numbers and
+sample names given. Return ONLY valid JSON matching the required schema. No
+markdown, no prose outside the JSON."""
+
+SITE_STRATEGY_PROMPT = """A page was structurally analyzed for a startup-scouting crawler.
+
+URL: {url}
+This page's own pattern (always include a profile for this exact pattern): {own_pattern}
+
+Fetch: {text_len} chars of text, render gain over a plain static fetch: {render_gain}
+Prose density: {prose_density} (higher = more running text, lower = more structural/linky)
+Link density: {link_density} (share of text that is inside links)
+JSON-LD: {jsonld_summary}
+Pagination detected: {pagination_kind}
+
+Primary repeating group: {group_summary}
+
+Other candidate groups on the page (weaker, did not win): {other_groups_summary}
+
+Detail links: {detail_link_pattern} (coverage {detail_link_coverage} of the primary group's items)
+
+DETERMINISTIC VERDICT (a rules-based classifier already produced this — your
+job is to confirm or correct it, citing what in the numbers/names above
+changes your mind if you disagree):
+  page_shape: {det_page_shape}
+  text_extraction: {det_text_extraction}
+  chunking: {det_chunking}
+  needs_render: {det_needs_render}
+  reason: {det_reason}
+
+page_shape options and what each means:
+- logo_grid: a repeating group of items that carry ONLY a name — no real
+  per-item description (a portfolio wall, a sponsor strip).
+- card_directory: a repeating group whose items each carry real content (a
+  name plus a description, price, or other substantive text) — a genuine
+  directory of distinct entities.
+- detail_page: this page describes ONE entity in depth, not a list.
+- prose_listing: entities are mentioned in running prose/paragraphs, not a
+  repeating structural group.
+- article_feed: a repeating group of NEWS, EVENTS, or BLOG POSTS — the
+  sample names read as headlines or event titles, not proper-noun entity
+  names, even though the group structurally repeats just like a real
+  directory would. This is the single most common mistake to correct: a
+  clean, well-scored repeating group is not automatically a company
+  directory.
+- mixed: a genuine blend of more than one of the above on the same page.
+- non_content: navigation, legal, contact, marketing/CTA blocks — nothing
+  worth extracting here.
+
+Before deciding, read the sample names ONE AT A TIME and ask of each: "is
+this the proper name of a distinct company?" A high score, a high
+distinct-names percentage, and a clean structural match mean the PAGE
+STRUCTURE is a real repeating group — they say NOTHING about whether its
+CONTENTS are companies. A hero/CTA section, a site's own footer menu, or a
+"quick links" block can score just as well structurally as a real portfolio
+grid; the sample names are the only signal that tells them apart, so they
+must win over the structural score whenever the two disagree.
+
+Worked example — do not copy this verbatim, it illustrates the reasoning:
+  sample names: ['StartHub-Titelbild', 'Der StartHub ist die zentrale
+  Anlaufstelle für alle Gründungsinteressierten...', 'Newsletter', 'Social
+  Media', 'Imagefilm']
+  -> None of these is a company name. "Newsletter" and "Social Media" are
+  generic UI labels; the long sentence is page copy, not an entity name;
+  "StartHub-Titelbild"/"Imagefilm" are asset/section labels. Correct verdict:
+  non_content — regardless of how high the group's structural score was.
+  Compare with a page whose sample names are ['Nouma Autonomy', 'WeSort.AI
+  GmbH', 'e-laborate', 'SmartCitySystems'] — each IS a distinct, plausible
+  company name (even though some are unfamiliar) — THAT is a real logo_grid
+  or card_directory, correctly kept as such.
+
+Return:
+- profiles: 1 to 3 entries, in this exact order:
+  1. ALWAYS first: your adjudication of THIS page (the verdict above).
+     Set url_pattern to exactly the literal text shown after "This page's own
+     pattern" near the top — copy it character-for-character, including if
+     it is the literal text "(domain default)".
+  2. OPTIONAL second entry: only if a detail_link_pattern was reported above
+     AND you believe it leads to individual entity pages (not e.g. news
+     articles) — describing what a detail page there would likely look like
+     (typically page_shape "detail_page", text_extraction "main_prose" or
+     "full_text"). Set its url_pattern to that detail_link_pattern value,
+     copied character-for-character. Only add this if the evidence above
+     genuinely supports it — do not invent a pattern with nothing backing it.
+  - Do not add a third entry unless you have equally concrete evidence for
+    it.
+  - The FIRST entry is always read as "this page" regardless of what its
+    url_pattern says — position 1 in the array matters, not just the text.
+  - text_extraction: card_structured (read each card's own text) |
+    alt_harvest (name-only items, e.g. logo_grid) | main_prose (extract the
+    page's main article text, e.g. a single detail_page or genuine
+    prose_listing) | full_text (fallback, whole-page plain text).
+  - chunking: per_card | name_batch | sliding_window | blurb.
+  - needs_render / paginate / follow_detail_links / bypass_candidate_filter:
+    booleans. bypass_candidate_filter should be true only for logo_grid or
+    card_directory (structurally-curated content that doesn't need a
+    relevance heuristic); false for article_feed/prose_listing/non_content.
+  - confidence: high | medium | low.
+  - reason: one short sentence.
+- Never state, imply, or estimate how many entities a page contains. That is
+  measured separately and freshly from the live page on every crawl — you
+  are not given that number and must not invent one."""

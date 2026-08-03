@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     # profiles are exempt — the manual override that replaces per-site
     # hand-tuning never expires on its own.
     site_profile_ttl_days: int = 30
+    # Phase R-3 kill switch. The deterministic structural strategy (Phase
+    # R-1) always runs first and is never blocked on this — the LLM only
+    # adjudicates it, so turning this off just means every profile stays
+    # deterministic-only, exactly like before R-3 shipped.
+    site_strategy_llm_enabled: bool = True
 
     # Deduplication / entity matching (Phase S-3 — multi-signal matcher)
     # All tunable via .env so matching behaviour can be calibrated against real

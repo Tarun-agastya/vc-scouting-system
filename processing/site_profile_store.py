@@ -162,36 +162,179 @@ async def probe_and_store(url: str, *, force: bool = False, client=None) -> Site
         sig = await _probe_url(url, client=client, force_render=already_renders, cfg=cfg)
         strat = derive_strategy_deterministic(sig, cfg)
 
+        # Phase R-3: the LLM only ADJUDICATES this — it never runs before the
+        # deterministic pass above and its failure never blocks a profile
+        # from being written. expected_entity_count is never touched by it;
+        # that stays purely structural, set from `strat` (or a speculative
+        # profile's own later real probe), never the model's output.
+        extra_profiles = []
+        if getattr(settings, "site_strategy_llm_enabled", True):
+            strat, extra_profiles = _adjudicate_with_llm(url, sig, strat, pattern)
+
         if row is None:
             row = SiteProfile(domain=domain, url_pattern=pattern)
             db.add(row)
 
-        row.source_id = _resolve_source_id(url)
-        row.page_shape = strat.page_shape
-        row.text_extraction = strat.text_extraction
-        row.chunking_mode = strat.chunking
-        row.needs_render = strat.needs_render
-        row.paginate = strat.paginate
-        row.follow_detail_links = strat.follow_detail_links
-        row.detail_link_pattern = strat.detail_link_pattern
-        row.bypass_candidate_filter = strat.bypass_candidate_filter
-        row.load_more_selector = strat.load_more_selector
-        row.expected_entity_count = strat.expected_entity_count
-        row.strategy_source = strat.source
-        row.confidence = strat.confidence
-        row.reason = strat.reason
-        row.signals = sig.to_dict()
-        row.probe_version = INSPECTOR_VERSION
-        row.probed_at = datetime.utcnow()
-        row.last_used_at = datetime.utcnow()
-        row.status = "active"
-        row.consecutive_shortfalls = 0
-        row.flag_reason = None
+        _apply_strategy(row, strat, source_id=_resolve_source_id(url), signals=sig.to_dict())
         db.commit()
+
+        # Store speculative (unprobed) profiles BEFORE the final refresh, not
+        # after: each one does its own db.commit(), and SQLAlchemy's default
+        # expire_on_commit=True expires every object already loaded into this
+        # session on EVERY commit — including `row`, previously refreshed.
+        # Refreshing here first would leave `row` expired again by the time
+        # this function returns, raising DetachedInstanceError on the
+        # caller's very first attribute access after db.close(). Found live
+        # 3 Aug testing against schwaben.digital, whose detail_link_pattern
+        # (/events/*) is exactly the case that produces a speculative entry.
+        for ep in extra_profiles:
+            _store_speculative_profile(db, domain, ep)
         db.refresh(row)
+
         return row
     finally:
         db.close()
+
+
+def _apply_strategy(row: SiteProfile, strat, *, source_id, signals) -> None:
+    """Write a PageStrategy onto a SiteProfile row. Shared by the real probe
+    path above and the speculative (unprobed) profile path below."""
+    from ingestion.site_inspector import INSPECTOR_VERSION
+
+    row.source_id = source_id
+    row.page_shape = strat.page_shape
+    row.text_extraction = strat.text_extraction
+    row.chunking_mode = strat.chunking
+    row.needs_render = strat.needs_render
+    row.paginate = strat.paginate
+    row.follow_detail_links = strat.follow_detail_links
+    row.detail_link_pattern = strat.detail_link_pattern
+    row.bypass_candidate_filter = strat.bypass_candidate_filter
+    row.load_more_selector = strat.load_more_selector
+    row.expected_entity_count = strat.expected_entity_count
+    row.strategy_source = strat.source
+    row.confidence = strat.confidence
+    row.reason = strat.reason
+    row.signals = signals
+    row.probe_version = INSPECTOR_VERSION
+    row.probed_at = datetime.utcnow()
+    row.last_used_at = datetime.utcnow()
+    row.status = "active"
+    row.consecutive_shortfalls = 0
+    row.flag_reason = None
+
+
+def _adjudicate_with_llm(url: str, sig, deterministic_strat, own_pattern: str):
+    """
+    Ask the cached strategist to confirm/correct the deterministic verdict.
+    Returns (strategy_for_this_page, [extra PageStrategy for OTHER patterns
+    the model inferred, e.g. a detail_link_pattern]).
+
+    Never raises — a failed/unreachable/malformed call logs a warning and
+    returns the deterministic strategy unchanged, exactly as if the kill
+    switch were off. This function is the ONLY place the override rule
+    lives: an LLM verdict disagreeing with a HIGH-confidence deterministic
+    signal loses on text_extraction/chunking specifically (those are what
+    actually drive extraction correctness); page_shape and the boolean flags
+    still take the LLM's adjudication, since that's the label/behaviour it
+    was asked to correct.
+    """
+    from reasoning.qwen_client import qwen_client
+    from ingestion.strategy import PageStrategy
+
+    try:
+        profiles = qwen_client.decide_site_strategy(
+            url, sig.to_dict(), deterministic_strat.to_dict(), own_pattern,
+        )
+    except Exception as exc:
+        logger.warning(f"[SiteStrategy] LLM adjudication failed for {url}: {exc} — keeping deterministic")
+        return deterministic_strat, []
+
+    # Position, not string-matching, decides which entry is "this page": the
+    # prompt instructs the model to always put it first, and a 7B model's
+    # echo of a literal pattern string (especially the "(domain default)"
+    # placeholder used for an empty pattern) isn't reliable enough to match
+    # against — confirmed live: schwaben.digital's response echoed
+    # "(domain default)" verbatim as url_pattern for what was unambiguously
+    # meant to be the "own" entry. Matching on it would have silently
+    # mis-sorted own vs. speculative for any multi-profile response.
+    own = profiles[0]
+    others = profiles[1:]
+
+    llm_strat = PageStrategy(
+        page_shape=own.get("page_shape", deterministic_strat.page_shape),
+        text_extraction=own.get("text_extraction", deterministic_strat.text_extraction),
+        chunking=own.get("chunking", deterministic_strat.chunking),
+        needs_render=bool(own.get("needs_render", deterministic_strat.needs_render)),
+        paginate=bool(own.get("paginate", deterministic_strat.paginate)),
+        follow_detail_links=bool(own.get("follow_detail_links", deterministic_strat.follow_detail_links)),
+        detail_link_pattern=deterministic_strat.detail_link_pattern,  # structural fact, not the LLM's to set
+        bypass_candidate_filter=bool(own.get("bypass_candidate_filter", deterministic_strat.bypass_candidate_filter)),
+        expected_entity_count=deterministic_strat.expected_entity_count,  # NEVER from the LLM
+        confidence=own.get("confidence", "low"),
+        reason=own.get("reason", ""),
+        source="llm",
+    )
+
+    disagrees = (
+        llm_strat.text_extraction != deterministic_strat.text_extraction
+        or llm_strat.chunking != deterministic_strat.chunking
+    )
+    if disagrees and deterministic_strat.confidence == "high":
+        logger.info(
+            f"[SiteStrategy] LLM disagreed with a high-confidence deterministic "
+            f"verdict for {url} ({deterministic_strat.text_extraction}/{deterministic_strat.chunking} "
+            f"vs {llm_strat.text_extraction}/{llm_strat.chunking}) — deterministic wins on "
+            f"text_extraction/chunking; keeping the LLM's page_shape label and reasoning."
+        )
+        final = llm_strat.with_(
+            text_extraction=deterministic_strat.text_extraction,
+            chunking=deterministic_strat.chunking,
+            source="llm_overridden",
+        )
+    else:
+        final = llm_strat
+
+    extra_strats = []
+    for p in others:
+        extra_strats.append((
+            p.get("url_pattern", ""),
+            PageStrategy(
+                page_shape=p.get("page_shape", "unknown"),
+                text_extraction=p.get("text_extraction", "full_text"),
+                chunking=p.get("chunking", "sliding_window"),
+                needs_render=bool(p.get("needs_render", False)),
+                paginate=bool(p.get("paginate", False)),
+                follow_detail_links=bool(p.get("follow_detail_links", False)),
+                bypass_candidate_filter=bool(p.get("bypass_candidate_filter", False)),
+                expected_entity_count=0,  # never probed — no structural basis for a count
+                confidence=p.get("confidence", "low"),
+                reason=p.get("reason", ""),
+                source="llm",
+            ),
+        ))
+    return final, extra_strats
+
+
+def _store_speculative_profile(db, domain: str, entry) -> None:
+    """
+    Persist a profile for a pattern the strategist inferred but that has
+    never actually been structurally probed (e.g. "detail pages under
+    /startups/* probably look like this"). Left as-is if a real profile
+    already exists for this pattern — a genuine probe always outranks a
+    speculative guess, and this must never clobber one.
+    """
+    pattern, strat = entry
+    if not pattern:
+        return
+    existing = db.query(SiteProfile).filter_by(domain=domain, url_pattern=pattern).first()
+    if existing is not None:
+        return
+    row = SiteProfile(domain=domain, url_pattern=pattern)
+    db.add(row)
+    _apply_strategy(row, strat, source_id=None, signals=None)
+    row.probed_at = None  # never actually probed — distinguishes it from a real profile
+    db.commit()
 
 
 def strategy_from_profile(profile: Optional[SiteProfile]):
