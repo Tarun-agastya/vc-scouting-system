@@ -245,7 +245,11 @@ inspector:
     homogeneity:     0.15
     group_size:      0.10
     has_image:       0.10
-    nav_footer_penalty:  0.25
+    # A hard CEILING for a chrome-flagged group (nav/menu/footer/breadcrumb/
+    # cookie/banner/partner/sponsor), not a subtraction — see
+    # site_inspector.py::_score_group for why a soft penalty wasn't enough
+    # (a breadcrumb trail scores ~0.90 on every other signal alone).
+    nav_footer_cap:  0.15
     empty_text_penalty:  0.30
 
   # Rendering: escalate to a headless browser when rendering reveals this many

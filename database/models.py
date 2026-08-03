@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, String, DateTime, Float, Integer,
-    Text, JSON, ForeignKey, Boolean
+    Text, JSON, ForeignKey, Boolean, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.orm import relationship, declarative_base
@@ -289,3 +289,85 @@ class SuppressedMatch(Base):
     value     = Column(Text, nullable=True)                            # rejected_value
 
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SiteProfile(Base):
+    """
+    Learned per-source extraction strategy (Phase R-2, 31 Jul — self-adapting
+    web extraction). What Phase R-1's structural inspector (and, from R-3, the
+    cached LLM strategist) concluded about a page's shape, kept in the
+    database rather than written back into config/sources.yaml — sources.yaml
+    stays strictly human-authored; probing must never silently overwrite a
+    hand edit, and a site redesign must be noticeable without a code change.
+
+    Keying: startups store `source_url` strings with no FK to a registry
+    source_id, so a profile must be findable from a bare URL alone.
+    domain + url_pattern together are that key ("" url_pattern = the domain's
+    default page shape; a real pattern like "/startups/*" covers a listing
+    shape distinct from the rest of the domain). See
+    processing/site_profile_store.py for the normalization + lookup logic
+    (most-specific-pattern -> domain-default -> None).
+
+    status:
+      active  — normal, subject to the re-probe policy (TTL, version bump,
+                repeated shortfalls).
+      stale   — due for a re-probe on next use (set by the Phase R-5 recall
+                audit, or a manual "Re-inspect" click).
+      flagged — repeated recall shortfalls even after a retry; surfaced in
+                the dashboard for a human to look at. Also marked stale, so
+                the next run gets a fresh probe rather than repeating the
+                same bad strategy.
+      pinned  — a human override (mirrors the old sources.yaml
+                render_mode: "always" escape hatch). NEVER auto-re-probed or
+                auto-overwritten; the pipeline's answer to "I know better
+                than the inspector for this one site."
+    """
+    __tablename__ = "site_profiles"
+    __table_args__ = (UniqueConstraint("domain", "url_pattern", name="uq_site_profile_domain_pattern"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    domain      = Column(String(255), nullable=False, index=True)
+    url_pattern = Column(String(500), nullable=False, default="")  # "" = domain default
+    source_id   = Column(String(100), nullable=True, index=True)   # matched registry source, if any
+
+    # Strategy
+    page_shape              = Column(String(30), default="unknown")
+    text_extraction         = Column(String(30), default="full_text")
+    chunking_mode            = Column(String(30), default="sliding_window")
+    needs_render             = Column(Boolean, default=False)
+    paginate                 = Column(Boolean, default=False)
+    follow_detail_links      = Column(Boolean, default=False)
+    detail_link_pattern      = Column(String(500), nullable=True)
+    bypass_candidate_filter  = Column(Boolean, default=False)
+    load_more_selector       = Column(String(300), nullable=True)
+
+    # Budget overrides — NULL means "use the global config default"
+    names_per_chunk = Column(Integer, nullable=True)
+    max_pages       = Column(Integer, nullable=True)
+    max_depth       = Column(Integer, nullable=True)
+    max_load_more   = Column(Integer, nullable=True)
+
+    # Evidence
+    signals               = Column(JSON, nullable=True)  # full StructuralSignals.to_dict()
+    expected_entity_count = Column(Integer, default=0)
+    strategy_source        = Column(String(20), default="deterministic")  # deterministic|llm|llm_overridden|learned|pinned|default
+    confidence             = Column(String(10), default="low")            # high|medium|low
+    reason                 = Column(Text, nullable=True)
+
+    # Lifecycle
+    probe_version = Column(Integer, default=1)
+    probed_at     = Column(DateTime, nullable=True)
+    last_used_at  = Column(DateTime, nullable=True)
+    status        = Column(String(20), default="active", index=True)  # active|stale|flagged|pinned
+    flag_reason   = Column(Text, nullable=True)
+
+    # Feedback loop (Phase R-5 recall audit writes these)
+    last_expected          = Column(Integer, nullable=True)
+    last_extracted          = Column(Integer, nullable=True)
+    recall_ratio             = Column(Float, nullable=True)
+    consecutive_shortfalls   = Column(Integer, default=0)
+    retry_ladder_position    = Column(Integer, default=0)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

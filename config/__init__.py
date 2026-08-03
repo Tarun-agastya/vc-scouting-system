@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     # list needs ~29 clicks (10K → 350K chars); default is a middle ground.
     crawl_max_load_more: int = 15
 
+    # Adaptive pipeline (Phase R, 31 Jul — self-adapting web extraction).
+    # How long a learned SiteProfile is trusted before a fresh probe is due,
+    # so a site redesign is eventually noticed even if the recall audit
+    # (Phase R-5) never sees the specific page again. status="pinned"
+    # profiles are exempt — the manual override that replaces per-site
+    # hand-tuning never expires on its own.
+    site_profile_ttl_days: int = 30
+
     # Deduplication / entity matching (Phase S-3 — multi-signal matcher)
     # All tunable via .env so matching behaviour can be calibrated against real
     # data without a code change. Weights should sum to ~1.0.

@@ -44,8 +44,16 @@ logger = logging.getLogger(__name__)
 INSPECTOR_VERSION = 1
 
 _NAV_FOOTER_TAGS = {"nav", "footer", "header", "aside"}
+# Stem-matched, not \b-terminated on the right: a trailing \b after these
+# words would refuse to match their own plurals ("breadcrumbs", "sponsors")
+# or compounds ("navbar", "cookie-banner") — found live 3 Aug on
+# uni-augsburg.de, where a breadcrumb trail (<ol class="breadcrumbs">) was
+# card-detected as a 5-entity "logo grid" ('Universität', 'Organisation',
+# 'Einrichtungen', 'Startseite', ...) because \bbreadcrumb\b cannot match
+# inside "breadcrumbs" — "breadcrumb" is immediately followed by "s", both
+# word characters, so there is no boundary between them at all.
 _NAV_FOOTER_HINTS = re.compile(
-    r"\b(nav|menu|footer|header|breadcrumb|social|partner|sponsor|cookie|banner)\b",
+    r"(?:^|[-_\s])(?:nav|menu|footer|header|breadcrumb|social|partner|sponsor|cookie|banner)",
     re.IGNORECASE,
 )
 _HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
@@ -211,6 +219,17 @@ def _item_name(el, is_junk_name) -> Optional[str]:
     Best-effort entity name for one card, most-reliable source first.
     Every candidate goes through the junk filter — the same generic one that
     keeps CMS filenames and staff handles out of the alt harvest.
+
+    Deliberately does NOT also reject headline-shaped text here (tried live
+    3 Aug, reverted): filtering at the item level means a real news-feed
+    group loses most of its names to the filter (headlines ARE its content),
+    which lowers ITS OWN frac_unique_name enough that an unrelated, cleanly-
+    short-named decoy group (found live: startbase.de's browser-compatibility
+    widget — "Mozilla Firefox", "Google Chrome", "Safari" — nothing to do
+    with the page's actual news feed) can outscore it and win as primary
+    instead. The group-level frac_headline_names check in _build_group,
+    computed from these UNFILTERED names, is what correctly catches a
+    headline-heavy group as editorial — see _is_editorial.
     """
     def ok(v):
         v = (v or "").strip()
@@ -383,7 +402,17 @@ def _score_group(g: CardGroup, w: dict, min_items: int) -> None:
         + w.get("has_image", 0.10) * g.frac_with_img
     )
     if g.in_nav_or_footer:
-        score -= w.get("nav_footer_penalty", 0.25)
+        # A CAP, not a subtraction. Found live 3 Aug: a breadcrumb trail
+        # (<ol class="breadcrumbs">) is small, fully linked, all-distinct
+        # hrefs, structurally homogeneous — it scores ~0.90 on every OTHER
+        # signal, so a flat -0.25 still cleared the 0.55 threshold. Page
+        # chrome (nav/menu/footer/breadcrumb/cookie/banner — and in
+        # practice, for THIS pipeline's purpose, "partner"/"sponsor"
+        # sections too: schwaben.digital's and cdtm.de's both turned out to
+        # be law firms/banks/universities, not startups) is never a
+        # legitimate entity directory regardless of how grid-like it looks,
+        # so it must never be able to outscore the threshold at all.
+        score = min(score, w.get("nav_footer_cap", 0.15))
     if g.median_text_len < 3 and identity < 0.5:
         # Structurally repeating but carries neither text nor distinct identity
         # — decorative chrome (icon strips, spacers), never an entity list.
@@ -688,3 +717,77 @@ def harvest_entities(html: str, url: str = "", cfg: dict = None) -> tuple:
     soup = BeautifulSoup(html, "html.parser")
     del soup  # blocks are built from item features; kept simple for R-1
     return names, blocks
+
+
+async def probe_url(url: str, *, client=None, force_render: bool = False, cfg: dict = None):
+    """
+    Fetch a page BOTH ways (plain static + headless-rendered) and return one
+    StructuralSignals with render_gain filled in — the only place that field
+    is computed, since it requires two independent fetches (I/O), unlike
+    every other signal in this module.
+
+    Deliberately does NOT reuse WebScraper._fetch_page's own static-fetch
+    path for the static half: that method auto-escalates internally on a
+    char-length heuristic, which would silently hand back rendered HTML and
+    make the two samples non-independent. The comparison is measured on
+    ENTITY COUNT, not character length — a page can be char-heavy and still
+    entity-empty (boilerplate), which is exactly what a naive char-gain
+    metric would get wrong.
+
+    force_render=True skips the static attempt and renders directly — used
+    when a profile is already known to need rendering (a pinned or previously
+    "active" source), so re-probing doesn't waste a doomed static fetch.
+    """
+    import httpx
+    from ingestion.web_scraper import WebScraper
+    from config.tuning_loader import get_inspector_config
+
+    cfg = cfg or get_inspector_config()
+    scraper = WebScraper()
+    owns_client = client is None
+    if owns_client:
+        client = httpx.AsyncClient(timeout=20.0, follow_redirects=True)
+
+    try:
+        static_html = ""
+        if not force_render:
+            try:
+                resp = await client.get(url)
+                if resp.status_code == 200 and "text/html" in resp.headers.get("content-type", ""):
+                    static_html = resp.text
+            except Exception as exc:
+                logger.debug(f"[Inspector] static fetch failed for {url}: {exc}")
+
+        static_sig = probe_html(static_html, url, cfg) if static_html else StructuralSignals(url=url)
+
+        # Render when forced, or when the static pass found no candidate
+        # entities at all — the same trigger _fetch_page uses (thin content),
+        # but keyed on entities rather than raw char length so a verbose,
+        # entity-free shell still escalates.
+        should_render = force_render or static_sig.candidate_entity_count == 0
+        rendered_html = ""
+        if should_render:
+            try:
+                rendered_html = await scraper._fetch_page(client, url, force_render=True)
+            except Exception as exc:
+                logger.debug(f"[Inspector] render fetch failed for {url}: {exc}")
+
+        if not rendered_html:
+            return static_sig
+
+        rendered_sig = probe_html(rendered_html, url, cfg)
+        if static_sig.candidate_entity_count > 0:
+            rendered_sig.render_gain = round(
+                rendered_sig.candidate_entity_count / static_sig.candidate_entity_count, 1
+            )
+        elif rendered_sig.candidate_entity_count > 0:
+            # Static found nothing at all but rendering revealed entities —
+            # an unambiguous "must render" case. 999.0 rather than inf: this
+            # gets persisted into a JSON column, and json.dumps rejects inf.
+            rendered_sig.render_gain = 999.0
+        else:
+            rendered_sig.render_gain = 0.0
+        return rendered_sig
+    finally:
+        if owns_client:
+            await client.aclose()

@@ -132,6 +132,47 @@ def test_empty_and_junk_html_are_safe():
         assert st.text_extraction in ("full_text", "main_prose")
 
 
+def _breadcrumb_html():
+    # uni-augsburg.de's real shape (3 Aug, R-2 batch verification): a plain
+    # <ol class="breadcrumbs">, no <nav> tag, no ARIA role/label at all.
+    items = "".join(
+        f'<li class="breadcrumbs-item"><a href="/p{i}">{n}</a></li>'
+        for i, n in enumerate(["Universität", "Organisation", "Einrichtungen", "Startseite", "Startseite"])
+    )
+    return f'<html><body><main><ol class="breadcrumbs pb-3">{items}</ol></main></body></html>'
+
+
+def _partner_logo_grid_html(n=6):
+    # cdtm.de's real shape: alt text literally says "<Name> logo", not just
+    # the name — a common accessibility convention for a partner/sponsor strip.
+    unis = ["MIT", "Cambridge", "Harvard", "Stanford", "Berkeley", "Tsinghua"]
+    cards = "".join(
+        f'<div class="partner-item"><img src="/l/{i}.svg" alt="{unis[i]} logo"></div>'
+        for i in range(n)
+    )
+    return f"<html><body><main><div class='partners'>{cards}</div></main></body></html>"
+
+
+def test_breadcrumb_trail_is_not_an_entity_group():
+    """Regression: <ol class="breadcrumbs"> (no <nav>, no ARIA) was card-detected
+    as a 5-entity logo_grid because \\bbreadcrumb\\b can't match inside the plural
+    "breadcrumbs" — found live on uni-augsburg.de, 3 Aug."""
+    sig = probe_html(_breadcrumb_html(), "https://x.test/a/b/c", CFG)
+    st = derive_strategy_deterministic(sig, CFG)
+    assert st.expected_entity_count == 0
+    assert st.page_shape != "logo_grid"
+
+
+def test_partner_university_logos_are_filtered():
+    """Regression: alt text like "MIT logo" passed through whole — _ALT_NOISE
+    only exact-matched the bare word "logo". Found live on cdtm.de, 3 Aug."""
+    sig = probe_html(_partner_logo_grid_html(6), "https://x.test/partners", CFG)
+    # Either no group clears threshold, or if one does, none of its names still
+    # carry the literal "logo" caption.
+    if sig.primary_group is not None:
+        assert all("logo" not in n.lower() for n in sig.primary_group.names())
+
+
 def test_nav_only_page_finds_no_entity_group():
     html = ("<html><body><nav><ul>"
             + "".join(f'<li class="menu-item"><a href="/p{i}">Page {i}</a></li>'

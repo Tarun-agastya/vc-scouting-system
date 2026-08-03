@@ -129,6 +129,14 @@ _ALT_JUNK_RE = re.compile(
     | [_-]\d{3,}$                                 # trailing sequence: -0001, _074
     | ^\d{6,}                                     # starts with a long digit run
     | _kopie                                      # "copy" suffix
+    | \blogo\b                                    # "MIT logo", "Zollhof tech logo" —
+                                                  # a caption ON a logo image, not the
+                                                  # entity's own name. _ALT_NOISE only
+                                                  # exact-matched bare "logo"; this catches
+                                                  # the far more common "<Name> logo"
+                                                  # convention (found live 3 Aug: cdtm.de's
+                                                  # partner-university strip — "MIT logo",
+                                                  # "harvard logo" — passed through whole).
     """,
     re.IGNORECASE | re.VERBOSE,
 )

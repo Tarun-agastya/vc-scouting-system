@@ -96,6 +96,17 @@ export const api = {
   addRssFeed: (feed) => post("/sources/rss", feed),
   deleteWebSource: (id) => del(`/sources/web/${id}`),
 
+  // ── Site profiles (Phase R-2 — adaptive pipeline) ───────────────────────
+  /** What the structural inspector has learned about each source's page shape. */
+  listSiteProfiles: () => get("/sources/profiles"),
+  /** Force a fresh probe now, bypassing the cache. Pass {source_id} or {url}. */
+  reinspectSource: (target) => post("/sources/profiles/reinspect", target, { timeout: 60000 }),
+  pinSiteProfile: (id) => post(`/sources/profiles/${id}/pin`),
+  unpinSiteProfile: (id) => post(`/sources/profiles/${id}/unpin`),
+  /** "Profile all sources" — fire-and-forget; poll batchProfileStatus. */
+  batchProfileSources: () => post("/sources/profiles/batch"),
+  batchProfileStatus: () => get("/sources/profiles/batch-status"),
+
   // ── Ingestion ─────────────────────────────────────────────────────────
   ingestionStatus: (runId) => get("/ingestion/status", runId ? { run_id: runId } : {}),
   runAll: () => post("/ingestion/run-all"),

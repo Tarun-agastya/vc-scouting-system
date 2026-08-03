@@ -7,13 +7,67 @@
    ══════════════════════════════════════════════════════════════════════════ */
 
 import { api, fmt, esc } from "../api.js";
-import { toast, confirmAction } from "../router.js";
+import { toast, confirmAction, poll } from "../router.js";
 
 const SOURCE_TYPES = ["university_hub", "incubator", "accelerator", "startup_network", "intelligence_platform"];
 const PRIORITIES = ["HIGH", "MEDIUM", "LOW"];
 
 function slugify(name) {
   return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+/** Lowercased, www-stripped netloc — must match processing/site_profile_store.normalize_domain(). */
+function domainOf(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host.startsWith("www.") ? host.slice(4) : host;
+  } catch { return ""; }
+}
+
+const SHAPE_LABEL = {
+  logo_grid: "🖼 Logo grid", card_directory: "🗂 Card directory",
+  detail_page: "📄 Detail page", prose_listing: "📝 Prose listing",
+  article_feed: "📰 Article feed", mixed: "🔀 Mixed",
+  non_content: "— Non-content", unknown: "? Unknown",
+};
+
+/** Phase R-2: the source's own entry-point profile — domain-default (url_pattern "").
+ *  A source can also have per-page profiles (e.g. a portfolio page BFS discovers
+ *  mid-crawl) that don't show here; those become visible once Phase R-4/R-6 wire
+ *  per-page profiling into real crawls. This column is "what does the pipeline
+ *  think happens if it visits this source's registered URL right now". */
+function entryProfileFor(profiles, primaryUrl) {
+  const domain = domainOf(primaryUrl);
+  return profiles.find((p) => p.domain === domain && p.url_pattern === "") || null;
+}
+
+function shapeChip(profile) {
+  if (!profile) return `<span class="dim" style="font-size:12px">not profiled yet</span>`;
+  const label = SHAPE_LABEL[profile.page_shape] || profile.page_shape;
+  const expects = profile.expected_entity_count > 0;
+  return `<span class="row" style="gap:5px;font-size:12px" title="${esc(profile.reason)}">
+    <span>${esc(label)}</span>
+    ${expects ? `<span class="dim">· ${profile.expected_entity_count} expected</span>` : ""}
+  </span>`;
+}
+
+function recallChip(profile) {
+  if (!profile) return `<span class="dim" style="font-size:12px">—</span>`;
+  if (profile.status === "pinned") {
+    return `<span class="chip" style="font-size:11px" title="Manually pinned — never auto-re-probed">📌 pinned</span>`;
+  }
+  if (profile.last_expected == null) {
+    // Phase R-5 (recall audit) hasn't run yet, so nothing has been measured
+    // against a real extraction — showing "0%" here would be a lie, not a
+    // finding. Distinct from "not profiled yet" (no shape known at all).
+    return `<span class="dim" style="font-size:12px">not measured yet</span>`;
+  }
+  const pct = Math.round((profile.recall_ratio ?? 0) * 100);
+  const cls = profile.status === "flagged" ? "chip--danger" : pct >= 80 ? "chip--brand" : "";
+  const title = profile.status === "flagged" ? esc(profile.flag_reason || "") : "";
+  return `<span class="chip ${cls}" style="font-size:11px" title="${title}">
+    ${profile.status === "flagged" ? "🚩 " : ""}${profile.last_extracted}/${profile.last_expected} · ${pct}%
+  </span>`;
 }
 
 export default {
@@ -24,6 +78,8 @@ export default {
     let historyBySource = {};
     let theses = null;      // [{id, name, kind, summary}]
     let taxonomy = null;    // {industries: [...], tech_clusters: {industry: [...]}}
+    let profiles = [];      // Phase R-2: what the structural inspector learned per source
+    let stopBatchPoll = null;
 
     el.innerHTML = `<div class="stack">
       <div class="skeleton" style="height:200px"></div>
@@ -32,12 +88,14 @@ export default {
 
     async function load() {
       try {
-        const [sources, status, thesesRes, taxRes] = await Promise.all([
+        const [sources, status, thesesRes, taxRes, profilesRes] = await Promise.all([
           api.listSources(), api.ingestionStatus(), api.listTheses(), api.thesesTaxonomy(),
+          api.listSiteProfiles().catch(() => ({ profiles: [] })), // never block the page on this
         ]);
         data = sources;
         theses = thesesRes.theses || [];
         taxonomy = taxRes;
+        profiles = profilesRes.profiles || [];
         historyBySource = {};
         for (const h of status.history || []) {
           if (!(h.source in historyBySource)) historyBySource[h.source] = h; // most recent first
@@ -92,14 +150,21 @@ export default {
             <div class="card__head">
               <span class="card__title">Web sources</span>
               <span class="dim" style="font-size:12px">${data.web_sources.length} sources · health reflects the last 10 runs</span>
-              <button class="btn btn--primary btn--sm" id="add-web-btn" style="margin-left:auto">+ Add web source</button>
+              <button class="btn btn--sm" id="profile-all-btn" style="margin-left:auto" title="Structurally probes every source's entry page and learns its extraction strategy — no LLM, no crawl, just an inspection pass">🔍 Profile all sources</button>
+              <button class="btn btn--primary btn--sm" id="add-web-btn">+ Add web source</button>
             </div>
+            <div id="batch-profile-status"></div>
             <div id="add-web-form"></div>
             <div class="table-wrap">
               <table class="table">
-                <thead><tr><th>Name</th><th>Type</th><th>Location</th><th>Priority</th><th>Last run</th><th></th></tr></thead>
+                <thead><tr><th>Name</th><th>Type</th><th>Location</th><th>Priority</th><th>Last run</th>
+                  <th title="Phase R-2: what the structural inspector detected on this source's entry page">Shape</th>
+                  <th title="Extracted vs. structurally-expected, once Phase R-5's recall audit has run">Recall</th>
+                  <th></th></tr></thead>
                 <tbody>
-                  ${data.web_sources.map((s) => `
+                  ${data.web_sources.map((s) => {
+                    const profile = entryProfileFor(profiles, s.primary_url);
+                    return `
                     <tr>
                       <td><strong>${esc(s.source_name)}</strong><br>
                         <a href="${esc(s.primary_url)}" target="_blank" rel="noopener" class="dim truncate" style="font-size:11px">${esc(s.primary_url)}</a></td>
@@ -107,11 +172,15 @@ export default {
                       <td class="dim">${esc(s.location)}</td>
                       <td><span class="chip ${s.priority === "HIGH" ? "chip--brand" : ""}">${esc(s.priority)}</span></td>
                       <td>${healthChip(s.source_name)}</td>
+                      <td>${shapeChip(profile)}</td>
+                      <td>${recallChip(profile)}</td>
                       <td class="row" style="gap:6px;justify-content:flex-end">
+                        <button class="btn btn--sm" data-reinspect="${esc(s.source_id)}" title="Force a fresh probe now, bypassing the cache">🔍</button>
                         <button class="btn btn--sm" data-run="${esc(s.source_id)}">▶ Run now</button>
                         <button class="btn btn--sm btn--danger" data-del="${esc(s.source_id)}">Delete</button>
                       </td>
-                    </tr>`).join("")}
+                    </tr>`;
+                  }).join("")}
                 </tbody>
               </table>
             </div>
@@ -326,12 +395,84 @@ export default {
           load();
         } catch (err) { toast(`Couldn't remove source: ${err.message}`, "error"); }
       }));
+
+      /* ── Site profiles: re-inspect one source / profile all (Phase R-2) ── */
+      el.querySelectorAll("[data-reinspect]").forEach((btn) => btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        const original = btn.textContent;
+        btn.textContent = "…";
+        try {
+          await api.reinspectSource({ source_id: btn.dataset.reinspect });
+          toast("Re-inspected — shape/recall updated below");
+          await load();
+        } catch (err) {
+          toast(`Re-inspect failed: ${err.message}`, "error");
+          btn.disabled = false;
+          btn.textContent = original;
+        }
+      }));
+
+      el.querySelector("#profile-all-btn")?.addEventListener("click", async () => {
+        try {
+          await api.batchProfileSources();
+          toast("Profiling every source — this page will update as results land");
+          watchBatch();
+        } catch (err) {
+          toast(`Couldn't start profiling: ${err.message}`, "error");
+        }
+      });
+
+      renderBatchStatus();
+    }
+
+    /* Polls /sources/profiles/batch-status while a "Profile all sources" run
+       is in flight, re-loading the table as it goes so Shape/Recall fill in
+       live rather than only after the whole batch finishes. */
+    function watchBatch() {
+      if (stopBatchPoll) return; // already watching
+      stopBatchPoll = poll(async () => {
+        const st = await api.batchProfileStatus();
+        const box = el.querySelector("#batch-profile-status");
+        if (box) box.innerHTML = batchStatusHtml(st);
+        if (!st.running) {
+          stopBatchPoll?.();
+          stopBatchPoll = null;
+          await load(); // final refresh with the completed results
+        }
+      }, 2000);
+    }
+
+    function batchStatusHtml(st) {
+      if (!st.running && !st.finished_at) return "";
+      if (st.running) {
+        return `<div class="card row" style="gap:10px;align-items:center;background:var(--surface-2);margin-bottom:10px">
+          <span class="spinner"></span>
+          <span style="font-size:13px">Profiling sources… ${st.done}/${st.total}${st.current_url ? ` — <span class="dim">${esc(st.current_url)}</span>` : ""}</span>
+        </div>`;
+      }
+      return `<div class="card row" style="gap:10px;align-items:center;background:var(--surface-2);margin-bottom:10px">
+        <span style="font-size:13px">✅ Profiled ${st.done}/${st.total}${st.failed ? ` (${st.failed} failed)` : ""}</span>
+      </div>`;
+    }
+
+    async function renderBatchStatus() {
+      try {
+        const st = await api.batchProfileStatus();
+        const box = el.querySelector("#batch-profile-status");
+        if (box) box.innerHTML = batchStatusHtml(st);
+        if (st.running) watchBatch();
+      } catch { /* non-fatal — the button still works without this */ }
     }
 
     // Not auto-polled: this page's own actions (add/delete/run-now) already
     // trigger a reload where needed, and re-rendering on a timer would wipe
     // out an "Add source" form mid-typing (unlike Ingestion/Overview, list
     // changes here aren't time-sensitive enough to justify that tradeoff).
+    // The one exception is the "Profile all sources" batch (Phase R-2),
+    // which polls its own status while running — stopped here so navigating
+    // away mid-batch doesn't leak a timer (the batch itself keeps running
+    // server-side; only the UI's poll stops).
     load();
+    return () => { stopBatchPoll?.(); };
   },
 };

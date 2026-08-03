@@ -161,7 +161,7 @@ DEFAULTS = {
             "homogeneity": 0.15,
             "group_size": 0.10,
             "has_image": 0.10,
-            "nav_footer_penalty": 0.25,
+            "nav_footer_cap": 0.15,   # hard ceiling, not a subtraction — see site_inspector._score_group
             "empty_text_penalty": 0.30,
         },
         "render_gain_threshold": 2.0,
