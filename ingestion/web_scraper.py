@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 from collections import deque
+from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlparse, urljoin
 
@@ -204,6 +205,94 @@ def _extract_text(html: str) -> str:
     return text
 
 
+@dataclass
+class PageContent:
+    """
+    Strategy-shaped page content — what extract_content() produces instead of
+    a plain string. `text` is what a prose-style chunker splits; `entity_names`
+    /`entity_blocks` are structured lists the R-4 chunker dispatches on
+    directly for name_batch/per_card chunking, replacing the old approach of
+    embedding a marker string in `text` and re-parsing it back out downstream.
+    """
+    text: str = ""
+    entity_names: list = field(default_factory=list)
+    entity_blocks: list = field(default_factory=list)  # [(name_or_None, text), ...]
+    structural_count: int = 0
+
+
+def extract_content(html: str, url: str, strategy=None) -> "PageContent":
+    """
+    Strategy-driven page content extraction (Phase R-4).
+
+    mode == "full_text" (PageStrategy.DEFAULT, or any strategy this function
+    doesn't recognise) reproduces _extract_text()'s exact output — so a page
+    with no profile, or the adaptive pipeline switched off, is never worse
+    off than before this function existed.
+
+    "main_prose" uses trafilatura (already a dependency, already used by
+    ingestion/rss_parser.py) to strip boilerplate more aggressively than
+    plain BeautifulSoup get_text — for prose-shaped pages where nav/footer
+    noise dilutes the real content. Falls back to _extract_text on empty
+    output (some JS-rendered pages defeat trafilatura entirely).
+
+    "alt_harvest" / "card_structured" read the primary structural group
+    directly via site_inspector.probe_html — deliberately NOT the
+    boilerplate-stripped soup _extract_text builds, so a card group nested
+    inside a <header>/<nav> wrapper is never lost to an unconditional
+    decompose() (the evidence-based-stripping fix the plan calls for falls
+    out for free here: these modes never run the decompose step at all).
+    If the page no longer structurally confirms the shape a cached profile
+    expects (a site redesign), this degrades to full_text rather than
+    silently extracting nothing.
+    """
+    mode = strategy.text_extraction if strategy is not None else "full_text"
+
+    if mode in ("alt_harvest", "card_structured"):
+        from ingestion.strategy import ENTITY_SHAPES
+        if strategy is None or strategy.page_shape not in ENTITY_SHAPES:
+            # A page_shape verdict of non_content/article_feed/etc. means
+            # THIS page has nothing worth structurally extracting — even if
+            # text_extraction still names a structural mode (carried over
+            # from an LLM/deterministic strategy computed for a DIFFERENT
+            # pattern's benefit, or simply stale). Found live 3 Aug on
+            # zollhof.de's own homepage: its domain-default profile is
+            # page_shape="non_content" (correctly: 5 CTA/heading cards, not
+            # companies — R-3's own adjudication reason literally says so)
+            # but text_extraction="card_structured" — without this gate,
+            # those 5 CTA cards were extracted anyway ("Bring me back to the
+            # incubation program" ending up as a stored "startup"). Fall
+            # back to full_text rather than trust a structural mode this
+            # page's own shape verdict disclaims.
+            mode = "full_text"
+
+    if mode == "main_prose":
+        prose = None
+        try:
+            import trafilatura
+            prose = trafilatura.extract(html, include_comments=False, include_tables=False)
+        except Exception as exc:
+            logger.debug(f"[Scraper] trafilatura failed for {url}: {exc}")
+        if prose and prose.strip():
+            return PageContent(text=prose.strip())
+        return PageContent(text=_extract_text(html))
+
+    if mode in ("alt_harvest", "card_structured"):
+        from ingestion.site_inspector import probe_html
+        from config.tuning_loader import get_inspector_config
+
+        sig = probe_html(html, url, get_inspector_config())
+        g = sig.primary_group
+        if g is None:
+            return PageContent(text=_extract_text(html))
+        names = g.names()
+        if mode == "alt_harvest":
+            return PageContent(text="", entity_names=names, structural_count=g.n)
+        blocks = [(i.name, i.text) for i in g.items if i.text]
+        return PageContent(text="", entity_names=names, entity_blocks=blocks, structural_count=g.n)
+
+    return PageContent(text=_extract_text(html))
+
+
 def _extract_links(html: str, base_url: str) -> list:
     """Return a deduplicated list of absolute URLs from all <a href> tags."""
     soup = BeautifulSoup(html, "html.parser")
@@ -354,6 +443,10 @@ class WebScraper:
         are all preserved from the original _deep_crawl implementation.
         """
         from ingestion.worker_queue import PageItem
+        from config import settings
+        from ingestion.strategy import PageStrategy
+
+        adaptive = settings.adaptive_pipeline_enabled
 
         allowed_domain = _base_domain(start_url)
         visited: set = set()
@@ -386,23 +479,72 @@ class WebScraper:
                     continue
                 visited.add(current_url)
 
-                html = await self._fetch_page(client, current_url, force_render=force_render)
+                strategy = PageStrategy.DEFAULT
+                known_profile = None
+                if adaptive:
+                    from processing.site_profile_store import get_profile, strategy_from_profile
+                    known_profile = get_profile(current_url)
+                    if known_profile is not None:
+                        metrics.inc("profile_hits")
+                        strategy = strategy_from_profile(known_profile)
+                    else:
+                        metrics.inc("profile_misses")
+
+                # A known profile can request rendering/pagination for THIS
+                # specific page even when the source-level force_render
+                # flag is off (Phase R-4 — needs_render/paginate are now
+                # independent, not welded to the source-level flag). A page
+                # with no profile yet uses today's exact fetch heuristic so
+                # its first crawl is never worse than before this phase.
+                page_force_render = force_render or (known_profile is not None and strategy.needs_render)
+                page_paginate = force_render or (known_profile is not None and strategy.paginate)
+                html = await self._fetch_page(
+                    client, current_url,
+                    force_render=page_force_render, paginate=page_paginate,
+                    metrics=metrics if adaptive else None,
+                )
                 if not html:
                     metrics.inc("pages_skipped")
                     continue
 
-                text = _extract_text(html)
-                if text:
+                if adaptive and known_profile is None:
+                    # First time this pattern has been seen: derive a
+                    # strategy from the HTML we already fetched (no extra
+                    # network I/O, no LLM, no GPU mutex) and persist it so
+                    # every later run — and the dashboard — has it. The
+                    # richer LLM-adjudicated verdict still comes from the
+                    # existing probe_and_store() path (its own independent
+                    # probe), triggered separately by the dashboard's
+                    # "Profile all sources" / "Re-inspect" actions.
+                    try:
+                        from processing.site_profile_store import store_deterministic, strategy_from_profile
+                        new_profile = store_deterministic(current_url, html)
+                        strategy = strategy_from_profile(new_profile)
+                        metrics.inc("profile_probes")
+                    except Exception as exc:
+                        logger.debug(f"[Scraper] deterministic profile derivation failed for {current_url}: {exc}")
+
+                content = extract_content(html, current_url, strategy) if adaptive else PageContent(text=_extract_text(html))
+
+                if content.text or content.entity_names or content.entity_blocks:
+                    if adaptive and strategy.expects_entities:
+                        metrics.record_expectation(
+                            current_url, strategy.expected_entity_count, shape=strategy.page_shape,
+                        )
                     await page_queue.put(PageItem(
                         url=current_url,
-                        text=text,
+                        text=content.text,
                         source_type=source_type,
                         source_url=start_url,
+                        strategy=strategy if adaptive else None,
+                        entity_names=content.entity_names,
+                        entity_blocks=content.entity_blocks,
+                        expected_entity_count=strategy.expected_entity_count if adaptive else 0,
                     ))
                     metrics.inc("pages_crawled")
                     logger.debug(
                         f"[Scraper] [{depth}] Crawled {current_url} "
-                        f"({len(text)} chars)"
+                        f"({len(content.text)} chars, {len(content.entity_names)} entities)"
                     )
                 else:
                     metrics.inc("pages_skipped")
@@ -431,23 +573,28 @@ class WebScraper:
     # ── Fetch Strategies ──────────────────────────────────────────────────────
 
     async def _fetch_page(self, client: httpx.AsyncClient, url: str, *,
-                          force_render: bool = False) -> str:
+                          force_render: bool = False, paginate: bool = False,
+                          metrics: "PipelineMetrics" = None) -> str:
         """
         Fetch a single page.
 
-        force_render=True (source render_mode "always"): skip the static fetch
-        entirely and render in a headless browser — for JS directory sites
-        (React/Vue/Next) whose content is invisible to a plain fetch. See
-        WebSourceEntry.render_mode.
+        force_render=True (source render_mode "always", or Phase R-4's
+        per-page SiteProfile.needs_render): skip the static fetch entirely
+        and render in a headless browser — for JS directory sites (React/
+        Vue/Next) whose content is invisible to a plain fetch.
 
-        Otherwise (render_mode "auto"): fast static httpx fetch, falling back to
-        Playwright only when the static fetch fails outright OR "succeeds" with a
-        200 but yields an empty client-side-rendering shell (< _MIN_STATIC_TEXT_LEN).
+        Otherwise: fast static httpx fetch, falling back to Playwright only
+        when the static fetch fails outright OR "succeeds" with a 200 but
+        yields an empty client-side-rendering shell (< _MIN_STATIC_TEXT_LEN).
+
+        paginate is independent of force_render (Phase R-4 — previously
+        welded together, so a page auto-escalated to Playwright for being a
+        thin shell was never paginated even if it structurally needed it):
+        whichever path ends up rendering, paginate controls whether that
+        render also exhausts a "load more"/infinite-scroll list.
         """
         if force_render:
-            # A render_mode="always" source is a JS directory — render AND
-            # exhaust its pagination so we get the full list, not page one.
-            return await self._fetch_playwright(url, paginate=True)
+            return await self._fetch_playwright(url, paginate=paginate, metrics=metrics)
 
         try:
             resp = await client.get(url)
@@ -455,6 +602,8 @@ class WebScraper:
             if resp.status_code == 200 and "text/html" in content_type:
                 html = resp.text
                 if len(_extract_text(html)) >= _MIN_STATIC_TEXT_LEN:
+                    if metrics is not None:
+                        metrics.inc("pages_static")
                     return html
                 logger.debug(
                     f"[Scraper] {url} — static fetch too thin "
@@ -469,9 +618,10 @@ class WebScraper:
             logger.debug(f"[Scraper] httpx failed for {url}: {exc}")
 
         # Playwright fallback for JS-gated / Cloudflare-protected / SPA sites
-        return await self._fetch_playwright(url)
+        return await self._fetch_playwright(url, paginate=paginate, metrics=metrics)
 
-    async def _fetch_playwright(self, url: str, *, paginate: bool = False) -> str:
+    async def _fetch_playwright(self, url: str, *, paginate: bool = False,
+                                metrics: "PipelineMetrics" = None) -> str:
         """
         JavaScript-aware fetch using Playwright (headless Chromium).
 
@@ -507,10 +657,12 @@ class WebScraper:
                 await self._dismiss_cookie_banner(page)
 
                 if paginate:
-                    await self._exhaust_pagination(page, url)
+                    await self._exhaust_pagination(page, url, metrics=metrics)
 
                 html = await page.content()
                 await browser.close()
+            if metrics is not None:
+                metrics.inc("pages_rendered")
             return html
         except Exception as exc:
             logger.error(f"[Scraper] Playwright failed {url}: {exc}")
@@ -532,7 +684,8 @@ class WebScraper:
             except Exception:
                 continue
 
-    async def _exhaust_pagination(self, page, url: str) -> None:
+    async def _exhaust_pagination(self, page, url: str, *,
+                                  metrics: "PipelineMetrics" = None) -> None:
         """
         Repeatedly reveal more of a paginated list: click a "load more" button
         if present, else scroll to the bottom (infinite scroll). Stop when the
@@ -586,6 +739,8 @@ class WebScraper:
 
         if clicks:
             logger.info(f"[Scraper] Paginated {url} — {clicks} 'load more' step(s)")
+        if metrics is not None and clicks:
+            metrics.inc("pagination_clicks", clicks)
 
 
 web_scraper = WebScraper()

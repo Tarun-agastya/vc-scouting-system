@@ -51,6 +51,13 @@ class PageItem:
     source_url: str           # start_url of the crawl job (for attribution)
     published_date: Optional[str] = None
     priority: int = 0         # extension point: future priority crawling
+    # Phase R-4 — populated only when settings.adaptive_pipeline_enabled;
+    # None/empty otherwise, so the legacy chunking path is untouched.
+    strategy: Optional[object] = None          # ingestion.strategy.PageStrategy
+    entity_names: List[str] = field(default_factory=list)
+    entity_blocks: List[tuple] = field(default_factory=list)  # [(name, text), ...]
+    expected_entity_count: int = 0
+    parent_entity_name: Optional[str] = None   # R-6 extension point: detail-page attribution
 
 
 @dataclass
@@ -61,6 +68,16 @@ class ChunkItem:
     chunk_num: int
     total_chunks: int
     published_date: Optional[str] = None
+    # origin_url = the crawl's start_url (for source-registry name lookup);
+    # source_url above stays the actual page this chunk came from. Phase R-4
+    # fix: previously only the page URL was threaded through, so
+    # storage._resolve_source_name's exact primary_url match failed for
+    # every page except the entry URL (measured 31 Jul: 98% of web-sourced
+    # source_history entries had source_name=None).
+    origin_url: str = ""
+    page_url: str = ""
+    chunk_kind: Optional[str] = None           # None = legacy; else "prose"|"name_batch"|"card"
+    entity_hint: Optional[str] = None          # R-6 extension point
 
 
 @dataclass
@@ -69,6 +86,7 @@ class StorageItem:
     source: str
     source_url: str
     published_date: Optional[str] = None
+    origin_url: str = ""
     # Validation provenance — populated by qwen_worker_task when a
     # ValidationSession is active; zero-cost defaults otherwise.
     page_url:       str   = ""
@@ -343,6 +361,8 @@ async def chunker_task(
     from ingestion.chunker import split_web_page as split_chunks
     from ingestion.chunker import LOGO_GRID_CHUNK_HEADER
     from ingestion.candidate_filter import is_relevant
+    from config import settings
+    from ingestion.strategy import PageStrategy
 
     while True:
         item = await page_queue.get()
@@ -353,20 +373,39 @@ async def chunker_task(
             await chunk_queue.put(_SENTINEL)
             return
 
-        chunks = split_chunks(item.text)
+        origin_url = item.source_url or item.url
+        strategy = item.strategy
+        adaptive = bool(
+            settings.adaptive_pipeline_enabled and strategy is not None
+            and strategy is not PageStrategy.DEFAULT
+        )
+
+        if adaptive:
+            chunks, chunk_kind = _adaptive_chunks(item, strategy)
+        else:
+            # Legacy path — byte-identical to pre-R-4 behaviour regardless
+            # of what a strategy object (if any) claims.
+            chunks, chunk_kind = split_chunks(item.text), None
+
         total = len(chunks)
-        # Logo-grid name batches bypass the heuristic filter — see
-        # LOGO_GRID_CHUNK_HEADER's comment. Every other chunk is judged
-        # exactly as before.
-        relevant = [
-            c for c in chunks
-            if c.startswith(LOGO_GRID_CHUNK_HEADER) or is_relevant(c)
-        ]
+        if chunk_kind in ("name_batch", "card"):
+            # Structurally-curated chunks (a portfolio name batch, one card's
+            # own text) never face the heuristic filter built to judge
+            # arbitrary prose — the scraper already curated them.
+            relevant = chunks
+        else:
+            relevant = [
+                c for c in chunks
+                if c.startswith(LOGO_GRID_CHUNK_HEADER) or is_relevant(c)
+            ]
         kept = len(relevant)
         filtered = total - kept
 
         metrics.inc("chunks_created", total)
         metrics.inc("chunks_filtered", filtered)
+        if chunk_kind in ("name_batch", "card"):
+            metrics.inc("chunks_bypassed_filter", kept)
+            metrics.inc("name_batch_chunks" if chunk_kind == "name_batch" else "card_chunks", kept)
 
         pct = round(filtered / total * 100) if total else 0
         logger.info(
@@ -377,11 +416,43 @@ async def chunker_task(
             await chunk_queue.put(ChunkItem(
                 chunk=chunk,
                 source_url=item.url,
+                origin_url=origin_url,
                 source_type=item.source_type,
                 chunk_num=i,
                 total_chunks=kept,
                 published_date=item.published_date,
+                chunk_kind=chunk_kind,
+                page_url=item.url,
             ))
+
+
+def _adaptive_chunks(item: "PageItem", strategy) -> tuple:
+    """
+    Phase R-4: dispatch on strategy.chunking using the structured data the
+    scraper already produced (entity_names / entity_blocks) instead of
+    embedding a marker string in page text and re-parsing it back out.
+    Falls back to ordinary prose chunking of whatever text this page
+    produced when the structured data the strategy expects isn't there
+    (e.g. a cached profile predicted a shape the live page no longer
+    confirms) — never silently drops the page.
+    """
+    from ingestion.chunker import split_name_batches, split_cards
+    from ingestion.chunker import split as split_prose
+
+    if strategy.chunking == "name_batch" and item.entity_names:
+        n = strategy.names_per_chunk or _default_names_per_chunk()
+        return split_name_batches(item.entity_names, n), "name_batch"
+    if strategy.chunking == "per_card" and item.entity_blocks:
+        return split_cards(item.entity_blocks), "card"
+    return split_prose(item.text), "prose"
+
+
+def _default_names_per_chunk() -> int:
+    try:
+        from config.tuning_loader import get_chunking_config
+        return int(get_chunking_config().get("names_per_chunk", 6))
+    except Exception:
+        return 6
 
 
 # ── Stage 3: Qwen Workers ────────────────────────────────────────────────────
@@ -410,7 +481,7 @@ def _qwen_extract_sync(
     t0 = time.time()
 
     try:
-        startups = qwen_client.extract_startups(item.chunk)
+        startups = qwen_client.extract_startups(item.chunk, chunk_kind=item.chunk_kind)
         elapsed = time.time() - t0
         logger.info(
             f"[Extract Worker] Chunk {item.chunk_num}/{item.total_chunks}: "
@@ -424,11 +495,14 @@ def _qwen_extract_sync(
                     s["published_date"] = item.published_date
 
         metrics.inc("startups_extracted", len(startups))
+        for s in startups:
+            metrics.record_extraction(item.page_url or item.source_url, s.get("name") or "")
         return startups, elapsed
 
     except Exception as exc:
         elapsed = time.time() - t0
         metrics.inc("qwen_failures")
+        metrics.record_page_failure(item.page_url or item.source_url)
         logger.error(
             f"[Extract Worker] Chunk {item.chunk_num}/{item.total_chunks} failed "
             f"after {elapsed:.1f}s ({item.source_url}): {exc}"
@@ -504,8 +578,9 @@ async def qwen_worker_task(
                 startup_dict=startup,
                 source=item.source_type,
                 source_url=item.source_url,
+                origin_url=item.origin_url or item.source_url,
                 published_date=item.published_date or startup.get("published_date"),
-                page_url=item.source_url,
+                page_url=item.page_url or item.source_url,
                 chunk_num=item.chunk_num,
                 total_chunks=item.total_chunks,
                 chunk_preview=item.chunk[:200],
@@ -555,6 +630,7 @@ async def storage_worker_task(
             item.source,
             item.source_url,
             item.published_date,
+            origin_url=item.origin_url or None,
         )
 
         # ── Validation capture ────────────────────────────────────────────────

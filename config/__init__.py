@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     # adjudicates it, so turning this off just means every profile stays
     # deterministic-only, exactly like before R-3 shipped.
     site_strategy_llm_enabled: bool = True
+    # Phase R-4 kill switch. False (default) = every page uses
+    # PageStrategy.DEFAULT, reproducing today's pipeline byte-for-byte —
+    # SiteProfile is populated (R-1/R-2/R-3) but nothing reads it into the
+    # live crawl/chunk/extract path yet. True threads the learned/adjudicated
+    # strategy through fetch → chunk → extract for real.
+    adaptive_pipeline_enabled: bool = False
 
     # Deduplication / entity matching (Phase S-3 — multi-signal matcher)
     # All tunable via .env so matching behaviour can be calibrated against real

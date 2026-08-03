@@ -196,6 +196,48 @@ async def probe_and_store(url: str, *, force: bool = False, client=None) -> Site
         db.close()
 
 
+def store_deterministic(url: str, html: str) -> SiteProfile:
+    """
+    Persist a profile derived ONLY from the deterministic inspector, reusing
+    HTML the crawler already fetched — no extra network I/O, no LLM, no GPU
+    mutex (Phase R-4). This is what lets a brand-new source get a usable
+    strategy on its very first crawl (the R-7 "cold add, zero tuning"
+    requirement) without the live crawl loop ever touching Ollama.
+
+    The richer LLM-adjudicated verdict, and a proper independent (static +
+    rendered) probe for render_gain, still come from probe_and_store() —
+    the dashboard's "Profile all sources" / "Re-inspect" actions — which
+    this function deliberately does not duplicate or replace.
+
+    Never clobbers an existing row: if a profile for this exact
+    (domain, url_pattern) already appeared (a probe, or another page in the
+    same crawl hitting the same pattern first), that row wins.
+    """
+    from ingestion.site_inspector import probe_html, derive_strategy_deterministic
+    from config.tuning_loader import get_inspector_config
+
+    db = SessionLocal()
+    try:
+        domain = normalize_domain(url)
+        pattern = normalize_path_pattern(url)
+        row = db.query(SiteProfile).filter_by(domain=domain, url_pattern=pattern).first()
+        if row is not None:
+            return row
+
+        cfg = get_inspector_config()
+        sig = probe_html(html, url, cfg)
+        strat = derive_strategy_deterministic(sig, cfg)
+
+        row = SiteProfile(domain=domain, url_pattern=pattern)
+        db.add(row)
+        _apply_strategy(row, strat, source_id=_resolve_source_id(url), signals=sig.to_dict())
+        db.commit()
+        db.refresh(row)
+        return row
+    finally:
+        db.close()
+
+
 def _apply_strategy(row: SiteProfile, strat, *, source_id, signals) -> None:
     """Write a PageStrategy onto a SiteProfile row. Shared by the real probe
     path above and the speculative (unprobed) profile path below."""

@@ -66,6 +66,7 @@ def upsert_startup(
     source_url: str,
     published_date: Optional[str] = None,
     provenance: Optional[dict] = None,
+    origin_url: Optional[str] = None,
 ) -> tuple:
     """
     Write path with staged review (Phase S-3b). See module docstring.
@@ -73,6 +74,15 @@ def upsert_startup(
     provenance : optional dict with any of "source_name", "sender", "subject"
       (newsletter attribution). Web/RSS callers don't need it — source_name is
       resolved from the source registry by source_url.
+
+    origin_url : Phase R-4 fix. The crawl's start_url, when it differs from
+      source_url (the specific page this record was found on) — a multi-page
+      BFS crawl's registry match must be against the crawl's entry URL, not
+      whatever subpage happened to yield this record. source_entry["url"]
+      still records the real page (accurate provenance); only the registry
+      NAME lookup uses origin_url when given. None (every caller except the
+      web worker_queue) preserves today's exact behaviour — matching against
+      source_url itself, same as before this parameter existed.
 
     Returns (record_id, status):
       record_id — stable UUID string of the master this touched, or None on skip/error
@@ -101,7 +111,7 @@ def upsert_startup(
         return None, None
 
     now = datetime.utcnow()
-    source_name = (provenance or {}).get("source_name") or _resolve_source_name(source_url)
+    source_name = (provenance or {}).get("source_name") or _resolve_source_name(origin_url or source_url)
     source_entry = {
         "source": source,
         "source_name": source_name,

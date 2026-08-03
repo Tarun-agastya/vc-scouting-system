@@ -143,6 +143,39 @@ LOGO_GRID_CHUNK_HEADER = (
 )
 
 
+def split_name_batches(names: List[str], n: int) -> List[str]:
+    """
+    Phase R-4 — structured-list counterpart to split_web_page's name-batching:
+    takes entity names the scraper already harvested structurally, no marker-
+    text round-trip. Same batching/header convention so downstream (the
+    candidate-filter bypass, the extraction prompt) treats these identically
+    to the legacy logo-grid batches.
+    """
+    n = max(1, n)
+    names = [x for x in names if x and x.strip()]
+    chunks: List[str] = []
+    for i in range(0, len(names), n):
+        batch = names[i:i + n]
+        chunks.append(LOGO_GRID_CHUNK_HEADER + "\n" + "\n".join(batch))
+    return chunks
+
+
+def split_cards(blocks: List[tuple]) -> List[str]:
+    """
+    Phase R-4 — one chunk per structural card, no overlap, no sliding window:
+    each card is already a complete, independent unit (a card_directory page's
+    per-company block), so re-chunking it would only risk splitting one
+    company's own fields across two calls for no benefit.
+    """
+    chunks: List[str] = []
+    for name, text in blocks:
+        text = (text or "").strip()
+        if not text:
+            continue
+        chunks.append(f"{name}:\n{text}" if name else text)
+    return chunks
+
+
 def split_web_page(
     text: str,
     chunk_size: int = CHUNK_SIZE,

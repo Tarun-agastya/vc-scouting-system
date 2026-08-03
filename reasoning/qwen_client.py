@@ -440,7 +440,7 @@ class QwenClient:
             )
         return self._site_strategy_ollama_client
 
-    def extract_startups(self, text: str) -> list:
+    def extract_startups(self, text: str, chunk_kind: Optional[str] = None) -> list:
         """
         Extract startup entities from text using the small fast extraction model.
 
@@ -453,13 +453,24 @@ class QwenClient:
         source-grounding gate (_ground_startup) that nulls fabrication-prone
         fields unsupported by this chunk's text, and carries a bounded excerpt
         of the source chunk (`_source_excerpt`) for the Phase H-3 recheck.
+
+        chunk_kind (Phase R-4): None (every legacy caller) or "name_batch"
+        always gets the full EXTRACTION_PROMPT — that's today's exact,
+        unconditional behaviour, since a legacy chunk's own text already
+        carries the LOGO_GRID_CHUNK_HEADER self-description when it's a name
+        batch. Only an explicit "prose"/"card" (the adaptive pipeline telling
+        this call directly that the chunk isn't a bare name list) switches to
+        EXTRACTION_PROMPT_PROSE — ~30 lines shorter per call, a real token
+        saving, since the model no longer needs instructions for a shape this
+        chunk provably isn't.
         """
-        from reasoning.prompts import EXTRACTION_PROMPT, SYSTEM_EXTRACTOR
+        from reasoning.prompts import EXTRACTION_PROMPT, EXTRACTION_PROMPT_PROSE, SYSTEM_EXTRACTOR
         from config.tuning_loader import get_extraction_rules, get_grounding_config
 
         rules = get_extraction_rules()
         exclude_rules = "\n".join(f"- {line}" for line in (rules.get("exclude") or []))
-        prompt = EXTRACTION_PROMPT.format(
+        template = EXTRACTION_PROMPT if chunk_kind in (None, "name_batch") else EXTRACTION_PROMPT_PROSE
+        prompt = template.format(
             text=text,
             include_rules=rules.get("include", ""),
             exclude_rules=exclude_rules,

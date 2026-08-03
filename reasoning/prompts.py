@@ -67,10 +67,53 @@ came from. In that case:
     * sponsors/partners that are established firms rather than startups —
       banks, insurers, law firms, utilities ("VR-Bank", "Sonntag und
       Partner", "Maucher Jenkins")
+    * navigation, pagination, or call-to-action link text that happens to
+      sit inside the same repeating grid as the real company cards ("Bring
+      me back to the incubation program", "Load more", "View all",
+      "Back to overview", "Zurück zur Übersicht") — this is UI chrome, not
+      a company, no matter how sentence-like or button-like it reads.
   Skipping these is correct and expected; the EXCLUDE rules above still apply
   to every entry in the list.
 - Do NOT invent an industry, description, location, or year to fill the gap.
 - If the list contains genuine company names, returning an empty list is wrong.
+
+For all other unknown fields use "" (strings) or 0 (founded_year). Never guess a value.
+Return an empty startups list only if the text contains absolutely no matching companies.
+
+Text:
+{text}"""
+
+# Phase R-4 — same prompt minus the BARE NAME LISTS section, for chunks the
+# adaptive pipeline already knows are NOT a bare name list (ordinary prose,
+# or a structural card carrying real per-company text) — the strategy
+# object tells the pipeline this directly, so the model no longer needs ~30
+# lines instructing it how to recognise a shape this chunk isn't. Used only
+# when settings.adaptive_pipeline_enabled; every legacy call path keeps
+# using EXTRACTION_PROMPT unconditionally, unchanged.
+EXTRACTION_PROMPT_PROSE = """Extract every technology startup or scale-up mentioned in the text below.
+
+INCLUDE: {include_rules}
+
+EXCLUDE:
+{exclude_rules}
+
+Field instructions:
+- one_liner: exactly 1 sentence — what the company does and who it serves. This is the first thing a VC reads to decide if they are interested. Be specific, never generic.
+- description: 2-3 sentences with more context (product, traction, differentiation).
+- tech_cluster: the specific technology domain, e.g. "AI/ML Infrastructure", "ClimateTech - Carbon Capture", "FinTech - Payments", "DeepTech - Robotics", "B2B SaaS - HR Tech". Be precise.
+- employee_count: one of exactly: "1-10", "11-50", "51-200", "201-500", "500+" — use "" if not mentioned.
+- address: full street address if mentioned; city + country is acceptable if no street address is given; "" if unknown.
+- contact_info: email address or LinkedIn URL if mentioned, else "".
+
+CRITICAL — per-company grounding (if the text mentions more than one company):
+- Every field you report for a company must come from the SAME sentence or
+  paragraph that names that company. Never borrow a fact (founding year,
+  funding amount, funding stage, headcount) from a different company's
+  paragraph, even if it appears right next to this one.
+- If a specific fact (founding year, headcount, funding amount) is not
+  literally stated for THIS company, output "" or 0 for it. A blank field is
+  always correct; a guessed one is not — do not infer, estimate, round, or
+  pattern-match a "plausible" value from general knowledge or from context.
 
 For all other unknown fields use "" (strings) or 0 (founded_year). Never guess a value.
 Return an empty startups list only if the text contains absolutely no matching companies.

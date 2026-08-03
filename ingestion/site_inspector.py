@@ -77,6 +77,11 @@ class ItemFeatures:
     tag_count: int
     has_img: bool
     has_heading: bool
+    # Full item text, bounded — Phase R-4's card_structured extraction mode
+    # needs the actual per-card content, not just its length. Kept on the
+    # frozen dataclass (not re-parsed from the DOM later) so a card's text is
+    # captured exactly once, at detection time.
+    text: str = ""
 
 
 @dataclass
@@ -328,13 +333,15 @@ def _build_group(sig, parent, members, is_junk_name, name_only_max, name_only_fr
     items = []
     for el in members:
         a = el.find("a", href=True)
+        full_text = el.get_text(" ", strip=True)
         items.append(ItemFeatures(
             name=_item_name(el, is_junk_name),
             href=(a.get("href") if a else None),
-            text_len=len(el.get_text(" ", strip=True)),
+            text_len=len(full_text),
             tag_count=len(el.find_all(True)),
             has_img=el.find("img") is not None,
             has_heading=any(el.find(t) for t in _HEADING_TAGS),
+            text=full_text[:3000],
         ))
 
     n = len(items)
@@ -707,15 +714,17 @@ def count_entities(html: str, url: str = "", cfg: dict = None) -> int:
 
 
 def harvest_entities(html: str, url: str = "", cfg: dict = None) -> tuple:
-    """(names, per-card text blocks) from the primary group only."""
+    """
+    (names, per-card (name, text) blocks) from the primary group only —
+    Phase R-4's card_structured/alt_harvest extraction modes consume this
+    directly instead of the page's full text.
+    """
     sig = probe_html(html, url, cfg)
     if not sig.primary_group:
         return [], []
     g = sig.primary_group
     names = [n for n in g.names()]
-    blocks = []
-    soup = BeautifulSoup(html, "html.parser")
-    del soup  # blocks are built from item features; kept simple for R-1
+    blocks = [(i.name, i.text) for i in g.items if i.text]
     return names, blocks
 
 
