@@ -434,11 +434,19 @@ export default {
                   ? `<a href="${esc(s.source_url)}" target="_blank" rel="noopener" title="${esc(s.source_url)}" onclick="event.stopPropagation()">${esc(sourceLabel(s.source_url, s.source))}</a>`
                   : esc(sourceLabel(s.source_url, s.source))}</td>
               </tr>
-              <tr class="detail-row hidden" data-detail-for="${esc(s.id)}"><td colspan="${cols.length + 1}"></td></tr>
             `).join("")}
           </tbody>
         </table>`;
       resultsRegion.appendChild(wrap);
+
+      // Detail/edit panel: a sibling of .table-wrap, not a colspan row inside
+      // the <table> (see app.css's .detail-panel comment for why — an
+      // in-table detail row forced the WHOLE table wider to fit the wide
+      // edit form, and its own horizontal scrollbar ended up unreachable at
+      // the bottom of a huge inflated table).
+      const detailPanel = document.createElement("div");
+      detailPanel.className = "detail-panel hidden";
+      resultsRegion.appendChild(detailPanel);
 
       renderSelectionToolbar();
 
@@ -489,11 +497,13 @@ export default {
       wrap.querySelectorAll("tbody tr[data-id]").forEach((tr) => tr.addEventListener("click", () => {
         const id = tr.dataset.id;
         state.expandedId = state.expandedId === id ? null : id;
-        wrap.querySelectorAll(".detail-row").forEach((dr) => dr.classList.add("hidden"));
+        wrap.querySelectorAll("tbody tr[data-id]").forEach((r) => r.classList.toggle("is-selected", r.dataset.id === state.expandedId));
         if (state.expandedId) {
-          const dr = wrap.querySelector(`.detail-row[data-detail-for="${CSS.escape(id)}"]`);
-          dr.classList.remove("hidden");
-          openDetail(dr.querySelector("td"), id);
+          detailPanel.classList.remove("hidden");
+          openDetail(detailPanel, id);
+        } else {
+          detailPanel.classList.add("hidden");
+          detailPanel.innerHTML = "";
         }
       }));
     }
