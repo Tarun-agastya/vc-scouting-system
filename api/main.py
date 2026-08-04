@@ -73,27 +73,6 @@ async def lifespan(app: FastAPI):
             from processing.review_explainer import explain_pending_reviews
             await explain_pending_reviews(limit=30)
 
-        async def _scheduled_press_monitor():
-            """
-            Daily GreenTech Hub press monitor (Phase PM, 4 Aug 2026):
-            download today's Memminger Zeitung e-paper edition, scan for
-            GreenTech Hub / portfolio / partner mentions, email a digest to
-            press_monitor_recipients. Independent of the VC-scouting
-            pipeline (own module, own credentials) — a failure here never
-            affects ingestion. Silently skips if not configured, same
-            pattern as the Gmail top-up job.
-            """
-            from config import settings
-            if not settings.epaper_email or not settings.epaper_password:
-                logger.debug("[PressMonitor] epaper credentials not configured — skipping")
-                return
-            from press_monitor.run_daily import run
-            try:
-                result = await run()
-                logger.info(f"[PressMonitor] daily run: {result}")
-            except Exception as exc:
-                logger.error(f"[PressMonitor] daily run failed: {exc}")
-
         async def _scheduled_recheck():
             """
             Nightly (Phase H-3): re-verify a batch of the unverified backlog
@@ -150,22 +129,13 @@ async def lifespan(app: FastAPI):
             replace_existing=True,
         )
 
-        # Press monitor: daily at 08:00 — well after the e-paper typically
-        # publishes, well before the 13:00 Gmail top-up so the two never
-        # collide.
-        scheduler.add_job(
-            func=_scheduled_press_monitor,
-            trigger=CronTrigger(hour=8, minute=0),
-            id="press_monitor",
-            replace_existing=True,
-        )
-
         scheduler.start()
         app.state.scheduler = scheduler
         logger.info(
             "Background scheduler started (full sweep Mon+Thu 05:00, Gmail top-up daily 13:00, "
-            "LLM review explanations nightly 02:00, verification recheck nightly 03:00, "
-            "press monitor daily 08:00)"
+            "LLM review explanations nightly 02:00, verification recheck nightly 03:00). "
+            "The press monitor is a fully separate launchd service (com.gthub.pressmonitor, "
+            "daily 08:00) — not part of this scheduler, see press_monitor/README.md."
         )
     except Exception as exc:
         logger.warning(f"Scheduler could not start: {exc}")

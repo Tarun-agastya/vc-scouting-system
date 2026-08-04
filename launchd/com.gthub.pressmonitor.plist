@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.gthub.pressmonitor</string>
+
+    <!-- Deliberately NOT com.vcscouting.* — this is a fully separate
+         service from the VC-scouting API (com.vcscouting.api), so a
+         restart/crash/redeploy of one never affects the other, and their
+         logs never mix. It shares only the local Ollama summarizer and
+         (by the owner's own choice) the Gmail OAuth token — nothing else,
+         no Postgres/Qdrant, no process, no scheduler. -->
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>-m</string>
+        <string>press_monitor.run_daily</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/gthubaiuser/vc-scouting-system/vc-scouting-system</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/gthubaiuser</string>
+    </dict>
+
+    <!-- One-shot daily job, not a long-running service — no
+         KeepAlive/RunAtLoad (those are for com.vcscouting.api). Runs once
+         at 08:00 every day and exits. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>8</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/gthubaiuser/vc-scouting-system/vc-scouting-system/logs/pressmonitor.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/gthubaiuser/vc-scouting-system/vc-scouting-system/logs/pressmonitor.error.log</string>
+</dict>
+</plist>
