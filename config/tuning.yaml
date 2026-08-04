@@ -243,6 +243,7 @@ institutional_junk:
     - bezirksverband
     - gemeinde
     - stadtverwaltung
+    - newsflash
   # Known large, long-established incumbents that keep slipping through the
   # prompt-level "exclude traditional incumbents" rule specifically on
   # bare-name-list (logo-grid) pages, where the BARE NAME LISTS prompt

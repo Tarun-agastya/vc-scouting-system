@@ -265,8 +265,14 @@ simply not mention it?
 Report:
 - identity_match: true if the source text is clearly ABOUT this named
   company (even briefly); false if the text doesn't describe this company
-  at all, describes a different company, or the name doesn't genuinely
-  match what the text is about.
+  at all, describes a different company, the name doesn't genuinely match
+  what the text is about, OR "{name}" is actually an individual PERSON
+  (a founder, investor, or journalist named in the text — e.g. mentioned
+  as "X, ein bekannter Investor, sagte...") rather than a company — this
+  happens when extraction pulls a person's name out of a byline or quote
+  attribution instead of the company actually being discussed. A record
+  about a person is not a company record, no matter how notable that
+  person is in the startup world.
 - summary: 1-3 plain sentences a human reviewer can read in five seconds —
   say what's solid and what to double check.
 - unsupported_fields: field names the source text simply does NOT mention.
@@ -318,19 +324,34 @@ WEB_VERIFICATION_PROMPT = """Web search results for "{name}" ({context}):
 Stored record for "{name}":
 {fields}
 
-Step 0 — first check that "{name}" is itself a real, single company name,
-not two different companies merged into one. This happens when extraction
-pulls a sentence naming two co-mentioned companies (e.g. "Porters and BLP
-Digital took the top prize", "X and Y both raised funding this week") and
-concatenates them into one bogus combined name instead of recognising them
-as two separate entities. Signs of this: the search results consistently
-treat "{name}"'s two halves as two distinct, separately-covered companies
-rather than one; or you cannot find a single result referring to the whole
-name as one entity, only to a piece of it. If this looks like the case,
-set identity_match=false and say so plainly in summary, naming the two
-likely-separate companies if you can tell them apart from the results —
-do not attempt to silently pick one half or invent a merged profile for
-the combined name.
+Step 0 — first check that "{name}" is itself a real, single COMPANY name —
+not two different companies merged into one, and not an individual
+person's name that ended up in the company-name field by mistake.
+
+- Two merged companies: this happens when extraction pulls a sentence
+  naming two co-mentioned companies (e.g. "Porters and BLP Digital took
+  the top prize", "X and Y both raised funding this week") and
+  concatenates them into one bogus combined name instead of recognising
+  them as two separate entities. Signs of this: the search results
+  consistently treat "{name}"'s two halves as two distinct, separately-
+  covered companies rather than one; or you cannot find a single result
+  referring to the whole name as one entity, only to a piece of it.
+
+- A person, not a company: this happens when extraction pulls an
+  investor's, founder's, or journalist's name out of an article byline or
+  a "quote from X" attribution instead of the company actually being
+  discussed (e.g. "Marc Samwer", "Frederic Westerberg"). Signs of this:
+  the search results are consistently about a PERSON (a bio, a LinkedIn
+  profile, an "X is the founder/investor at Y" mention) rather than an
+  organisation with its own products/services/funding history — even if
+  that person is genuinely notable in the startup world.
+
+If either case looks true, set identity_match=false and say so plainly in
+summary — name the two likely-separate companies if it's a merge, or name
+which real person/company the record actually should have been if it's a
+misattributed byline. Do not attempt to silently pick one half, invent a
+merged profile, or treat a person's own biography as if it were a
+company's profile.
 
 Step 1 — for EACH search result above, decide whether it is genuinely about
 THIS specific company (matching business/industry/location where stated), or
@@ -390,12 +411,14 @@ stored field:
 Report:
 - identity_match: true if at least one result is genuinely about this named
   company (per Step 1); false if every result is about a different company,
-  nothing relevant came back at all, or the name itself looks like two
-  merged companies (per Step 0).
+  nothing relevant came back at all, the name looks like two merged
+  companies, or the name is actually a person (per Step 0).
 - summary: 1-3 plain sentences a human reviewer can read in five seconds —
   say explicitly if you had to discard results about a different,
-  similarly-named company, or if the stored name looks like two companies
-  merged into one (name both, if identifiable, so a human can split them).
+  similarly-named company; if the stored name looks like two companies
+  merged into one (name both, if identifiable, so a human can split them);
+  or if the record is actually a person, not a company (name the real
+  company they're associated with, if the results reveal one).
 - findings: a list of {{field, verdict, correct_value, source_url}} — one
   entry per field where a genuinely-matching result contradicts the stored
   value. verdict is always "contradicted" (only report fields you're

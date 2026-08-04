@@ -158,7 +158,7 @@ DEFAULTS = {
             "stadtsparkasse",
             "versicherung", "krankenkasse", "ihk", "handwerkskammer", "kammer",
             "rechtsanwalt", "rechtsanwälte", "kanzlei", "notariat", "ministerium",
-            "landkreis", "bezirksverband", "gemeinde", "stadtverwaltung",
+            "landkreis", "bezirksverband", "gemeinde", "stadtverwaltung", "newsflash",
         ],
         "known_incumbents": [
             "liebherr", "peri", "goldbeck", "ed. züblin", "züblin",
