@@ -37,7 +37,6 @@ async function resolve() {
   document.querySelectorAll(".nav__item").forEach((el) =>
     el.classList.toggle("is-active", el.dataset.route === name));
   document.getElementById("topbar-title").textContent = view.title || "";
-  document.getElementById("sidebar")?.classList.remove("is-open");
 
   const el = document.getElementById("view");
   el.innerHTML = `<div class="row" style="padding:40px;justify-content:center">

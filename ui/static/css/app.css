@@ -4,7 +4,13 @@
    ══════════════════════════════════════════════════════════════════════════ */
 
 *, *::before, *::after { box-sizing: border-box; }
-html, body { height: 100%; }
+/* overflow-x lives on html ONLY — setting it on both html and body is a
+   known browser quirk where body becomes its own scroll container and the
+   overflow never reaches the visible page scrollbar (confirmed live 4 Aug
+   via a headless viewport test: .app measured 1100px wide but
+   documentElement.scrollWidth still reported the 700px viewport). */
+html { height: 100%; overflow-x: auto; }
+body { height: 100%; }
 body {
   margin: 0;
   background: var(--paper);
@@ -24,7 +30,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 
 /* ── App shell ──────────────────────────────────────────────────────────── */
-.app { display: grid; grid-template-columns: var(--sidebar-w) 1fr; min-height: 100vh; }
+/* min-width (4 Aug): the sidebar's mobile collapse below had no toggle to
+   open it back — confirmed .sidebar.is-open was only ever REMOVED
+   (js/router.js) and never added anywhere, so shrinking the window past
+   900px hid the sidebar with no way back. Fixed by keeping the sidebar
+   always visible and letting the shell scroll horizontally instead — a
+   narrow window reveals a scrollbar, never a dead end. */
+.app { display: grid; grid-template-columns: var(--sidebar-w) 1fr; min-height: 100vh; min-width: 1100px; }
 
 .sidebar {
   background: var(--surface);
@@ -233,14 +245,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .palette__empty { padding: 20px; text-align: center; color: var(--ink-3); font-size: 13px; }
 
 /* ── Responsive ─────────────────────────────────────────────────────────── */
+/* The sidebar no longer collapses below 900px (see .app's min-width note
+   above) — it stays put and the shell scrolls horizontally instead, so
+   it's always reachable. .grid-2/.inbox-grid still stack single-column
+   below their own natural min-width, independent of the shell's scroll. */
 @media (max-width: 900px) {
-  .app { grid-template-columns: 1fr; }
-  .sidebar {
-    position: fixed; left: 0; top: 0; z-index: 40;
-    transform: translateX(-100%); transition: transform var(--speed);
-    width: var(--sidebar-w);
-  }
-  .sidebar.is-open { transform: none; }
   .grid-2, .inbox-grid { grid-template-columns: 1fr; }
   .hidden-mobile { display: none; }
 }
