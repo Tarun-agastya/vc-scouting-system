@@ -83,12 +83,18 @@ class Settings(BaseSettings):
     # adjudicates it, so turning this off just means every profile stays
     # deterministic-only, exactly like before R-3 shipped.
     site_strategy_llm_enabled: bool = True
-    # Phase R-4 kill switch. False (default) = every page uses
-    # PageStrategy.DEFAULT, reproducing today's pipeline byte-for-byte —
-    # SiteProfile is populated (R-1/R-2/R-3) but nothing reads it into the
-    # live crawl/chunk/extract path yet. True threads the learned/adjudicated
-    # strategy through fetch → chunk → extract for real.
-    adaptive_pipeline_enabled: bool = False
+    # Phase R-4 kill switch. False = every page uses PageStrategy.DEFAULT,
+    # reproducing the pre-Phase-R pipeline byte-for-byte (SiteProfile still
+    # populated but unread). True threads the learned/adjudicated structural
+    # strategy through fetch → chunk → extract for real. Turned on by
+    # default 4 Aug — R-0 through R-7 were built, tested, and verified
+    # (validation/R*_VERIFICATION.md) specifically to replace the blind
+    # "≥12 alt texts = logo grid" heuristic with real per-page layout
+    # analysis; a hochschule-biberach.de crawl on the OLD (off) path is what
+    # produced ~124 fake "startups" from a photo carousel the same week —
+    # exactly the failure class this flag exists to prevent. Set False in
+    # .env to fall back to the old behaviour if a live source ever regresses.
+    adaptive_pipeline_enabled: bool = True
     # Phase R-5 — recall audit + auto-retry. A page is a "shortfall" when it
     # expected entities, actual recall fell below this ratio, AND the
     # absolute gap clears recall_shortfall_min_gap (the floor stops thrash

@@ -242,7 +242,19 @@ def _classify(evidence: dict, domain_match: bool) -> tuple:
     loc  = evidence["location_match"]
     score = evidence["aggregate_score"]
 
-    corroborators = [name, emb, fnd, loc]
+    # location deliberately excluded from `corroborators`/`num_strong`
+    # (confirmed live 4 Aug — a review-inbox-flooding audit): many genuinely
+    # different startups share a city/country purely because they're in the
+    # same hub (Zurich, Munich, Berlin...), and combined with an embedding
+    # score that clears STRONG on generic industry-vocabulary overlap alone
+    # (the same "AI HR Berlin Seed matches 100 firms" risk this module's own
+    # docstring already names), same-city + moderately-similar description
+    # was enough to hit num_strong>=2 for two unrelated companies. Location
+    # stays as a corroborator in the explicit name+embedding+location rule
+    # below (where name AND embedding already have to be strong on their
+    # own first) and in the weighted aggregate_score tiebreaker — it just
+    # can no longer be one of only two signals that trigger a review by itself.
+    corroborators = [name, emb, fnd]
     max_corrob = max(corroborators)
     num_strong = sum(1 for c in corroborators if c >= STRONG)
 

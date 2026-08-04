@@ -43,6 +43,20 @@ CRITICAL — per-company grounding (if the text mentions more than one company):
   always correct; a guessed one is not — do not infer, estimate, round, or
   pattern-match a "plausible" value from general knowledge or from context.
 
+CRITICAL — never merge two different companies into one name:
+- If a sentence names two or more DIFFERENT companies together (they shared
+  an award, were co-founded, appear in a list like "X and Y", "X, Y and Z"),
+  extract EACH one as its own separate startup record with its own name.
+  Never concatenate two company names into a single combined name field
+  (e.g. a headline reading "X and Y took the top prize" is TWO records —
+  "X" and "Y" — never one record named "X and Y").
+- Watch especially for a nearby paragraph mentioning a similarly-spelled or
+  partially-overlapping name (e.g. "BLP" in one sentence and "BLP Digital"
+  in the next) — these may be the SAME company (extract once) or may be two
+  DIFFERENT companies that happen to share a word (extract as two). Decide
+  from what the text actually says about each; never default to merging
+  just because the names look similar.
+
 BARE NAME LISTS (portfolio / logo grids):
 If the text says it is a list of company names shown as logos in a portfolio
 grid with no further description, then it is exactly that — a curated list of
@@ -114,6 +128,20 @@ CRITICAL — per-company grounding (if the text mentions more than one company):
   literally stated for THIS company, output "" or 0 for it. A blank field is
   always correct; a guessed one is not — do not infer, estimate, round, or
   pattern-match a "plausible" value from general knowledge or from context.
+
+CRITICAL — never merge two different companies into one name:
+- If a sentence names two or more DIFFERENT companies together (they shared
+  an award, were co-founded, appear in a list like "X and Y", "X, Y and Z"),
+  extract EACH one as its own separate startup record with its own name.
+  Never concatenate two company names into a single combined name field
+  (e.g. a headline reading "X and Y took the top prize" is TWO records —
+  "X" and "Y" — never one record named "X and Y").
+- Watch especially for a nearby paragraph mentioning a similarly-spelled or
+  partially-overlapping name (e.g. "BLP" in one sentence and "BLP Digital"
+  in the next) — these may be the SAME company (extract once) or may be two
+  DIFFERENT companies that happen to share a word (extract as two). Decide
+  from what the text actually says about each; never default to merging
+  just because the names look similar.
 
 For all other unknown fields use "" (strings) or 0 (founded_year). Never guess a value.
 Return an empty startups list only if the text contains absolutely no matching companies.
@@ -290,6 +318,20 @@ WEB_VERIFICATION_PROMPT = """Web search results for "{name}" ({context}):
 Stored record for "{name}":
 {fields}
 
+Step 0 — first check that "{name}" is itself a real, single company name,
+not two different companies merged into one. This happens when extraction
+pulls a sentence naming two co-mentioned companies (e.g. "Porters and BLP
+Digital took the top prize", "X and Y both raised funding this week") and
+concatenates them into one bogus combined name instead of recognising them
+as two separate entities. Signs of this: the search results consistently
+treat "{name}"'s two halves as two distinct, separately-covered companies
+rather than one; or you cannot find a single result referring to the whole
+name as one entity, only to a piece of it. If this looks like the case,
+set identity_match=false and say so plainly in summary, naming the two
+likely-separate companies if you can tell them apart from the results —
+do not attempt to silently pick one half or invent a merged profile for
+the combined name.
+
 Step 1 — for EACH search result above, decide whether it is genuinely about
 THIS specific company (matching business/industry/location where stated), or
 a different company that merely shares or resembles the name. This matters —
@@ -347,11 +389,13 @@ stored field:
 
 Report:
 - identity_match: true if at least one result is genuinely about this named
-  company (per Step 1); false if every result is about a different company
-  or nothing relevant came back at all.
+  company (per Step 1); false if every result is about a different company,
+  nothing relevant came back at all, or the name itself looks like two
+  merged companies (per Step 0).
 - summary: 1-3 plain sentences a human reviewer can read in five seconds —
   say explicitly if you had to discard results about a different,
-  similarly-named company.
+  similarly-named company, or if the stored name looks like two companies
+  merged into one (name both, if identifiable, so a human can split them).
 - findings: a list of {{field, verdict, correct_value, source_url}} — one
   entry per field where a genuinely-matching result contradicts the stored
   value. verdict is always "contradicted" (only report fields you're

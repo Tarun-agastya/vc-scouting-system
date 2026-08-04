@@ -28,6 +28,23 @@ def test_classify_domain_rename():
     assert outcome == "possible_duplicate" and risk == "high"
 
 
+def test_classify_same_city_alone_does_not_trigger_review():
+    """
+    Regression (4 Aug, review-inbox flooding audit): two unrelated startups
+    that happen to share a city, plus a moderately-strong embedding score
+    from generic same-industry vocabulary overlap (not real identity
+    evidence), must NOT be enough to stage a possible_duplicate review —
+    name is genuinely different and there's no founder overlap. Location can
+    still corroborate a match when name AND embedding are ALSO strong (see
+    test_classify_domain_rename-style cases), but must never be one of only
+    two signals that trigger review by itself.
+    """
+    ev = {"name_similarity": 0.3, "embedding_sim": 0.85, "founder_overlap": 0.0,
+          "location_match": 1.0, "aggregate_score": 0.4}
+    outcome, _, _ = _classify(ev, domain_match=False)
+    assert outcome == "no_match"
+
+
 def test_classify_weak_no_match():
     ev = {"name_similarity": 0.3, "embedding_sim": 0.4, "founder_overlap": 0.0,
           "location_match": 0.0, "aggregate_score": 0.25}
