@@ -26,6 +26,23 @@ class Settings(BaseSettings):
     # Gmail
     gmail_credentials_path: str = "./credentials/gmail_credentials.json"
 
+    # Press monitor (Phase PM, 4 Aug 2026) — daily Allgäuer/Memminger Zeitung
+    # e-paper scan for GreenTech Hub / portfolio / partner mentions.
+    # epaper_* are a real subscriber login (Corinna's), never committed.
+    # Sending reuses the existing newsletter Gmail account via SMTP + an app
+    # password — NOT the same as gmail_credentials_path, which is an OAuth
+    # token scoped gmail.readonly only (ingestion/newsletter_ingestor.py) and
+    # cannot send mail.
+    epaper_email: Optional[str] = None
+    epaper_password: Optional[str] = None
+    epaper_region: str = "ME"       # Memmingen — the Memminger Zeitung edition
+    epaper_publication: str = "Memminger Zeitung"
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: Optional[str] = None          # the sending Gmail address
+    smtp_app_password: Optional[str] = None  # Google Account app password, not the login password
+    press_monitor_recipients: str = "corinna.tappe@gt-hub.de"  # comma-separated
+
     # Tavily (Phase W web verification search backend, 24 Jul — replaces the
     # DuckDuckGo HTML scrape, which an anti-bot block made unreliable; see
     # ingestion/web_search.py's module docstring for the full evaluation).

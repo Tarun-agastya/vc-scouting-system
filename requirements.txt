@@ -46,5 +46,8 @@ apscheduler==3.10.4
 pyyaml==6.0.1
 ruamel.yaml==0.19.1
 
+# ── Press monitor (e-paper PDF text extraction + page screenshots) ───────────
+pymupdf==1.26.5
+
 # ── Testing ──────────────────────────────────────────────────────────────────
 pytest==8.4.2

@@ -1,0 +1,50 @@
+# Press monitor watch list — Allgäuer/Memminger Zeitung daily e-paper scan.
+#
+# Edit this file to change what's watched for — no code change needed.
+# Each entry is matched case-insensitively as a literal substring against
+# each page's extracted text. Keep names as they'd actually appear in a
+# newspaper article (a person's name or unrelated word can coincidentally
+# match a short/common company name — e.g. "Reisacher" is also a real
+# German surname — matches are NOT auto-filtered; every hit goes to a human
+# via the email digest with its own summary + screenshot for a quick glance,
+# same "evidence not guessing" stance as the rest of this project).
+
+organization:
+  - GreenTech Hub
+  - GT Hub
+
+general:
+  - Startup
+  - Start-up
+  - Gründer   # "founder" — catches startup-adjacent local coverage even
+              # when a specific company name isn't mentioned
+
+startups:
+  - polymerActive
+  - summ.ai
+  - archery
+  - Innovativ-Lehm
+  - Onox
+  - clight
+  - chargylize
+  - HyWin
+  - Asset Energy
+
+partners:
+  # Founding shareholders
+  - Alois Müller
+  - SÜDPACK
+  - Reisacher
+  - Kutter
+  # Named partner / member companies
+  - Goldhofer
+  - DACHSER
+  - Demmeler
+  - BauGrund Süd
+  - Knestel
+  - Vensol
+  - AVIA
+  - CB-tec
+  - Baufritz
+  - HyWin Deutschland
+  - e-con AG
