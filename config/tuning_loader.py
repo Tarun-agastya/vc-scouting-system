@@ -172,6 +172,10 @@ DEFAULTS = {
             r"^(?=.*\b(?:startups?|gr[üu]nder\w*)\b)"
             r"(zwei|drei|vier|f[üu]nf|sechs|sieben|acht|neun|zehn)\b"
         ),
+        "regional_collective_pattern": (
+            r"\b(m[üu]nchner|munich|schw[äa]bisch\w*|bayerisch\w*|deutsche?)\b"
+            r".*\b(startups|gr[üu]nder\w*)\b"
+        ),
     },
     "inspector": {
         "min_group_items": 4,
@@ -310,7 +314,8 @@ def get_institutional_junk_config() -> dict:
     """
     {'enabled': bool, 'institution_keywords': [...], 'known_incumbents': [...],
     'generic_phrase_regex': str, 'reject_colon': bool, 'reject_question_mark':
-    bool, 'max_commas': int, 'headline_number_pattern': str, '_mtime': float}
+    bool, 'max_commas': int, 'headline_number_pattern': str,
+    'regional_collective_pattern': str, '_mtime': float}
     """
     cfg = dict(_load()["institutional_junk"])
     cfg["_mtime"] = _cache_mtime  # lets qwen_client cache its compiled pattern

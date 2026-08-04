@@ -41,6 +41,11 @@ def test_confirmed_headline_and_multi_entity_names_are_caught():
         "Kibaudi, Newsense Engineering, Datfid",
         "menstruflow, Nouxx, nghty berlin, Olena Scent",
         "Xplore Freerider, Xplore Market Pioneer, Xplore Venture Creator",
+        "Münchner Startups",
+        "Münchner Healthtech-Startups",
+        "Wie Münchner Startups Drohnen abheben lassen",
+        "5 Münchner E-Commerce-Startups im Blick",
+        "US-Connection für Münchner Robotik-Startups",
     ]
     for name in names:
         assert _is_implausible_startup_name(name, _CFG), f"expected {name!r} to be flagged as junk"

@@ -284,6 +284,16 @@ institutional_junk:
   # DB entry containing "Gründerzentrum" that does NOT start with a
   # number word (correctly not matched).
   headline_number_pattern: "^(?=.*\\b(?:startups?|gr[üu]nder\\w*)\\b)(zwei|drei|vier|f[üu]nf|sechs|sieben|acht|neun|zehn)\\b"
+  # Broader sibling of headline_number_pattern: a region/city demonym
+  # co-occurring with the PLURAL collective noun "Startups"/"Gründer..."
+  # anywhere in the name — a real company essentially never combines these
+  # (it's always a category label: "Münchner Robotik-Startups", "Wie
+  # Münchner Startups Drohnen abheben lassen", "5 Münchner E-Commerce-
+  # Startups im Blick" — the last one has a DIGIT count, which
+  # headline_number_pattern's spelled-out-number requirement misses).
+  # Confirmed live 4 Aug: 12/12 matches in the DB were headline junk,
+  # zero false positives.
+  regional_collective_pattern: "\\b(m[üu]nchner|munich|schw[äa]bisch\\w*|bayerisch\\w*|deutsche?)\\b.*\\b(startups|gr[üu]nder\\w*)\\b"
 
 # Phase P-1 (29 Jul): a soft, config-toggleable scouting bias for whichever
 # theses in config/theses.yaml are marked `priority: true` (e.g. SÜDPACK's
