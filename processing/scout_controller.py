@@ -139,7 +139,7 @@ def _progress_to_dict(progress: RecordProgress) -> dict:
 _METRIC_FIELDS = (
     "pages_crawled", "pages_skipped", "chunks_created", "chunks_filtered",
     "qwen_calls", "qwen_failures", "startups_extracted", "startups_inserted",
-    "updates_staged", "duplicates_staged", "unchanged",
+    "updates_staged", "duplicates_staged", "unchanged", "bare_stub_new_masters",
     # Phase R-0 adaptive-pipeline instrumentation. Zero until later phases
     # populate them; listed now so each phase is measurable from the start.
     "pages_rendered", "pages_static", "pagination_clicks", "pagination_items_gained",
@@ -166,6 +166,11 @@ def _metrics_to_dict(metrics) -> dict:
     # Legacy alias — kept so any older consumer of the run-history shape keeps
     # working; the real field is duplicates_staged above.
     out["duplicates_detected"] = out["duplicates_staged"]
+
+    # Per-source anomaly circuit breaker (4 Aug) — surfaced as a plain bool
+    # so the dashboard can badge a run without re-deriving the threshold.
+    bare_stub_burst = getattr(metrics, "bare_stub_burst", None)
+    out["bare_stub_burst"] = bool(bare_stub_burst()) if callable(bare_stub_burst) else False
 
     # Per-page expected-vs-actual, only once something has populated it. This
     # is what makes a low-recall page visible in the dashboard instead of being

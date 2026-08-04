@@ -35,7 +35,7 @@ export default {
 
   mount(el, params = {}) {
     const state = {
-      status: "pending", type: "", risk: "", q: "",
+      status: "pending", type: "", risk: "", q: "", evidenceLevel: "",
       runId: params.run_id || "", // Phase Q2: batch filter — either deep-linked from Browse or picked below
       reviews: [], selectedId: null, busy: false,
       selectedIds: new Set(), // Phase Q4: bulk-select for approve/reject, cleared on any filter change
@@ -65,6 +65,11 @@ export default {
               <option value="low">🟡 New info</option>
               <option value="anomaly">⚠️ Anomaly</option>
             </select>
+            <select class="select" id="f-evidence" style="max-width:190px" title="possible_duplicate/anomaly reviews where BOTH sides have no description and no website">
+              <option value="">All evidence levels</option>
+              <option value="minimal">⬜ Minimal evidence (bare stubs)</option>
+              <option value="normal">Has real evidence</option>
+            </select>
             <span class="dim" style="margin-left:auto;font-size:12px">j/k navigate · a approve · r reject</span>
           </div>
           <div class="row wrap" style="gap:8px;margin-top:8px" id="batch-row"></div>
@@ -84,6 +89,7 @@ export default {
     el.querySelector("#f-status").addEventListener("change", (e) => { state.status = e.target.value; loadList(); });
     el.querySelector("#f-type").addEventListener("change", (e) => { state.type = e.target.value; loadList(); });
     el.querySelector("#f-risk").addEventListener("change", (e) => { state.risk = e.target.value; loadList(); });
+    el.querySelector("#f-evidence").addEventListener("change", (e) => { state.evidenceLevel = e.target.value; loadList(); });
     el.querySelector("#f-q").addEventListener("input", debounce((e) => { state.q = e.target.value; loadList(); }, 300));
 
     // Re-render just the batch row (picker selection / clear button visibility)
@@ -125,6 +131,7 @@ export default {
           status: state.status || undefined,
           review_type: state.type || undefined,
           risk_level: state.risk || undefined,
+          evidence_level: state.evidenceLevel || undefined,
           q: state.q || undefined,
           run_id: state.runId || undefined,
           limit: 200,

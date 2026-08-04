@@ -61,3 +61,30 @@ def test_same_name_no_website_not_silently_merged(make):
     r2, s2 = make("Nova Health", city="Lisbon", description="artisan vegan bakery and cafe chain")
     # different companies, same name, no website -> separate ids, never a silent merge
     assert not (r2 == r1 and s2 == "no_op")
+
+
+def test_possible_duplicate_between_bare_stubs_tagged_minimal_evidence(make, db):
+    """
+    Phase J-2 (4 Aug, review-inbox-flooding audit): a possible_duplicate
+    between two records with NO description and NO website on either side
+    (exactly the shape of the hochschule-biberach.de "HBC Campus 1"/"HBC
+    Campus 2" incident) must be tagged evidence_level="minimal" in the
+    review's evidence blob — never suppressed, just marked so the dashboard
+    can filter/bulk-triage these separately from reviews with real content.
+    """
+    r1, s1 = make("Campus Alpha 1")
+    r2, s2 = make("Campus Alpha 2")
+    assert s1 == "new_master"
+    assert s2 == "staged_duplicate"
+    rev = db.query(DuplicateReview).filter(DuplicateReview.master_id == r1).first()
+    assert rev is not None
+    assert (rev.evidence or {}).get("evidence_level") == "minimal"
+
+
+def test_possible_duplicate_with_real_evidence_tagged_normal(make, db):
+    r1, s1 = make("Bravo Robotics 1", description="modular warehouse picking robots")
+    r2, s2 = make("Bravo Robotics 2", description="modular warehouse picking robots")
+    assert s2 == "staged_duplicate"
+    rev = db.query(DuplicateReview).filter(DuplicateReview.master_id == r1).first()
+    assert rev is not None
+    assert (rev.evidence or {}).get("evidence_level") == "normal"

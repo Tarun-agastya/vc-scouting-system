@@ -39,6 +39,7 @@ DEFAULTS = {
             "Traditional incumbents: established non-tech corporations such as car makers, banks, industrial conglomerates (e.g. BMW, Deutsche Bank, Siemens, McKinsey, SAP if founded before 2000).",
             "VC firms, investment funds, accelerators, media outlets.",
             "Companies in medicine, biotech, e-commerce, or food retail (exception: packaging technology).",
+            "Named events, pitch days, competitions, or programs run by the accelerator/host organisation itself (e.g. 'Pitch & Match', 'Demo Day 2026', 'Gründungsnetzwerk', a dated year-suffixed program name) — these are events, not companies, even when they appear inside a list of company names.",
         ],
     },
     "candidate_filter": {
@@ -148,6 +149,21 @@ DEFAULTS = {
         "enabled": True,
         "boost": 1,
     },
+    "institutional_junk": {
+        "enabled": True,
+        "institution_keywords": [
+            "bank", "sparkasse", "volksbank", "raiffeisenbank", "kreissparkasse",
+            "stadtsparkasse",
+            "versicherung", "krankenkasse", "ihk", "handwerkskammer", "kammer",
+            "rechtsanwalt", "rechtsanwälte", "kanzlei", "notariat", "ministerium",
+            "landkreis", "bezirksverband", "gemeinde", "stadtverwaltung",
+        ],
+        "known_incumbents": [
+            "liebherr", "peri", "goldbeck", "ed. züblin", "züblin",
+            "wolff und müller", "leonhard weiß", "rentschler",
+        ],
+        "generic_phrase_regex": r"^(ein|eine|a|an)\s+\w",
+    },
     "inspector": {
         "min_group_items": 4,
         "card_score_threshold": 0.55,
@@ -217,6 +233,7 @@ def _load() -> dict:
             "grounding":        {**DEFAULTS["grounding"], **(raw.get("grounding") or {})},
             "geo_scope":        {**DEFAULTS["geo_scope"], **(raw.get("geo_scope") or {})},
             "priority_scouting": {**DEFAULTS["priority_scouting"], **(raw.get("priority_scouting") or {})},
+            "institutional_junk": {**DEFAULTS["institutional_junk"], **(raw.get("institutional_junk") or {})},
             "chunking":         {**DEFAULTS["chunking"], **(raw.get("chunking") or {})},
             "inspector":        {**DEFAULTS["inspector"], **(raw.get("inspector") or {})},
         }
@@ -277,6 +294,16 @@ def get_priority_scouting_config() -> dict:
     """{'enabled': bool, 'boost': int, '_mtime': float}"""
     cfg = dict(_load()["priority_scouting"])
     cfg["_mtime"] = _cache_mtime  # lets candidate_filter cache its compiled pattern
+    return cfg
+
+
+def get_institutional_junk_config() -> dict:
+    """
+    {'enabled': bool, 'institution_keywords': [...], 'known_incumbents': [...],
+    'generic_phrase_regex': str, '_mtime': float}
+    """
+    cfg = dict(_load()["institutional_junk"])
+    cfg["_mtime"] = _cache_mtime  # lets qwen_client cache its compiled pattern
     return cfg
 
 

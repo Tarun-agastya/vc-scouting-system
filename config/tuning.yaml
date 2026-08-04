@@ -28,6 +28,7 @@ extraction:
     - "VC firms, investment funds, accelerators, media outlets."
     - "Companies in medicine, biotech, e-commerce, or food retail (exception: packaging technology)."
     - "Companies headquartered/founded outside Europe (e.g. US, China, other Asia, elsewhere) — UNLESS the text explicitly states the company is expanding into, opening an office in, or specifically targeting the DACH/European market. Being mentioned in a German or European publication purely as general industry news or founder-profile commentary is NOT sufficient reason to include a non-European company — e.g. a German newsletter profiling a Chinese AI lab's founder is industry commentary, not a DACH/Europe startup to track."
+    - "Named events, pitch days, competitions, or programs run by the accelerator/host organisation itself (e.g. 'Pitch & Match', 'Demo Day 2026', 'Gründungsnetzwerk', a dated year-suffixed program name) — these are events, not companies, even when they appear inside a list of company names."
 
 
 candidate_filter:
@@ -202,6 +203,65 @@ geo_scope:
     - singapore
     - silicon valley
     - san francisco
+
+# Phase J (4 Aug) — deterministic post-extraction gate for institutions,
+# established incumbents, and fabricated generic-noun-phrase fragments that
+# the prompt-level EXCLUDE rules alone don't reliably catch (the same
+# lesson as geo_scope above: prompt instructions are necessary but not
+# sufficient, confirmed live twice now — the schwaben.digital 31 Jul
+# incident and the hochschule-biberach.de "unser-netzwerk" partner-logo
+# page 4 Aug, which extracted Liebherr/PERI/Goldbeck/Ed. Züblin alongside
+# banks, chambers of commerce, and law firms). Drops the WHOLE extracted
+# record (unlike grounding, which only nulls a field) — an institution is
+# not a startup at all, there is no partial record worth keeping.
+# institution_keywords: matched as a whole word/token in the lowercased
+# name (not a loose substring) so a real company containing a similar word
+# isn't false-positive dropped (mirrors ingestion/web_scraper.py's
+# _ALT_NOISE exact-match discipline).
+institutional_junk:
+  enabled: true
+  institution_keywords:
+    - bank
+    - sparkasse
+    - volksbank
+    - raiffeisenbank
+    - kreissparkasse
+    - stadtsparkasse
+    - versicherung
+    - krankenkasse
+    - ihk
+    - handwerkskammer
+    - kammer
+    - rechtsanwalt
+    - rechtsanwälte
+    - kanzlei
+    - notariat
+    - ministerium
+    - landkreis
+    - bezirksverband
+    - gemeinde
+    - stadtverwaltung
+  # Known large, long-established incumbents that keep slipping through the
+  # prompt-level "exclude traditional incumbents" rule specifically on
+  # bare-name-list (logo-grid) pages, where the BARE NAME LISTS prompt
+  # section's "don't skip an unfamiliar name" instruction can override the
+  # general exclude rule's intent. A small, explicit, growing list — add an
+  # entry whenever a new one is confirmed live, same living-list philosophy
+  # as ingestion/web_scraper.py's SKIP_PATTERNS.
+  known_incumbents:
+    - liebherr
+    - peri
+    - goldbeck
+    - "ed. züblin"
+    - züblin
+    - "wolff und müller"
+    - "leonhard weiß"
+    - rentschler
+  # Fabricated generic noun-phrase fragments ("a digital agency", "ein
+  # Games Studio") rather than real proper names — confirmed live 3 Aug on
+  # schwaben.digital's /presse page. Matched as a regex against the whole
+  # (stripped) name.
+  generic_phrase_regex: "^(ein|eine|a|an)\\s+\\w"
 
 # Phase P-1 (29 Jul): a soft, config-toggleable scouting bias for whichever
 # theses in config/theses.yaml are marked `priority: true` (e.g. SÜDPACK's

@@ -195,6 +195,7 @@ async def list_reviews(
     risk_level: Optional[str] = None,
     q: Optional[str] = None,       # company name filter — matches master_name or incoming_name
     run_id: Optional[str] = None,  # Phase Q2: filter to one bulk-verify/recheck batch's results
+    evidence_level: Optional[str] = None,  # Phase J-2 (4 Aug): "minimal" | "normal" — see storage._create_review
     limit: int = 100,
     db: Session = Depends(get_db),
 ):
@@ -210,6 +211,8 @@ async def list_reviews(
         query = query.filter(DuplicateReview.risk_level == risk_level)
     if run_id:
         query = query.filter(DuplicateReview.run_id == run_id)
+    if evidence_level:
+        query = query.filter(DuplicateReview.evidence["evidence_level"].astext == evidence_level)
     if q:
         like = f"%{q}%"
         query = query.filter(or_(
@@ -237,6 +240,7 @@ async def list_reviews(
                 "confidence": r.confidence,
                 "source": r.source,
                 "run_id": r.run_id,
+                "evidence_level": (r.evidence or {}).get("evidence_level"),
                 "llm_explanation": r.llm_explanation,
                 "status": r.status,
                 "created_at": r.created_at,

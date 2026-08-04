@@ -236,6 +236,48 @@ def _ground_startup(s: dict, source_text: str, cfg: dict) -> dict:
     return s
 
 
+def _is_institutional_junk(name: str, cfg: dict) -> bool:
+    """
+    Phase J (4 Aug): True if `name` is an institution/established incumbent
+    rather than a startup — a bank, chamber of commerce, law firm, insurer,
+    public body, a known large non-tech incumbent, or a fabricated generic
+    noun-phrase fragment ("a digital agency") rather than a real proper
+    name. Backs up (never replaces) the prompt-level EXCLUDE rules, which
+    proved unreliable on their own — confirmed twice live: a schwaben.digital
+    press-archive crawl (31 Jul/3 Aug) and a hochschule-biberach.de partner-
+    logo page (4 Aug) both extracted banks/chambers/law firms/large
+    industrial incumbents (Liebherr, PERI, Goldbeck, Ed. Züblin) as
+    "startups" despite the prompt already saying not to. Same "prompt alone
+    isn't enough" lesson as the geo_scope hard filter (Phase D).
+
+    Unlike _ground_startup, this drops the WHOLE record rather than nulling
+    a field — an institution is not a startup at all, there is no partial
+    record worth keeping.
+
+    Keyword/incumbent matching goes through _signal_present, which requires
+    a real word-boundary match for alphabetic terms (not a loose substring)
+    so a real company whose name merely contains a similar-looking
+    substring is never false-positive dropped.
+    """
+    if not cfg.get("enabled", True):
+        return False
+
+    name_lower = (name or "").strip().lower()
+    if not name_lower:
+        return False
+
+    if _signal_present(cfg.get("institution_keywords") or [], name_lower):
+        return True
+    if _signal_present(cfg.get("known_incumbents") or [], name_lower):
+        return True
+
+    pattern = cfg.get("generic_phrase_regex")
+    if pattern and re.match(pattern, name.strip(), re.IGNORECASE):
+        return True
+
+    return False
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -465,7 +507,7 @@ class QwenClient:
         chunk provably isn't.
         """
         from reasoning.prompts import EXTRACTION_PROMPT, EXTRACTION_PROMPT_PROSE, SYSTEM_EXTRACTOR
-        from config.tuning_loader import get_extraction_rules, get_grounding_config
+        from config.tuning_loader import get_extraction_rules, get_grounding_config, get_institutional_junk_config
 
         rules = get_extraction_rules()
         exclude_rules = "\n".join(f"- {line}" for line in (rules.get("exclude") or []))
@@ -492,6 +534,9 @@ class QwenClient:
                     )
                 data = json.loads(response["message"]["content"])
                 startups = [_normalize_startup(s) for s in data.get("startups", [])]
+
+                junk_cfg = get_institutional_junk_config()
+                startups = [s for s in startups if not _is_institutional_junk(s.get("name"), junk_cfg)]
 
                 grounding_cfg = get_grounding_config()
                 excerpt = text[:2000]

@@ -193,6 +193,16 @@ class PipelineMetrics:
     unchanged:              int   = 0
     total_processing_time:  float = 0.0
 
+    # Per-source anomaly circuit breaker (4 Aug, review-inbox-flooding
+    # audit): new masters with NO description AND NO website — the exact
+    # shape of the hochschule-biberach.de incident's 124 fake "startups".
+    # A handful of these in a run is normal (a genuine logo-grid name-only
+    # stub is expected output, see reasoning/prompts.py's BARE NAME LISTS
+    # section) — a BURST of them from one source in one run is the signal
+    # something is structurally wrong (an off-topic page, a misdetected
+    # logo grid), not evidence of many real startups. See bare_stub_burst().
+    bare_stub_new_masters:  int   = 0
+
     # ── Phase R-0: adaptive-pipeline instrumentation ──────────────────────
     pages_rendered:              int = 0
     pages_static:                int = 0
@@ -309,6 +319,21 @@ class PipelineMetrics:
         ]
         return sorted(out, key=lambda o: o.expected - len(o.extracted), reverse=True)
 
+    def bare_stub_burst(self, *, min_count: int = 15, min_fraction: float = 0.6) -> bool:
+        """
+        True if this run inserted an unusual BURST of evidence-free new
+        masters from a single source — both an absolute floor (min_count,
+        so a small source with a couple of legitimate bare stubs never
+        trips it) and a fraction of this run's own new masters (min_fraction,
+        so a large healthy run with a few bare stubs mixed in doesn't trip
+        it either). Doesn't block or reject anything — the pipeline stays
+        an evidence-gathering machine — it only makes a human aware the
+        run's output is worth a second look before trusting it.
+        """
+        if self.bare_stub_new_masters < min_count:
+            return False
+        return self.bare_stub_new_masters / max(1, self.startups_inserted) >= min_fraction
+
     def report(self, source_url: str) -> None:
         """Emit a structured INFO log summarising the completed ingestion run."""
         filtered_pct = (
@@ -337,6 +362,14 @@ class PipelineMetrics:
             + self._adaptive_report_lines() +
             "[Pipeline] ─────────────────────────────────────────────────────"
         )
+        if self.bare_stub_burst():
+            logger.warning(
+                f"[Pipeline] ANOMALY — {source_url}: {self.bare_stub_new_masters} of "
+                f"{self.startups_inserted} new masters this run have NO description and "
+                f"NO website. This is the exact shape of a misdetected logo-grid/off-topic "
+                f"page (see DATA_INTEGRITY_PLAN.md's review-inbox-flooding writeup) — worth "
+                f"a human spot-check before trusting this run's output."
+            )
 
     def _adaptive_report_lines(self) -> str:
         """
@@ -687,3 +720,5 @@ async def storage_worker_task(
         counter = _STATUS_COUNTER.get(status)
         if counter:
             metrics.inc(counter)
+        if status == "new_master" and not (item.startup_dict.get("description") or item.startup_dict.get("website")):
+            metrics.inc("bare_stub_new_masters")

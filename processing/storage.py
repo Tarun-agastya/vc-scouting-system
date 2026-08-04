@@ -623,6 +623,21 @@ def _create_review(db, *, review_type, master, incoming_row, incoming_data,
     try:
         from database.models import DuplicateReview
 
+        # Minimum-evidence tagging (4 Aug, review-inbox-flooding audit):
+        # possible_duplicate/anomaly reviews between two records that are
+        # BOTH bare (no description, no website on either side) get tagged
+        # evidence_level="minimal" in the evidence blob — never suppressed
+        # (a human can still genuinely want to merge two bare stubs), just
+        # marked so the dashboard can filter/bulk-triage them separately
+        # from reviews with real content to weigh. Audited the live backlog
+        # 4 Aug: 107 of 261 pending possible_duplicate reviews were exactly
+        # this shape. field_update reviews aren't tagged — "two entities'
+        # evidence" doesn't apply to a single record's own field change.
+        if review_type in ("possible_duplicate", "anomaly"):
+            master_bare = master is not None and not master.description and not master.website
+            incoming_bare = not ((incoming_data or {}).get("description") or (incoming_data or {}).get("website"))
+            evidence = {**(evidence or {}), "evidence_level": "minimal" if (master_bare and incoming_bare) else "normal"}
+
         if master is not None and _has_equivalent_pending_review(
             db, review_type=review_type, master_id=master.id,
             proposed_changes=proposed_changes,

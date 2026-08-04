@@ -371,8 +371,11 @@ export default {
               <tbody>
                 ${rows.map((r) => {
                   const m = r.metrics || {};
+                  const burstBadge = m.bare_stub_burst
+                    ? ` <span class="chip chip--warning" title="${fmt.num(m.bare_stub_new_masters ?? 0)} of ${fmt.num(m.startups_inserted ?? 0)} new masters have no description and no website — worth a spot-check before trusting this run">⚠ evidence-free burst</span>`
+                    : "";
                   const summary = r.kind === "web"
-                    ? `${fmt.num(m.startups_extracted ?? 0)} found · ${fmt.num(m.startups_inserted ?? 0)} new`
+                    ? `${fmt.num(m.startups_extracted ?? 0)} found · ${fmt.num(m.startups_inserted ?? 0)} new${burstBadge}`
                     : r.kind === "newsletter" ? `${fmt.num(m.startups_stored ?? 0)} stored`
                     : r.kind === "recheck" ? `${fmt.num(m.verified ?? 0)} verified · ${fmt.num(m.flagged ?? 0)} flagged`
                     : r.kind === "web_verify" ? `${fmt.num(m.verified ?? 0)} verified · ${fmt.num(m.staged ?? 0)} staged · ${fmt.num(m.unchanged ?? 0)} unchanged`
