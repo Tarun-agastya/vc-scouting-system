@@ -54,11 +54,13 @@ the browser consent flow — needs a human present to click "Allow" once.
 
 ## Running it
 
-- **Scheduled**: runs automatically every day at 08:00 as part of the main
-  API service (`api/main.py`'s background scheduler, job id
-  `press_monitor`) — well after the e-paper typically publishes, well
-  before the 13:00 Gmail newsletter top-up so the two never collide.
-  Silently no-ops if `epaper_email`/`epaper_password` aren't set.
+- **Scheduled**: runs automatically every day at 08:00 via its own
+  standalone `launchd` service (`com.gthub.pressmonitor`, see
+  `launchd/com.gthub.pressmonitor.plist`) — deliberately NOT part of the
+  main API's background scheduler, so a crash/restart/redeploy of the
+  VC-scouting API never affects it and their logs never mix. See
+  `AUTOMATION_EXPLAINED.md` for the full breakdown. Logs to
+  `logs/pressmonitor.log` / `logs/pressmonitor.error.log`.
 - **Manual / one-off**:
   ```
   python -m press_monitor.run_daily                    # today's edition
