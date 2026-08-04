@@ -5,15 +5,11 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 from bs4 import BeautifulSoup
-from config import settings
 from config.source_loader import get_newsletter_search_terms, get_newsletter_senders
 
 logger = logging.getLogger(__name__)
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TOKEN_PATH   = os.path.join(_PROJECT_ROOT, "credentials", "token.json")
 _STATE_PATH  = os.path.join(_PROJECT_ROOT, "credentials", "newsletter_state.json")
 
 
@@ -79,43 +75,15 @@ class NewsletterIngestor:
     # ── Authentication ────────────────────────────────────────────────────────
 
     def _authenticate(self):
-        """OAuth2 authentication with Gmail API."""
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        from google.auth.transport.requests import Request
-        from googleapiclient.discovery import build
-
-        creds = None
-        if os.path.exists(TOKEN_PATH):
-            creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
-
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(Request())
-                except Exception as refresh_err:
-                    logger.error(
-                        "[Gmail] Token refresh failed — deleting expired token. "
-                        "Re-run the process to open a new browser login flow. "
-                        f"Details: {refresh_err}"
-                    )
-                    if os.path.exists(TOKEN_PATH):
-                        os.remove(TOKEN_PATH)
-                    raise RuntimeError(
-                        "Gmail OAuth token expired and could not be refreshed. "
-                        "Delete credentials/token.json and restart to re-authenticate."
-                    ) from refresh_err
-            else:
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    settings.gmail_credentials_path, SCOPES
-                )
-                creds = flow.run_local_server(port=0)
-
-            os.makedirs(os.path.join(_PROJECT_ROOT, "credentials"), exist_ok=True)
-            with open(TOKEN_PATH, "w") as token_file:
-                token_file.write(creds.to_json())
-
-        self._service = build("gmail", "v1", credentials=creds)
+        """
+        OAuth2 authentication with Gmail API — shared with
+        press_monitor/emailer.py via ingestion/gmail_auth.py (Phase PM,
+        4 Aug 2026) so both features use ONE token/consent flow rather than
+        two independent ones that could drift or fight over the same
+        credentials/token.json.
+        """
+        from ingestion.gmail_auth import get_gmail_service
+        self._service = get_gmail_service()
         logger.info("[Gmail] Authenticated successfully")
 
     # ── Incremental-fetch state ───────────────────────────────────────────────

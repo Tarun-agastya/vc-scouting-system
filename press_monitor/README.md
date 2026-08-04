@@ -21,41 +21,36 @@ a short German-language summary + a screenshot of the matched page to
    2–3 sentence German summary per match, and is explicitly asked to flag
    when a match is likely a false positive (e.g. "Reisacher" the company
    vs. a person named Reisacher — confirmed live, it correctly told them apart).
-4. **Email** (`emailer.py`) — one digest email per day with a match, via
-   the existing newsletter Gmail account's SMTP (an **app password**, not
-   the account's login password — see setup below), sent only if at least
-   one match was found.
+4. **Email** (`emailer.py`) — one digest email per day with a match, sent
+   via the Gmail API using the same OAuth token as the newsletter reader
+   (`ingestion/gmail_auth.py` — one consent grants both `gmail.readonly`
+   and `gmail.send`), sent only if at least one match was found.
 5. The downloaded PDF and rendered page screenshots are deleted after the
    email is sent (or if nothing matched) — no local copy of the full
    copyrighted edition is retained.
 
-## Setup — what needs to be filled in
+## Setup — status
 
 All in `.env` (already gitignored, never committed):
 
 ```
 epaper_email=corinna.tappe@gt-hub.de       # already set
 epaper_password=...                         # already set
-smtp_user=                                   # TODO: the sending Gmail address
-smtp_app_password=                           # TODO: see below
 press_monitor_recipients=corinna.tappe@gt-hub.de,stefan.lenz@gt-hub.de  # already set
 ```
 
-### Generating the Gmail app password
+Sending is fully set up: `credentials/token.json` holds an OAuth token for
+`greentechhubx@gmail.com` (note: double "h" — a single-letter typo in this
+address is what caused the original SMTP app-password attempts to fail;
+nothing was actually wrong with any of the three app passwords generated
+along the way) covering both `gmail.readonly` (newsletter reading) and
+`gmail.send` (this feature) from one consent grant. A real test digest was
+sent successfully to both recipients on 4 Aug 2026.
 
-The existing `gmail_credentials_path` OAuth token (used to *read*
-newsletters) is scoped `gmail.readonly` and cannot send mail — sending
-needs its own credential. To reuse the same Gmail account for sending:
-
-1. The Gmail account needs 2-Step Verification enabled
-   (myaccount.google.com/security).
-2. Go to <https://myaccount.google.com/apppasswords>, generate a new app
-   password (any label, e.g. "GT Hub Press Monitor").
-3. Put the Gmail address in `smtp_user` and the generated app password
-   (16 characters, no spaces) in `smtp_app_password`.
-
-This is independent of the newsletter-reading OAuth setup — nothing about
-that working path is touched.
+If `credentials/token.json` is ever deleted or its refresh token stops
+working, re-running anything that calls `ingestion.gmail_auth.get_gmail_service()`
+(the scheduled job, `run_daily.py`, or the newsletter reader) will reopen
+the browser consent flow — needs a human present to click "Allow" once.
 
 ## Running it
 

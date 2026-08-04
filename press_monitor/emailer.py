@@ -1,17 +1,22 @@
 """
 Email delivery for the press-monitor daily digest (Phase PM, 4 Aug 2026).
 
-Plain smtplib — no new dependency. Sends via the existing newsletter Gmail
-account's SMTP + an app password (config.smtp_user / smtp_app_password),
-deliberately NOT the gmail_credentials_path OAuth token used for reading
-newsletters (that token is scoped gmail.readonly and cannot send mail) —
-two independent credentials for two independent capabilities, so nothing
-about the working newsletter-reading path is touched by adding this.
+Sends via the Gmail API (ingestion/gmail_auth.py) using the SAME OAuth
+token/consent flow as ingestion/newsletter_ingestor.py — one consent grants
+both read (newsletters) and send (this) capability, so nothing about the
+newsletter-reading path is affected by adding this.
+
+Switched to this (from SMTP + an app password, see git history) after the
+app-password path proved unreliable for this Gmail account even with
+valid, freshly-generated credentials — Google's risk-scoring on
+programmatic basic-auth sign-in is independent of anything actually being
+misconfigured, and OAuth is what Google itself recommends over app
+passwords anyway.
 """
 from __future__ import annotations
 
+import base64
 import logging
-import smtplib
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -27,20 +32,15 @@ def send_digest(*, matches: list, edition_label: str, recipients: List[str]) -> 
     Match's caller attaches a .summary attribute — see run_daily.py).
     Raises on a real send failure — the caller decides how to handle it
     (this is the one step in the pipeline where silent failure would mean
-    Corinna/Stefan never find out a real mention was caught).
+    Corinna/Stefan never find out a real mention was caught). A missing/
+    expired OAuth token raises via ingestion.gmail_auth.get_gmail_service
+    with a message pointing at what to do (re-run to reopen the browser
+    consent flow), same as the newsletter reader's existing behaviour.
     """
-    from config import settings
-
-    if not settings.smtp_user or not settings.smtp_app_password:
-        raise RuntimeError(
-            "smtp_user / smtp_app_password not configured — set them in .env "
-            "before the press monitor can send its daily digest (see "
-            "press_monitor/README.md)."
-        )
+    from ingestion.gmail_auth import get_gmail_service
 
     msg = MIMEMultipart("mixed")
     msg["Subject"] = f"GreenTech Hub Presse-Monitor — {edition_label} ({len(matches)} Treffer)"
-    msg["From"] = settings.smtp_user
     msg["To"] = ", ".join(recipients)
 
     body_parts = [
@@ -67,9 +67,8 @@ def send_digest(*, matches: list, edition_label: str, recipients: List[str]) -> 
         img.add_header("Content-Disposition", "attachment", filename=f"seite_{m.page_number}.png")
         msg.attach(img)
 
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
-        server.starttls()
-        server.login(settings.smtp_user, settings.smtp_app_password)
-        server.sendmail(settings.smtp_user, recipients, msg.as_string())
+    service = get_gmail_service()
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+    service.users().messages().send(userId="me", body={"raw": raw}).execute()
 
     logger.info(f"[PressMonitor] Digest sent to {recipients} — {len(matches)} match(es)")

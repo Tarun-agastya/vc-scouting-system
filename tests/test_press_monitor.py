@@ -60,15 +60,44 @@ def test_scan_pdf_multiple_terms_on_one_page(tmp_path):
     assert set(matches[0].terms) == {"Kutter", "Baufritz"}
 
 
-def test_emailer_raises_without_smtp_credentials(monkeypatch, tmp_path):
-    from press_monitor import emailer
-    from config import settings
+def test_emailer_sends_via_gmail_api(monkeypatch, tmp_path):
+    """
+    emailer.send_digest() now goes through the Gmail API (ingestion/
+    gmail_auth.get_gmail_service), not SMTP — confirm it builds a message
+    and calls .send() rather than exercising real OAuth/network.
+    """
+    from press_monitor import emailer, scanner
 
-    monkeypatch.setattr(settings, "smtp_user", None)
-    monkeypatch.setattr(settings, "smtp_app_password", None)
+    sent = {}
 
-    with pytest.raises(RuntimeError):
-        emailer.send_digest(matches=[], edition_label="Test", recipients=["a@b.com"])
+    class _FakeMessages:
+        def send(self, userId, body):
+            sent["userId"] = userId
+            sent["body"] = body
+            class _Exec:
+                def execute(self_inner):
+                    return {"id": "fake-message-id"}
+            return _Exec()
+
+    class _FakeUsers:
+        def messages(self):
+            return _FakeMessages()
+
+    class _FakeService:
+        def users(self):
+            return _FakeUsers()
+
+    monkeypatch.setattr("ingestion.gmail_auth.get_gmail_service", lambda: _FakeService())
+
+    shot = tmp_path / "page_001.png"
+    shot.write_bytes(b"\x89PNG\r\n\x1a\n")  # minimal PNG-ish bytes, content unused by the fake
+    match = scanner.Match(page_number=1, terms=["Kutter"], excerpt="Kutter feiert...", screenshot_path=shot)
+    match.summary = "Kutter feiert 100-jaehriges Jubilaeum."
+
+    emailer.send_digest(matches=[match], edition_label="Test 04.08.2026", recipients=["a@b.com"])
+
+    assert sent["userId"] == "me"
+    assert "raw" in sent["body"]
 
 
 def test_summarizer_falls_back_cleanly_on_llm_failure(monkeypatch):
