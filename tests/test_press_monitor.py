@@ -60,6 +60,54 @@ def test_scan_pdf_multiple_terms_on_one_page(tmp_path):
     assert set(matches[0].terms) == {"Kutter", "Baufritz"}
 
 
+def test_screenshot_is_cropped_not_full_page(tmp_path):
+    """
+    Phase PM crop fix (4 Aug, after owner feedback): the screenshot must be
+    the matched article's own region, not the whole broadsheet page — a
+    cropped render at a small headline+body layout should be visibly
+    smaller than rendering the full page at the same zoom.
+    """
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)  # A4-ish broadsheet proxy
+    page.insert_text((50, 50), "Kutter feiert Jubilaeum", fontsize=16)
+    page.insert_text((50, 80), "Die Firma Kutter feiert ihr 100-jaehriges Bestehen.", fontsize=11)
+    page.insert_text((50, 700), "Ganz unten auf der Seite: unrelated other article.", fontsize=11)
+    pdf_path = tmp_path / "edition.pdf"
+    doc.save(str(pdf_path))
+    doc.close()
+
+    matches = scanner.scan_pdf(pdf_path, out_dir=tmp_path / "pages", keywords=["Kutter"])
+    assert len(matches) == 1
+
+    from PIL import Image
+    img = Image.open(matches[0].screenshot_path)
+    # A crop of a ~2-line headline+body region must be much shorter than a
+    # full 842pt-tall page rendered at the same zoom (3x -> ~2526px tall).
+    assert img.height < 600
+
+
+def test_article_region_includes_headline_above_match(tmp_path):
+    """The crop must walk upward to include a headline block sitting just
+    above the block that actually contains the matched term."""
+    import fitz
+    from press_monitor.scanner import _article_region
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((50, 50), "Kutter feiert 100 Jahre", fontsize=16)
+    page.insert_text((50, 90), "Die Firma Kutter feiert heute ihr Jubilaeum in Memmingen.", fontsize=11)
+
+    hits = page.search_for("Kutter feiert heute")
+    assert hits, "search_for should find the body text"
+    region = _article_region(page, hits[0])
+    assert region is not None
+    # The headline sits at y~50; the region must extend up to include it,
+    # not start only at the body block's own top edge (~85-ish).
+    assert region.y0 < 70
+
+
 def test_emailer_sends_via_gmail_api(monkeypatch, tmp_path):
     """
     emailer.send_digest() now goes through the Gmail API (ingestion/
