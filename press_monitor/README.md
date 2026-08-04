@@ -38,7 +38,7 @@ epaper_email=corinna.tappe@gt-hub.de       # already set
 epaper_password=...                         # already set
 smtp_user=                                   # TODO: the sending Gmail address
 smtp_app_password=                           # TODO: see below
-press_monitor_recipients=corinna.tappe@gt-hub.de   # TODO: add Stefan's address, comma-separated
+press_monitor_recipients=corinna.tappe@gt-hub.de,stefan.lenz@gt-hub.de  # already set
 ```
 
 ### Generating the Gmail app password

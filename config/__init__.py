@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     smtp_port: int = 587
     smtp_user: Optional[str] = None          # the sending Gmail address
     smtp_app_password: Optional[str] = None  # Google Account app password, not the login password
-    press_monitor_recipients: str = "corinna.tappe@gt-hub.de"  # comma-separated
+    press_monitor_recipients: str = "corinna.tappe@gt-hub.de,stefan.lenz@gt-hub.de"  # comma-separated
 
     # Tavily (Phase W web verification search backend, 24 Jul — replaces the
     # DuckDuckGo HTML scrape, which an anti-bot block made unreliable; see
