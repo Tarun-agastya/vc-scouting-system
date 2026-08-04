@@ -38,15 +38,37 @@ Antworte nur mit der Zusammenfassung, keine Einleitung."""
 
 def summarize_match(term: str, excerpt: str) -> str:
     """
-    Never raises — a summary failure degrades to a short deterministic
-    fallback (the excerpt itself, truncated) rather than blocking the whole
-    daily digest over one bad LLM call.
+    Never raises, and never silently returns an empty/blank summary — found
+    live 4 Aug: a real call to the 14B model returned a completely empty
+    string with NO exception raised (the model produced only a discarded
+    <think> block, or an empty generation) for a real, genuinely-summarizable
+    excerpt — the identical prompt succeeded normally on an immediate retry.
+    One retry on either an exception OR an empty/near-empty result; if both
+    attempts fail, degrades to a short deterministic fallback (the excerpt
+    itself, truncated) rather than silently sending nothing — a blank
+    "summary" would be exactly the missed-information failure this whole
+    feature exists to prevent.
     """
-    try:
-        from reasoning.qwen_client import qwen_client
-        prompt = _PROMPT.format(term=term, excerpt=excerpt[:3000])
-        return qwen_client.generate(prompt, system=_SYSTEM, temperature=0.2, max_tokens=450).strip()
-    except Exception as exc:
-        logger.warning(f"[PressMonitor] summary generation failed for {term!r}: {exc}")
-        snippet = excerpt.strip().replace("\n", " ")[:280]
-        return f"(Automatische Zusammenfassung nicht verfügbar) Textausschnitt: {snippet}…"
+    from reasoning.qwen_client import qwen_client
+
+    prompt = _PROMPT.format(term=term, excerpt=excerpt[:3000])
+    last_exc = None
+    for attempt in range(2):
+        try:
+            result = qwen_client.generate(prompt, system=_SYSTEM, temperature=0.2, max_tokens=450).strip()
+            if len(result) >= 20:  # a real summary is always longer than this
+                return result
+            logger.warning(
+                f"[PressMonitor] summary for {term!r} came back empty/too short "
+                f"on attempt {attempt + 1} (got {result!r}) — retrying"
+            )
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(f"[PressMonitor] summary generation failed for {term!r} on attempt {attempt + 1}: {exc}")
+
+    if last_exc:
+        logger.error(f"[PressMonitor] summary generation for {term!r} failed twice: {last_exc}")
+    else:
+        logger.error(f"[PressMonitor] summary for {term!r} came back empty/too short twice in a row")
+    snippet = excerpt.strip().replace("\n", " ")[:280]
+    return f"(Automatische Zusammenfassung nicht verfügbar) Textausschnitt: {snippet}…"

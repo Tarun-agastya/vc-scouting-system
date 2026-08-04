@@ -60,6 +60,42 @@ def test_scan_pdf_multiple_terms_on_one_page(tmp_path):
     assert set(matches[0].terms) == {"Kutter", "Baufritz"}
 
 
+def test_two_separate_articles_on_one_page_produce_two_matches(tmp_path):
+    """
+    Correctness fix (4 Aug, after owner review): a page with two unrelated
+    articles matching two different keywords must produce two separate
+    Match entries, each with its OWN correct excerpt/screenshot — not one
+    Match whose excerpt/screenshot only covers the first term's article
+    while silently mis-attributing the second term to it.
+    """
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((50, 50), "Kutter feiert Jubilaeum heute in Memmingen.", fontsize=11)
+    page.insert_text((50, 700), "SUEDPACK expandiert mit neuer Anlage in Ochsenhausen.", fontsize=11)
+    pdf_path = tmp_path / "edition.pdf"
+    doc.save(str(pdf_path))
+    doc.close()
+
+    matches = scanner.scan_pdf(pdf_path, out_dir=tmp_path / "pages", keywords=["Kutter", "SUEDPACK"])
+
+    assert len(matches) == 2
+    by_term = {m.terms[0]: m for m in matches}
+    assert set(by_term.keys()) == {"Kutter", "SUEDPACK"}
+    # Each match's excerpt must contain ONLY its own article's content, not
+    # the other one's — this is the exact cross-contamination the fix
+    # addresses.
+    assert "Kutter" in by_term["Kutter"].excerpt
+    assert "SUEDPACK" not in by_term["Kutter"].excerpt
+    assert "SUEDPACK" in by_term["SUEDPACK"].excerpt
+    assert "Kutter" not in by_term["SUEDPACK"].excerpt
+    # Distinct screenshot files, both real.
+    assert by_term["Kutter"].screenshot_path != by_term["SUEDPACK"].screenshot_path
+    assert by_term["Kutter"].screenshot_path.exists()
+    assert by_term["SUEDPACK"].screenshot_path.exists()
+
+
 def test_screenshot_is_cropped_not_full_page(tmp_path):
     """
     Phase PM crop fix (4 Aug, after owner feedback): the screenshot must be
@@ -158,4 +194,38 @@ def test_summarizer_falls_back_cleanly_on_llm_failure(monkeypatch):
     monkeypatch.setattr("reasoning.qwen_client.qwen_client", _FailingClient())
     result = summarizer.summarize_match("Kutter", "Die Firma Kutter feiert ihr Jubiläum.")
     assert "Kutter" in result  # excerpt-based fallback still surfaces the term
+    assert "nicht verfügbar" in result
+
+
+def test_summarizer_retries_once_on_empty_result_then_succeeds(monkeypatch):
+    """
+    Found live 4 Aug: a real call returned a completely empty string with
+    NO exception raised — the identical prompt succeeded on immediate
+    retry. summarize_match must never silently accept an empty "summary".
+    """
+    from press_monitor import summarizer
+
+    calls = {"n": 0}
+
+    class _FlakyOnceClient:
+        def generate(self, *a, **kw):
+            calls["n"] += 1
+            return "" if calls["n"] == 1 else "Ein echter, ausreichend langer Zusammenfassungstext."
+
+    monkeypatch.setattr("reasoning.qwen_client.qwen_client", _FlakyOnceClient())
+    result = summarizer.summarize_match("Kutter", "Die Firma Kutter feiert ihr Jubiläum.")
+    assert calls["n"] == 2
+    assert result == "Ein echter, ausreichend langer Zusammenfassungstext."
+
+
+def test_summarizer_falls_back_when_empty_twice_in_a_row(monkeypatch):
+    from press_monitor import summarizer
+
+    class _AlwaysEmptyClient:
+        def generate(self, *a, **kw):
+            return ""
+
+    monkeypatch.setattr("reasoning.qwen_client.qwen_client", _AlwaysEmptyClient())
+    result = summarizer.summarize_match("Kutter", "Die Firma Kutter feiert ihr Jubiläum.")
+    assert "Kutter" in result
     assert "nicht verfügbar" in result

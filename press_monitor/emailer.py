@@ -44,7 +44,8 @@ def send_digest(*, matches: list, edition_label: str, recipients: List[str]) -> 
     msg["To"] = ", ".join(recipients)
 
     body_parts = [
-        f"Presse-Monitor für {edition_label} — {len(matches)} Treffer gefunden.\n",
+        f"Guten Morgen! Hier die heutige Presse-Übersicht für den GreenTech Hub "
+        f"({edition_label}) — {len(matches)} Treffer:\n",
     ]
     for i, m in enumerate(matches, 1):
         terms = ", ".join(m.terms)
