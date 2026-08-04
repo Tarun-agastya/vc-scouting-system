@@ -95,6 +95,12 @@ SKIP_PATTERNS: frozenset = frozenset({
     "profile", "account", "settings", "preferences",
     # Utility
     "search", "sitemap",
+    # University/institutional housekeeping (confirmed junk 4 Aug: a
+    # hochschule-biberach.de crawl wandered into governance, cafeteria,
+    # and IT-department pages and extracted their photo captions/partner
+    # logos as "startups" — see _is_irrelevant_url's sub-token matching
+    # below and _drop_numbered_sequences)
+    "organe", "mensa", "rechenzentrum",
 })
 
 
@@ -176,6 +182,44 @@ def _is_junk_alt(alt: str) -> bool:
     return False
 
 
+# Trailing-number pattern used to detect gallery/slide captions — see
+# _drop_numbered_sequences.
+_TRAILING_NUM_RE = re.compile(r"^(.*?)[\s_-]*0*(\d+)$")
+
+
+def _drop_numbered_sequences(alts: list) -> list:
+    """
+    Drop alt-text entries that are sequential numbered captions off a shared
+    base phrase ("HBC Campus 1", "HBC Campus 2", "HBC Campus 3" — or
+    "HBC Keyfact 4".."HBC Keyfact 9") rather than distinct company names.
+
+    Confirmed live 4 Aug: a hochschule-biberach.de professor-recruitment
+    page's photo carousel and a key-facts infographic both cleared
+    _MIN_LOGO_GRID_ENTRIES and got extracted as ~10 separate "startups"
+    purely because each slide's caption looked, in isolation, like a
+    plausible short company name (per-alt checks like _is_junk_alt can't
+    catch this — nothing is wrong with "HBC Campus 4" as a single string).
+    A genuine startup logo grid never repeats a shared prefix with an
+    incrementing number — every entry names a different, unrelated company
+    — so 2+ entries sharing a stripped prefix is treated as a slide/gallery
+    sequence and all of them are dropped, not just the later ones (there is
+    no way to tell which one, if any, is real).
+    """
+    prefix_groups: dict = {}
+    for alt in alts:
+        m = _TRAILING_NUM_RE.match(alt.strip())
+        if not m:
+            continue
+        prefix = m.group(1).strip().lower()
+        if prefix:
+            prefix_groups.setdefault(prefix, []).append(alt)
+
+    junk = {alt for entries in prefix_groups.values() if len(entries) >= 2 for alt in entries}
+    if not junk:
+        return alts
+    return [alt for alt in alts if alt not in junk]
+
+
 def _extract_text(html: str) -> str:
     """
     Strip boilerplate tags and return clean plain text from raw HTML.
@@ -200,6 +244,8 @@ def _extract_text(html: str) -> str:
             continue
         seen_alt.add(key)
         alts.append(alt)
+
+    alts = _drop_numbered_sequences(alts)
 
     for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]):
         tag.decompose()
@@ -339,15 +385,33 @@ def _extract_links(html: str, base_url: str) -> list:
 
 def _is_irrelevant_url(url: str) -> bool:
     """
-    Return True if any path segment of *url* matches a SKIP_PATTERNS entry.
-
-    Segment-level matching prevents false positives:
+    Return True if any path segment of *url* matches a SKIP_PATTERNS entry —
+    checked both as a whole segment AND sub-token by sub-token after
+    splitting on '-'/'_', so a hyphenated compound still matches:
       /login           → skipped   (segment 'login' is in SKIP_PATTERNS)
-      /online-platform → kept      ('online-platform' is not in SKIP_PATTERNS)
-      /portfolio/founders → kept   (neither segment matches)
+      /prof-karriere   → skipped   (sub-token 'karriere' is in SKIP_PATTERNS —
+                                     confirmed live 4 Aug: this exact segment
+                                     slipped past whole-segment matching and
+                                     let a hochschule-biberach.de professor-
+                                     recruitment page get crawled and its
+                                     photo gallery harvested as a startup
+                                     portfolio)
+      /online-platform → kept      (neither 'online' nor 'platform' matches)
+      /portfolio/founders → kept   (neither segment/sub-token matches)
+
+    Deliberately sub-token, not substring: substring matching would wrongly
+    skip a genuinely relevant page like "/research" for containing "search".
     """
     path_parts = urlparse(url).path.lower().strip("/").split("/")
-    return any(part in SKIP_PATTERNS for part in path_parts if part)
+    for part in path_parts:
+        if not part:
+            continue
+        if part in SKIP_PATTERNS:
+            return True
+        if "-" in part or "_" in part:
+            if any(tok in SKIP_PATTERNS for tok in re.split(r"[-_]", part) if tok):
+                return True
+    return False
 
 
 def _matches_detail_pattern(url: str, pattern: str) -> bool:
