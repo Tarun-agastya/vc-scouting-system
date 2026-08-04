@@ -91,6 +91,36 @@ async def lifespan(app: FastAPI):
             from processing.scout_controller import scout_controller
             await scout_controller.run_recheck(limit=80)
 
+        async def _scheduled_web_verify():
+            """
+            Nightly (Phase W, automated 4 Aug at the owner's explicit
+            request — originally deliberately manual-only pending real
+            usage data on WebSearch cost/quota, per DATA_INTEGRITY_PLAN.md
+            Addendum 6; several manual batches have since run cleanly).
+            Drains the no-source-excerpt backlog (records H-3's recheck
+            structurally cannot reach) a bit every night, same self-
+            draining shape as _scheduled_recheck. limit=20 — conservative,
+            matching the manual-trigger batch size precedent, since a
+            search call leaves the machine per record (the one accepted
+            exception to the local-only inference invariant, see
+            processing/web_verifier.py).
+            """
+            from processing.scout_controller import scout_controller
+            await scout_controller.run_web_verify(limit=20)
+
+        async def _scheduled_reclassify():
+            """
+            Nightly safety net (Phase V-2 automated 4 Aug): new records are
+            already classified inline at ingest, so this is not draining an
+            ongoing backlog in normal operation — it exists to catch the
+            rare record whose inline classification failed (Ollama hiccup,
+            timeout) and was left with classified_at=NULL, rather than
+            leaving it permanently uncategorised. limit=20, cheap (7B
+            structured-output call only, no search).
+            """
+            from processing.scout_controller import scout_controller
+            await scout_controller.run_reclassify(limit=20)
+
         scheduler = AsyncIOScheduler()
 
         # Full sweep: Monday + Thursday at 05:00 (twice a week, per the 25 June
@@ -129,11 +159,34 @@ async def lifespan(app: FastAPI):
             replace_existing=True,
         )
 
+        # Web verification (Phase W): nightly at 04:00, after recheck so the
+        # no-source-excerpt backlog (which recheck can't touch) also drains
+        # on its own — see _scheduled_web_verify's docstring for why this
+        # was manual-only until 4 Aug.
+        scheduler.add_job(
+            func=_scheduled_web_verify,
+            trigger=CronTrigger(hour=4, minute=0),
+            id="web_verify",
+            replace_existing=True,
+        )
+
+        # Reclassification safety net (Phase V-2): nightly at 04:30, after
+        # web-verify. See _scheduled_reclassify's docstring — not draining
+        # an ongoing backlog in normal operation, just catching inline-
+        # classification failures.
+        scheduler.add_job(
+            func=_scheduled_reclassify,
+            trigger=CronTrigger(hour=4, minute=30),
+            id="reclassify",
+            replace_existing=True,
+        )
+
         scheduler.start()
         app.state.scheduler = scheduler
         logger.info(
             "Background scheduler started (full sweep Mon+Thu 05:00, Gmail top-up daily 13:00, "
-            "LLM review explanations nightly 02:00, verification recheck nightly 03:00). "
+            "LLM review explanations nightly 02:00, verification recheck nightly 03:00, "
+            "web verification nightly 04:00, reclassify safety-net nightly 04:30). "
             "The press monitor is a fully separate launchd service (com.gthub.pressmonitor, "
             "daily 08:00) — not part of this scheduler, see press_monitor/README.md."
         )

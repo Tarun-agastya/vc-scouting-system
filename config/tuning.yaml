@@ -29,6 +29,8 @@ extraction:
     - "Companies in medicine, biotech, e-commerce, or food retail (exception: packaging technology)."
     - "Companies headquartered/founded outside Europe (e.g. US, China, other Asia, elsewhere) — UNLESS the text explicitly states the company is expanding into, opening an office in, or specifically targeting the DACH/European market. Being mentioned in a German or European publication purely as general industry news or founder-profile commentary is NOT sufficient reason to include a non-European company — e.g. a German newsletter profiling a Chinese AI lab's founder is industry commentary, not a DACH/Europe startup to track."
     - "Named events, pitch days, competitions, or programs run by the accelerator/host organisation itself (e.g. 'Pitch & Match', 'Demo Day 2026', 'Gründungsnetzwerk', a dated year-suffixed program name) — these are events, not companies, even when they appear inside a list of company names."
+    - "Individual people — a founder, investor, speaker, or journalist mentioned by name (e.g. 'Marc Samwer', 'Frederic Westerberg') is NOT a company, even if the surrounding sentence discusses startups. Only extract the actual company they are associated with, and only if it is itself named in the text."
+    - "Article headlines, subheadings, or section titles (e.g. 'Fünf Münchner Startups und ihre Lösungen für autonomes Fahren', 'Industrie 4.0: Wie Münchner Startups die Industrie digitalisieren') are not company names — extract the actual company or companies profiled UNDER that heading, never the heading text itself."
 
 
 candidate_filter:
@@ -262,6 +264,25 @@ institutional_junk:
   # schwaben.digital's /presse page. Matched as a regex against the whole
   # (stripped) name.
   generic_phrase_regex: "^(ein|eine|a|an)\\s+\\w"
+  # Article headline/subheading/multi-entity-list junk — confirmed live
+  # 4 Aug on a munich-startup.de crawl: ~272 evidence-free records whose
+  # "names" were actually headlines ("Industrie 4.0: Wie Münchner Startups
+  # die Industrie digitalisieren") or comma-concatenated company lists
+  # ("menstruflow, Nouxx, nghty berlin, Olena Scent" — 4 companies merged
+  # into one field). Verified against every name already in the DB before
+  # shipping: 6/6 colon-bearing names and 5/5 names with 2+ commas were
+  # confirmed junk, zero false positives.
+  reject_colon: true
+  reject_question_mark: true
+  max_commas: 1   # a name with MORE than this many commas is rejected
+  # "<German number word> ... startup(s)/gründer..." — the specific
+  # "N Munich startups" headline shape ("Fünf Münchner Startups...",
+  # "Sechs Münchner Startup-Gründerinnen..."). Verified against real
+  # brand-name risk cases (Two Sigma, Six Flags, One Medical — none
+  # start with a GERMAN number word, so none match) and against a real
+  # DB entry containing "Gründerzentrum" that does NOT start with a
+  # number word (correctly not matched).
+  headline_number_pattern: "^(?=.*\\b(?:startups?|gr[üu]nder\\w*)\\b)(zwei|drei|vier|f[üu]nf|sechs|sieben|acht|neun|zehn)\\b"
 
 # Phase P-1 (29 Jul): a soft, config-toggleable scouting bias for whichever
 # theses in config/theses.yaml are marked `priority: true` (e.g. SÜDPACK's

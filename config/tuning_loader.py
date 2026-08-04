@@ -40,6 +40,8 @@ DEFAULTS = {
             "VC firms, investment funds, accelerators, media outlets.",
             "Companies in medicine, biotech, e-commerce, or food retail (exception: packaging technology).",
             "Named events, pitch days, competitions, or programs run by the accelerator/host organisation itself (e.g. 'Pitch & Match', 'Demo Day 2026', 'Gründungsnetzwerk', a dated year-suffixed program name) — these are events, not companies, even when they appear inside a list of company names.",
+            "Individual people — a founder, investor, speaker, or journalist mentioned by name (e.g. 'Marc Samwer', 'Frederic Westerberg') is NOT a company, even if the surrounding sentence discusses startups. Only extract the actual company they are associated with, and only if it is itself named in the text.",
+            "Article headlines, subheadings, or section titles (e.g. 'Fünf Münchner Startups und ihre Lösungen für autonomes Fahren', 'Industrie 4.0: Wie Münchner Startups die Industrie digitalisieren') are not company names — extract the actual company or companies profiled UNDER that heading, never the heading text itself.",
         ],
     },
     "candidate_filter": {
@@ -163,6 +165,13 @@ DEFAULTS = {
             "wolff und müller", "leonhard weiß", "rentschler",
         ],
         "generic_phrase_regex": r"^(ein|eine|a|an)\s+\w",
+        "reject_colon": True,
+        "reject_question_mark": True,
+        "max_commas": 1,
+        "headline_number_pattern": (
+            r"^(?=.*\b(?:startups?|gr[üu]nder\w*)\b)"
+            r"(zwei|drei|vier|f[üu]nf|sechs|sieben|acht|neun|zehn)\b"
+        ),
     },
     "inspector": {
         "min_group_items": 4,
@@ -300,7 +309,8 @@ def get_priority_scouting_config() -> dict:
 def get_institutional_junk_config() -> dict:
     """
     {'enabled': bool, 'institution_keywords': [...], 'known_incumbents': [...],
-    'generic_phrase_regex': str, '_mtime': float}
+    'generic_phrase_regex': str, 'reject_colon': bool, 'reject_question_mark':
+    bool, 'max_commas': int, 'headline_number_pattern': str, '_mtime': float}
     """
     cfg = dict(_load()["institutional_junk"])
     cfg["_mtime"] = _cache_mtime  # lets qwen_client cache its compiled pattern

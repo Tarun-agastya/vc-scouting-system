@@ -236,35 +236,48 @@ def _ground_startup(s: dict, source_text: str, cfg: dict) -> dict:
     return s
 
 
-def _is_institutional_junk(name: str, cfg: dict) -> bool:
+def _is_implausible_startup_name(name: str, cfg: dict) -> bool:
     """
-    Phase J (4 Aug): True if `name` is an institution/established incumbent
-    rather than a startup — a bank, chamber of commerce, law firm, insurer,
-    public body, a known large non-tech incumbent, or a fabricated generic
-    noun-phrase fragment ("a digital agency") rather than a real proper
-    name. Backs up (never replaces) the prompt-level EXCLUDE rules, which
-    proved unreliable on their own — confirmed twice live: a schwaben.digital
-    press-archive crawl (31 Jul/3 Aug) and a hochschule-biberach.de partner-
-    logo page (4 Aug) both extracted banks/chambers/law firms/large
-    industrial incumbents (Liebherr, PERI, Goldbeck, Ed. Züblin) as
-    "startups" despite the prompt already saying not to. Same "prompt alone
-    isn't enough" lesson as the geo_scope hard filter (Phase D).
+    Phase J (4 Aug, extended same day): True if `name` is not a plausible
+    single company name — an institution/established incumbent, a
+    fabricated generic noun phrase, an article headline/subheading, or
+    multiple companies concatenated into one name field. Backs up (never
+    replaces) the prompt-level EXCLUDE rules, which proved unreliable on
+    their own — confirmed three times live now: a schwaben.digital press
+    archive (31 Jul/3 Aug) and a hochschule-biberach.de partner-logo page
+    (4 Aug) both extracted banks/chambers/law firms/large industrial
+    incumbents (Liebherr, PERI, Goldbeck, Ed. Züblin) as "startups"; then a
+    munich-startup.de crawl (4 Aug) surfaced ~272 evidence-free records
+    whose "names" were actually article headlines ("Industrie 4.0: Wie
+    Münchner Startups die Industrie digitalisieren"), person names bled
+    into the name field from bylines, and comma-concatenated multi-company
+    lists ("menstruflow, Nouxx, nghty berlin, Olena Scent" — 4 companies in
+    one field). Same "prompt alone isn't enough" lesson as the geo_scope
+    hard filter (Phase D).
 
     Unlike _ground_startup, this drops the WHOLE record rather than nulling
-    a field — an institution is not a startup at all, there is no partial
+    a field — none of these are a real single startup, there is no partial
     record worth keeping.
 
     Keyword/incumbent matching goes through _signal_present, which requires
     a real word-boundary match for alphabetic terms (not a loose substring)
     so a real company whose name merely contains a similar-looking
     substring is never false-positive dropped.
+
+    The colon/question-mark/multi-comma checks were verified against every
+    name already in the database before shipping (4 Aug): 6/6 colon-bearing
+    names and 5/5 names with 2+ commas were confirmed headline/list junk,
+    zero false positives — real company names essentially never contain a
+    raw ':' or '?', and two or more commas in a name field is a reliable
+    "multiple entities got concatenated" tell.
     """
     if not cfg.get("enabled", True):
         return False
 
-    name_lower = (name or "").strip().lower()
-    if not name_lower:
+    stripped = (name or "").strip()
+    if not stripped:
         return False
+    name_lower = stripped.lower()
 
     if _signal_present(cfg.get("institution_keywords") or [], name_lower):
         return True
@@ -272,7 +285,19 @@ def _is_institutional_junk(name: str, cfg: dict) -> bool:
         return True
 
     pattern = cfg.get("generic_phrase_regex")
-    if pattern and re.match(pattern, name.strip(), re.IGNORECASE):
+    if pattern and re.match(pattern, stripped, re.IGNORECASE):
+        return True
+
+    if cfg.get("reject_colon", True) and ":" in stripped:
+        return True
+    if cfg.get("reject_question_mark", True) and "?" in stripped:
+        return True
+    max_commas = cfg.get("max_commas", 1)
+    if max_commas is not None and stripped.count(",") > max_commas:
+        return True
+
+    headline_pattern = cfg.get("headline_number_pattern")
+    if headline_pattern and re.match(headline_pattern, stripped, re.IGNORECASE):
         return True
 
     return False
@@ -536,7 +561,7 @@ class QwenClient:
                 startups = [_normalize_startup(s) for s in data.get("startups", [])]
 
                 junk_cfg = get_institutional_junk_config()
-                startups = [s for s in startups if not _is_institutional_junk(s.get("name"), junk_cfg)]
+                startups = [s for s in startups if not _is_implausible_startup_name(s.get("name"), junk_cfg)]
 
                 grounding_cfg = get_grounding_config()
                 excerpt = text[:2000]

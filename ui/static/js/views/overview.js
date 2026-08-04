@@ -61,13 +61,14 @@ export default {
       </div>`;
 
     const render = async () => {
-      let startups, reviews, status, sources;
+      let startups, reviews, status, sources, verification;
       try {
-        [startups, reviews, status, sources] = await Promise.all([
+        [startups, reviews, status, sources, verification] = await Promise.all([
           api.listStartups({ limit: 1000, sort: "created_at", order: "desc" }),
           api.listReviews({ status: "pending", limit: 1 }),
           api.ingestionStatus(),
           api.listSources(),
+          api.verificationStatus().catch(() => null), // non-fatal — the tile just shows "—"
         ]);
       } catch (err) {
         el.innerHTML = `<div class="empty"><div class="empty__title">Couldn't load the overview</div>
@@ -128,6 +129,14 @@ export default {
         kpiTile({
           label: "Pending reviews", value: fmt.num(reviews.total),
           meta: reviews.total ? "needs attention" : "all clear", route: "#/reviews",
+        }),
+        kpiTile({
+          label: "Needs verification",
+          value: fmt.num(verification?.overall?.unverified ?? 0),
+          meta: verification
+            ? `${fmt.num(verification.no_source_excerpt ?? 0)} need web-verify · ${fmt.num(verification.overall?.flagged ?? 0)} flagged`
+            : "—",
+          route: "#/ingestion",
         }),
         kpiTile({
           label: "Ingestion",
