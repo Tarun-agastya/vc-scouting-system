@@ -1,6 +1,6 @@
 # Data Integrity, Provenance & Team Access — Build Plan
 
-> **Origin:** Boss review after the successful newsletter run (2026-06). This plan covers the requested changes to how startup data is tracked, deduplicated, versioned, searched, and accessed — plus where the autonomous agent (OpenClaw/SCOUT) fits.
+> **Origin:**  This plan covers the requested changes to how startup data is tracked, deduplicated, versioned, searched, and accessed — plus where the autonomous agent (OpenClaw/SCOUT) fits.
 >
 > **How to use this document:** Same convention as the main redesign plan — each phase is self-contained and handed to an implementer (Claude Sonnet 4.6) one at a time. Read §A Invariants first. Do not widen a phase's scope.
 

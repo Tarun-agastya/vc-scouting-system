@@ -188,18 +188,13 @@ def _delete_startup_row(db, startup_id, keep_review_id) -> Optional[dict]:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-@router.get("")
-async def list_reviews(
-    status: str = Query("pending"),
-    review_type: Optional[str] = None,
-    risk_level: Optional[str] = None,
-    q: Optional[str] = None,       # company name filter — matches master_name or incoming_name
-    run_id: Optional[str] = None,  # Phase Q2: filter to one bulk-verify/recheck batch's results
-    evidence_level: Optional[str] = None,  # Phase J-2 (4 Aug): "minimal" | "normal" — see storage._create_review
-    limit: int = 100,
-    db: Session = Depends(get_db),
-):
-    """List reviews (pending by default). The dashboard Review Inbox reads this."""
+def _filtered_reviews(db, *, status, review_type, risk_level, q, run_id, evidence_level):
+    """
+    The shared Review-Inbox filter chain. Factored out (Phase Y-1, 5 Aug) so
+    GET /reviews and GET /reviews/grouped can never drift apart in what they
+    consider "matching" — the grouped view is the same queue, just collapsed
+    to one entry per startup.
+    """
     from sqlalchemy import or_, cast
     from sqlalchemy.dialects.postgresql import JSONB
 
@@ -227,6 +222,25 @@ async def list_reviews(
             DuplicateReview.master_name.ilike(like),
             DuplicateReview.incoming_name.ilike(like),
         ))
+    return query
+
+
+@router.get("")
+async def list_reviews(
+    status: str = Query("pending"),
+    review_type: Optional[str] = None,
+    risk_level: Optional[str] = None,
+    q: Optional[str] = None,       # company name filter — matches master_name or incoming_name
+    run_id: Optional[str] = None,  # Phase Q2: filter to one bulk-verify/recheck batch's results
+    evidence_level: Optional[str] = None,  # Phase J-2 (4 Aug): "minimal" | "normal" — see storage._create_review
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    """List reviews (pending by default). The dashboard Review Inbox reads this."""
+    query = _filtered_reviews(
+        db, status=status, review_type=review_type, risk_level=risk_level,
+        q=q, run_id=run_id, evidence_level=evidence_level,
+    )
     # `total` must be the real count of everything matching the filters, not
     # len(rows) — that was capped by `limit` (200 from the sidebar badge poll,
     # app.js), so once the true pending count passed 200 the badge/KPI froze
@@ -255,6 +269,123 @@ async def list_reviews(
             }
             for r in rows
         ],
+    }
+
+
+# NOTE: this route MUST stay declared BEFORE @router.get("/{review_id}") —
+# FastAPI matches in declaration order, so a later /grouped would be swallowed
+# by the path-param route and 404 as "review 'grouped' not found".
+@router.get("/grouped")
+async def list_reviews_grouped(
+    status: str = Query("pending"),
+    risk_level: Optional[str] = None,
+    q: Optional[str] = None,
+    run_id: Optional[str] = None,
+    evidence_level: Optional[str] = None,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+):
+    """
+    The Review Inbox collapsed to ONE ENTRY PER STARTUP (Phase Y-1, 5 Aug).
+
+    Measured on the live queue that day: 1,090 pending field_update reviews
+    covering only 355 distinct startups — 223 startups appeared more than
+    once (Bliro 11×, Omegga/Alqem 18×), because each ingestion run re-crawling
+    the same page stages its own review with slightly reworded LLM output.
+    A human triaging that sees the same company over and over.
+
+    Grouping is DISPLAY-ONLY: no review row is merged, deleted or mutated
+    here, so the per-run audit trail (and each row's run_id) stays intact —
+    the S-3b contract. The underlying rows remain individually resolvable
+    through the existing endpoints.
+
+    Only `field_update` reviews group. A possible_duplicate/anomaly is a
+    genuine distinct pair and is deliberately left alone.
+    """
+    from collections import defaultdict
+
+    query = _filtered_reviews(
+        db, status=status, review_type="field_update", risk_level=risk_level,
+        q=q, run_id=run_id, evidence_level=evidence_level,
+    )
+    rows = query.order_by(DuplicateReview.created_at.desc()).all()
+
+    by_master = defaultdict(list)
+    for r in rows:
+        by_master[str(r.master_id)].append(r)
+
+    # One query for every master in the page, not one per group.
+    master_ids = list(by_master.keys())
+    masters = {}
+    if master_ids:
+        for m in db.query(Startup).filter(Startup.id.in_(master_ids)).all():
+            masters[str(m.id)] = m
+
+    groups = []
+    for mid, members in by_master.items():
+        master = masters.get(mid)
+        # Candidates per field, deduped by exact value. Of 2,986 field
+        # proposals live, 470 were exact duplicates — pure noise this
+        # collapses for free, while `count`/`review_ids` keep it auditable.
+        fields = defaultdict(dict)
+        for r in members:                      # already newest-first
+            for field, change in (r.proposed_changes or {}).items():
+                value = change.get("new")
+                key = str(value)
+                cand = fields[field].get(key)
+                if cand is None:
+                    fields[field][key] = {
+                        "value": value,
+                        "count": 1,
+                        "review_ids": [str(r.id)],
+                        "sources": [{
+                            "source": change.get("incoming_source"),
+                            "at": change.get("incoming_extracted_at"),
+                        }],
+                    }
+                else:
+                    cand["count"] += 1
+                    cand["review_ids"].append(str(r.id))
+                    cand["sources"].append({
+                        "source": change.get("incoming_source"),
+                        "at": change.get("incoming_extracted_at"),
+                    })
+
+        # `current` comes from the LIVE master row, never from any review's
+        # stored `old`. Siblings hold `old` snapshots taken at different
+        # times, so once grouped they disagree with each other and with
+        # reality — showing one of them as "current" would mislead the human
+        # into approving against a value that no longer exists.
+        current = {}
+        for field in fields:
+            if master is None:
+                current[field] = None
+            elif field == "founders":
+                current[field] = (master.raw_data or {}).get("founders")
+            else:
+                current[field] = getattr(master, field, None)
+
+        created = [r.created_at for r in members if r.created_at]
+        groups.append({
+            "master_id": mid,
+            "master_name": members[0].master_name,
+            "review_ids": [str(r.id) for r in members],
+            "review_count": len(members),
+            # Worst risk across the group — a single high-risk overwrite
+            # buried among low-risk blank-fills must not read as low.
+            "risk_level": "high" if any(r.risk_level == "high" for r in members) else members[0].risk_level,
+            "first_seen": min(created) if created else None,
+            "last_seen": max(created) if created else None,
+            "fields": {f: list(cands.values()) for f, cands in fields.items()},
+            "current": current,
+            "master_missing": master is None,
+        })
+
+    groups.sort(key=lambda g: g["last_seen"] or "", reverse=True)
+    return {
+        "total_groups": len(groups),
+        "total_reviews": len(rows),
+        "groups": groups[:limit],
     }
 
 
