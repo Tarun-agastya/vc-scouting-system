@@ -119,8 +119,6 @@ class Settings(BaseSettings):
     dedup_block_top_n: int = 10           # candidates pulled from Qdrant for scoring
     dedup_merge_threshold: float = 0.82   # weighted score >= this  -> auto-merge
     dedup_review_threshold: float = 0.55  # in [review, merge)       -> flag for human review
-    dedup_weight_name: float = 0.30       # name string similarity
-    dedup_weight_embedding: float = 0.30  # whole-record embedding (semantic) similarity
     # Location carries ZERO weight (owner decision, 4 Aug). Many genuinely
     # different startups share a city/country simply by being in the same hub
     # (Munich, Berlin, Zurich), so location agreement is not identity evidence.
@@ -130,9 +128,21 @@ class Settings(BaseSettings):
     # enough to cross dedup_review_threshold and stage a review for two
     # completely differently-named companies. Still computed and shown in each
     # review's `evidence` for human context — just never scored.
+    #
+    # The other four weights are RENORMALIZED to sum to 1.0 (from the original
+    # 0.30/0.30/0.10/0.15, which summed to 0.85 once location's 0.15 was
+    # dropped). Without this the weights silently violated the "should sum to
+    # ~1.0" rule above and dedup_review_threshold=0.55 became an effective
+    # 0.647 bar — measured live: genuine duplicates like "Quantum Diamonds ~
+    # QuantumDiamonds" and "Bugsense Diagnostics ~ Bugsense" fell below it and
+    # reclassified as no_match. Renormalizing keeps each remaining signal's
+    # RELATIVE importance identical to before and leaves the threshold
+    # meaning exactly what it always meant.
+    dedup_weight_name: float = 0.353       # name string similarity
+    dedup_weight_embedding: float = 0.353  # whole-record embedding (semantic) similarity
     dedup_weight_location: float = 0.0
-    dedup_weight_founded_year: float = 0.10
-    dedup_weight_founders: float = 0.15   # founder-name overlap
+    dedup_weight_founded_year: float = 0.118
+    dedup_weight_founders: float = 0.176   # founder-name overlap
     dedup_llm_judge: bool = False         # legacy inline judge — kept off; Layer 4 is now async explanation only
 
     # Phase S-3b — data-stewardship matcher
