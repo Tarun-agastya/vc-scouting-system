@@ -1,5 +1,7 @@
 """build_match_report classification (needs DB + Qdrant + embeddings)."""
-from processing.matcher import build_match_report, _identity_domain, _classify
+from processing.matcher import (
+    build_match_report, _identity_domain, _classify, _text_overlap,
+)
 from embeddings.embedder import embedder
 
 
@@ -34,15 +36,83 @@ def test_classify_same_city_alone_does_not_trigger_review():
     that happen to share a city, plus a moderately-strong embedding score
     from generic same-industry vocabulary overlap (not real identity
     evidence), must NOT be enough to stage a possible_duplicate review —
-    name is genuinely different and there's no founder overlap. Location can
-    still corroborate a match when name AND embedding are ALSO strong (see
-    test_classify_domain_rename-style cases), but must never be one of only
-    two signals that trigger review by itself.
+    name is genuinely different and there's no founder overlap.
     """
     ev = {"name_similarity": 0.3, "embedding_sim": 0.85, "founder_overlap": 0.0,
           "location_match": 1.0, "aggregate_score": 0.4}
     outcome, _, _ = _classify(ev, domain_match=False)
     assert outcome == "no_match"
+
+
+def test_classify_strong_name_and_embedding_no_longer_need_location():
+    """
+    Part A (4 Aug): location was dropped from the strong-signal rule
+    entirely. name AND embedding both independently clearing the strong bar
+    is sufficient evidence on its own — a same-company pair whose city
+    happens to be missing/different must still be flagged.
+    """
+    ev = {"name_similarity": 0.9, "embedding_sim": 0.9, "founder_overlap": 0.0,
+          "location_match": 0.0, "aggregate_score": 0.6, "text_overlap": 0.4}
+    outcome, risk, _ = _classify(ev, domain_match=False)
+    assert outcome == "possible_duplicate" and risk == "high"
+
+
+def test_classify_text_overlap_veto_kills_embedding_only_false_positive():
+    """
+    Part B (4 Aug): the real shape measured on the live pending backlog —
+    "Vaeridion ~ Bai Soft GmbH": different names, generically-elevated
+    embedding (same-industry vocabulary), and ZERO literal description
+    overlap. 72% of comparable pending possible_duplicate reviews looked
+    like this. Literal-text disagreement is decisive; the embedding is not.
+    """
+    ev = {"name_similarity": 0.353, "embedding_sim": 0.782, "founder_overlap": 0.0,
+          "location_match": 1.0, "aggregate_score": 0.5, "text_overlap": 0.0}
+    outcome, _, reason = _classify(ev, domain_match=False)
+    assert outcome == "no_match"
+    assert "literal" in reason
+
+
+def test_classify_veto_does_not_fire_when_names_are_similar():
+    """
+    The veto needs BOTH conditions. A genuine duplicate re-scraped with a
+    rewritten description (high name similarity, low literal overlap) must
+    survive — otherwise re-worded copy would silently hide real duplicates.
+    """
+    ev = {"name_similarity": 0.95, "embedding_sim": 0.9, "founder_overlap": 0.0,
+          "location_match": 0.0, "aggregate_score": 0.6, "text_overlap": 0.0}
+    outcome, _, _ = _classify(ev, domain_match=False)
+    assert outcome == "possible_duplicate"
+
+
+def test_classify_veto_never_fires_without_descriptions():
+    """
+    text_overlap is None when either record has no description — absence of
+    text is absence of evidence, NOT evidence of difference. Vetoing here
+    would break Phase D-1's same-name-no-website duplicate detection, whose
+    records are bare name-only stubs by definition.
+    """
+    ev = {"name_similarity": 0.95, "embedding_sim": 0.95, "founder_overlap": 0.0,
+          "location_match": 0.0, "aggregate_score": 0.6, "text_overlap": None}
+    outcome, _, _ = _classify(ev, domain_match=False)
+    assert outcome == "possible_duplicate"
+
+
+def test_classify_veto_does_not_apply_to_domain_matches():
+    """A real shared identity-domain outranks any text signal."""
+    ev = {"name_similarity": 0.1, "embedding_sim": 0.9, "founder_overlap": 0.0,
+          "location_match": 0.0, "aggregate_score": 0.4, "text_overlap": 0.0}
+    outcome, _, _ = _classify(ev, domain_match=True)
+    assert outcome in ("possible_duplicate", "anomaly")
+
+
+def test_text_overlap_function():
+    text = "builds ai powered logistics routing software for freight forwarders"
+    assert _text_overlap(text, text) == 1.0
+    assert _text_overlap(text, "vegan meal kits delivered weekly to homes") == 0.0
+    # None (not 0.0) whenever either side is missing/too short to shingle
+    assert _text_overlap(text, "") is None
+    assert _text_overlap(None, text) is None
+    assert _text_overlap("two words", text) is None  # < 3 words -> no shingle
 
 
 def test_classify_weak_no_match():

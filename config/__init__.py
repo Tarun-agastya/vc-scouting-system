@@ -121,7 +121,16 @@ class Settings(BaseSettings):
     dedup_review_threshold: float = 0.55  # in [review, merge)       -> flag for human review
     dedup_weight_name: float = 0.30       # name string similarity
     dedup_weight_embedding: float = 0.30  # whole-record embedding (semantic) similarity
-    dedup_weight_location: float = 0.15   # city/country agreement
+    # Location carries ZERO weight (owner decision, 4 Aug). Many genuinely
+    # different startups share a city/country simply by being in the same hub
+    # (Munich, Berlin, Zurich), so location agreement is not identity evidence.
+    # It was first removed from _classify's num_strong pattern-count, but kept
+    # leaking through THIS weighted aggregate: 0.15 stacked with a
+    # generically-elevated embedding score (same-industry vocabulary) was still
+    # enough to cross dedup_review_threshold and stage a review for two
+    # completely differently-named companies. Still computed and shown in each
+    # review's `evidence` for human context — just never scored.
+    dedup_weight_location: float = 0.0
     dedup_weight_founded_year: float = 0.10
     dedup_weight_founders: float = 0.15   # founder-name overlap
     dedup_llm_judge: bool = False         # legacy inline judge — kept off; Layer 4 is now async explanation only
@@ -138,6 +147,23 @@ class Settings(BaseSettings):
     # Pattern-decision thresholds (evidence patterns, not a single linear gate)
     dedup_strong_signal: float = 0.80     # a per-signal value >= this counts as "strong"
     dedup_anomaly_gap: float = 0.30       # domain strong but best other signal below this -> anomaly
+
+    # Literal description-overlap VETO (4 Aug). Embedding similarity alone is
+    # too forgiving between two different companies that merely share industry
+    # vocabulary ("AI-powered platform for X") — measured live on the real
+    # pending backlog, pairs like "Vaeridion ~ Bai Soft GmbH" scored emb 0.78
+    # with ZERO literal description overlap. When two descriptions share no
+    # literal content AND the names differ, that is decisive evidence they are
+    # NOT the same company, whatever the embedding says.
+    #
+    # Deliberately a veto only, never a positive signal (hence no weight in the
+    # aggregate score): the same measurement found the HIGH-overlap end is not
+    # duplicates either — pairs like "Collimate Health ~ Causa Prima" share a
+    # 1.0-identical description with completely different names, which is the
+    # extraction cross-attribution bug, not identity. Scoring high overlap UP
+    # would have made those worse.
+    dedup_text_overlap_veto: float = 0.05        # overlap below this = no shared literal content
+    dedup_text_overlap_name_ceiling: float = 0.5 # ...and names below this = veto the pair
 
     class Config:
         env_file = ".env"

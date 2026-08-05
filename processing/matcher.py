@@ -26,6 +26,7 @@ Degrades safely: if embedding/Qdrant blocking fails, falls back to a name-only
 scan so ingestion never breaks because of a matcher error.
 """
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Optional, List
 
@@ -113,6 +114,37 @@ def _name_similarity(a_name: str, b_name: str) -> float:
     return fuzz.token_sort_ratio(na, nb) / 100.0
 
 
+_SHINGLE_N = 3
+
+
+def _text_overlap(a: str, b: str) -> Optional[float]:
+    """
+    Literal word-shingle (3-gram) Jaccard overlap of two descriptions, or
+    None when either side has no usable text.
+
+    None vs 0.0 is a load-bearing distinction, not defensive coding: 0.0 means
+    "both records HAVE descriptions and they share nothing literal" (decisive
+    evidence of different companies); None means "no evidence either way".
+    The veto in _classify fires only on a real 0.0-ish value — a bare
+    name-only stub pair (no description on either side) must never be vetoed,
+    or the Phase D-1 same-name-no-website duplicate detection would break.
+
+    Complements embedding similarity rather than duplicating it: embeddings
+    are semantic and forgiving (two different companies in one industry embed
+    close on shared vocabulary), literal shingles are not.
+    """
+    ta, tb = (a or "").strip(), (b or "").strip()
+    if not ta or not tb:
+        return None
+    wa = re.findall(r"[a-z0-9]+", ta.lower())
+    wb = re.findall(r"[a-z0-9]+", tb.lower())
+    sa = {tuple(wa[i:i + _SHINGLE_N]) for i in range(max(0, len(wa) - _SHINGLE_N + 1))}
+    sb = {tuple(wb[i:i + _SHINGLE_N]) for i in range(max(0, len(wb) - _SHINGLE_N + 1))}
+    if not sa or not sb:
+        return None  # text too short to form a single shingle — no evidence
+    return len(sa & sb) / len(sa | sb)
+
+
 def _score_pair(incoming: dict, existing_row, embedding_sim: float, domain_match: bool) -> tuple:
     """
     Full evidence for an (incoming, existing) pair: every signal separately +
@@ -125,6 +157,7 @@ def _score_pair(incoming: dict, existing_row, embedding_sim: float, domain_match
         "country":      existing_row.country or existing.get("country"),
         "founded_year": existing_row.founded_year or existing.get("founded_year"),
         "founders":     existing.get("founders"),
+        "description":  existing_row.description or existing.get("description"),
     }
 
     name_sim = _name_similarity(incoming.get("name", ""), existing_row.name or "")
@@ -133,6 +166,7 @@ def _score_pair(incoming: dict, existing_row, embedding_sim: float, domain_match
     founders = _founder_overlap(_founder_set(incoming.get("founders")),
                                 _founder_set(existing_view["founders"]))
     emb      = max(0.0, min(1.0, embedding_sim))
+    overlap  = _text_overlap(incoming.get("description"), existing_view["description"])
 
     score = (
         settings.dedup_weight_name         * name_sim +
@@ -148,6 +182,10 @@ def _score_pair(incoming: dict, existing_row, embedding_sim: float, domain_match
         "founded_year":    round(year, 3),
         "founder_overlap": round(founders, 3),
         "domain_match":    1.0 if domain_match else 0.0,
+        # None (not 0.0) when either side has no description — see
+        # _text_overlap. Carries no weight in aggregate_score by design; it
+        # is a veto in _classify, never positive evidence.
+        "text_overlap":    round(overlap, 3) if overlap is not None else None,
         "aggregate_score": round(score, 3),
     }
     return score, evidence
@@ -239,21 +277,20 @@ def _classify(evidence: dict, domain_match: bool) -> tuple:
     name = evidence["name_similarity"]
     emb  = evidence["embedding_sim"]
     fnd  = evidence["founder_overlap"]
-    loc  = evidence["location_match"]
     score = evidence["aggregate_score"]
+    overlap = evidence.get("text_overlap")
 
-    # location deliberately excluded from `corroborators`/`num_strong`
-    # (confirmed live 4 Aug — a review-inbox-flooding audit): many genuinely
-    # different startups share a city/country purely because they're in the
-    # same hub (Zurich, Munich, Berlin...), and combined with an embedding
-    # score that clears STRONG on generic industry-vocabulary overlap alone
-    # (the same "AI HR Berlin Seed matches 100 firms" risk this module's own
-    # docstring already names), same-city + moderately-similar description
-    # was enough to hit num_strong>=2 for two unrelated companies. Location
-    # stays as a corroborator in the explicit name+embedding+location rule
-    # below (where name AND embedding already have to be strong on their
-    # own first) and in the weighted aggregate_score tiebreaker — it just
-    # can no longer be one of only two signals that trigger a review by itself.
+    # Location plays NO part in any automated decision here (owner decision,
+    # 4 Aug, after a review-inbox-flooding audit): many genuinely different
+    # startups share a city/country purely by being in the same hub (Munich,
+    # Berlin, Zurich), so agreement is not identity evidence. It was first
+    # removed from `corroborators`/`num_strong`, but kept leaking through the
+    # weighted aggregate_score (dedup_weight_location, now 0.0) — a 0.15
+    # location term stacked with a generically-elevated embedding score (the
+    # "AI HR Berlin Seed matches 100 firms" risk this module's own docstring
+    # names) still crossed dedup_review_threshold for two completely
+    # differently-named companies. It stays in `evidence` for human context
+    # only; nothing below reads it.
     corroborators = [name, emb, fnd]
     max_corrob = max(corroborators)
     num_strong = sum(1 for c in corroborators if c >= STRONG)
@@ -265,11 +302,29 @@ def _classify(evidence: dict, domain_match: bool) -> tuple:
             return "anomaly", "anomaly", "domain matches but no other signal corroborates (possible shared domain)"
         return "possible_duplicate", "high", "same domain plus corroborating signals (likely rename)"
 
+    # ── Literal-text veto (4 Aug) ───────────────────────────────────────────
+    # Two records that BOTH have descriptions, share no literal content, and
+    # don't have similar names are decisively different companies — whatever
+    # the embedding says. This is the direct fix for embedding-only
+    # over-matching: measured on the live pending backlog, 72% of comparable
+    # possible_duplicate reviews were this exact shape (e.g. "Vaeridion ~ Bai
+    # Soft GmbH", emb 0.78, zero literal overlap).
+    #
+    # `overlap is None` (either side has no description) must NOT veto —
+    # absence of text is absence of evidence, and vetoing there would break
+    # Phase D-1's same-name-no-website duplicate detection, whose records are
+    # bare stubs by definition. Deliberately placed AFTER the domain_match
+    # branch: a real shared identity-domain outranks any text signal.
+    if (overlap is not None
+            and overlap < settings.dedup_text_overlap_veto
+            and name < settings.dedup_text_overlap_name_ceiling):
+        return "no_match", "none", "descriptions share no literal content and names differ"
+
     # No identity-domain signal — rely on the other evidence.
     if fnd >= STRONG and (name >= STRONG or emb >= STRONG):
         return "possible_duplicate", "high", "shared founder + strong name/description match"
-    if name >= STRONG and emb >= STRONG and loc >= 0.6:
-        return "possible_duplicate", "high", "strong name + description + location agreement"
+    if name >= STRONG and emb >= STRONG:
+        return "possible_duplicate", "high", "strong name + description match"
     if num_strong >= 2:
         return "possible_duplicate", "low", "two or more moderately strong signals"
     if score >= settings.dedup_review_threshold:
