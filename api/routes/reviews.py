@@ -200,7 +200,8 @@ async def list_reviews(
     db: Session = Depends(get_db),
 ):
     """List reviews (pending by default). The dashboard Review Inbox reads this."""
-    from sqlalchemy import or_
+    from sqlalchemy import or_, cast
+    from sqlalchemy.dialects.postgresql import JSONB
 
     query = db.query(DuplicateReview)
     if status:
@@ -212,7 +213,14 @@ async def list_reviews(
     if run_id:
         query = query.filter(DuplicateReview.run_id == run_id)
     if evidence_level:
-        query = query.filter(DuplicateReview.evidence["evidence_level"].astext == evidence_level)
+        # DuplicateReview.evidence is a plain JSON column (not JSONB), and
+        # only JSONB's comparator exposes .astext — the same 500 this
+        # codebase already hit twice on Startup.verification_evidence
+        # (api/routes/verification.py, processing/web_verifier.py). Same
+        # fix: cast to JSONB at query time, no column migration needed.
+        query = query.filter(
+            cast(DuplicateReview.evidence, JSONB)["evidence_level"].astext == evidence_level
+        )
     if q:
         like = f"%{q}%"
         query = query.filter(or_(
