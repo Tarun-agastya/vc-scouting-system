@@ -88,6 +88,11 @@ came from. In that case:
       a company, no matter how sentence-like or button-like it reads.
   Skipping these is correct and expected; the EXCLUDE rules above still apply
   to every entry in the list.
+- If an entry is written as "Name — https://example.com", that URL is that
+  company's own official website, harvested from its link on the page. Put it
+  in `website` exactly as given. This is the ONE case where a field other than
+  `name` should be filled from a bare list — the URL is real page data, not an
+  inference. Never invent a website for an entry that doesn't carry one.
 - Do NOT invent an industry, description, location, or year to fill the gap.
 - If the list contains genuine company names, returning an empty list is wrong.
 

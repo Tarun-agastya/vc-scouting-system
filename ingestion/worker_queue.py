@@ -56,6 +56,10 @@ class PageItem:
     strategy: Optional[object] = None          # ingestion.strategy.PageStrategy
     entity_names: List[str] = field(default_factory=list)
     entity_blocks: List[tuple] = field(default_factory=list)  # [(name, text), ...]
+    # Phase X-2 — [(name, absolute_href_or_None), ...]. Carried so a logo
+    # grid whose cards link to the companies' own sites can hand the
+    # extractor a website per name instead of a bare name list.
+    entity_links: List[tuple] = field(default_factory=list)
     expected_entity_count: int = 0
     parent_entity_name: Optional[str] = None   # R-6 extension point: detail-page attribution
 
@@ -500,7 +504,7 @@ def _adaptive_chunks(item: "PageItem", strategy) -> tuple:
 
     if strategy.chunking == "name_batch" and item.entity_names:
         n = strategy.names_per_chunk or _default_names_per_chunk()
-        return split_name_batches(item.entity_names, n), "name_batch"
+        return split_name_batches(item.entity_names, n, links=item.entity_links), "name_batch"
     if strategy.chunking == "per_card" and item.entity_blocks:
         return split_cards(item.entity_blocks), "card"
     return split_prose(item.text), "prose"

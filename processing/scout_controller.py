@@ -431,7 +431,19 @@ class ScoutController:
         from processing.web_verifier import web_verify_pending
         progress = RecordProgress(total=limit)
         rec.live_metrics = progress
-        return await web_verify_pending(limit=limit, progress=progress)
+        # run_id was omitted here until 5 Aug, unlike every _selected sibling,
+        # so reviews staged by the SCHEDULED web-verify all landed with
+        # run_id=None — silently breaking GET /reviews?run_id= for exactly the
+        # runs Phase X-4 makes frequent.
+        return await web_verify_pending(limit=limit, run_id=rec.run_id, progress=progress)
+
+    async def _work_web_verify_stubs(self, limit: int, rec: RunRecord) -> dict:
+        """Phase X-4: enrich freshly-ingested name-only records. Same mutex
+        contract as _work_web_verify — already inside it, never re-acquire."""
+        from processing.web_verifier import web_verify_new_stubs
+        progress = RecordProgress(total=limit)
+        rec.live_metrics = progress
+        return await web_verify_new_stubs(limit=limit, run_id=rec.run_id, progress=progress)
 
     async def _work_recheck_selected(self, ids: list, rec: RunRecord) -> dict:
         """
@@ -520,6 +532,49 @@ class ScoutController:
                             batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
         return await self._execute(rec, lambda: self._work_web_verify(limit, rec))
 
+    async def run_web_verify_stubs(
+        self, limit: Optional[int] = None, *,
+        batch_id: Optional[str] = None, batch_index: Optional[int] = None, batch_total: Optional[int] = None,
+    ) -> RunRecord:
+        """Phase X-4: web-verify freshly-ingested name-only stubs, under the GPU mutex."""
+        from config import settings
+        limit = limit if limit is not None else settings.web_verify_chain_limit
+        rec = self._new_run("web_verify_stubs", "new-stub-verification",
+                            batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
+        return await self._execute(rec, lambda: self._work_web_verify_stubs(limit, rec))
+
+    async def run_web_source_then_verify(
+        self, url: str, source_type: str = "general", label: Optional[str] = None, *,
+        force_render: bool = False,
+        batch_id: Optional[str] = None, batch_index: Optional[int] = None, batch_total: Optional[int] = None,
+    ) -> RunRecord:
+        """
+        Phase X-4: scrape a web source, then immediately web-verify the
+        name-only stubs it produced — the owner's "run it right after this
+        finishes so it's updated with the latest info".
+
+        THE CHAIN MUST LIVE HERE, NOT INSIDE _work_web. _execute() holds
+        gpu_mutex for the whole run and asyncio.Lock is not reentrant, so
+        calling a run_* method from inside a work function would deadlock the
+        entire pipeline. Sequential await at this level — one run fully
+        releases the mutex before the next acquires it — is the only safe
+        composition, and is the same shape run_all already uses.
+
+        Skips the verify leg entirely when the scrape produced no bare stubs,
+        so an unchanged source costs zero outbound search calls. Returns the
+        SCRAPE's RunRecord (the verify leg is its own separate record in
+        history) so existing callers see no change in return shape.
+        """
+        rec = await self.run_web_source(
+            url, source_type, label, force_render=force_render,
+            batch_id=batch_id, batch_index=batch_index, batch_total=batch_total,
+        )
+        stubs = (rec.metrics or {}).get("bare_stub_new_masters", 0)
+        if rec.status == "completed" and stubs:
+            logger.info(f"[Controller] {label or url}: {stubs} name-only stub(s) — chaining web verification")
+            await self.run_web_verify_stubs(batch_id=batch_id)
+        return rec
+
     async def run_recheck_selected(self, ids: list) -> RunRecord:
         """Phase Q2: recheck an explicit, human-selected set of startups, under the GPU mutex."""
         rec = self._new_run("recheck_selected", f"selected-recheck ({len(ids)})")
@@ -554,7 +609,7 @@ class ScoutController:
         bid, total = str(uuid4()), len(accel)
         results = []
         for i, s in enumerate(accel, start=1):
-            results.append(await self.run_web_source(
+            results.append(await self.run_web_source_then_verify(
                 s.primary_url, s.source_type.value, label=s.source_name,
                 force_render=(getattr(s, "render_mode", "auto") == "always"),
                 batch_id=bid, batch_index=i, batch_total=total,
@@ -567,7 +622,7 @@ class ScoutController:
         bid, total = str(uuid4()), len(uni)
         results = []
         for i, s in enumerate(uni, start=1):
-            results.append(await self.run_web_source(
+            results.append(await self.run_web_source_then_verify(
                 s.primary_url, s.source_type.value, label=s.source_name,
                 force_render=(getattr(s, "render_mode", "auto") == "always"),
                 batch_id=bid, batch_index=i, batch_total=total,
@@ -590,14 +645,14 @@ class ScoutController:
         await self.run_rss(batch_id=bid, batch_index=i, batch_total=total)
         i += 1
         for s in accel:
-            await self.run_web_source(
+            await self.run_web_source_then_verify(
                 s.primary_url, s.source_type.value, label=s.source_name,
                 force_render=(getattr(s, "render_mode", "auto") == "always"),
                 batch_id=bid, batch_index=i, batch_total=total,
             )
             i += 1
         for s in uni:
-            await self.run_web_source(
+            await self.run_web_source_then_verify(
                 s.primary_url, s.source_type.value, label=s.source_name,
                 force_render=(getattr(s, "render_mode", "auto") == "always"),
                 batch_id=bid, batch_index=i, batch_total=total,

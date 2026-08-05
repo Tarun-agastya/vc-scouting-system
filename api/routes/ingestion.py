@@ -53,8 +53,10 @@ async def scrape_website(request: ScrapeRequest):
     import asyncio
     from processing.scout_controller import scout_controller
 
+    # Chained (Phase X-4): name-only stubs this scrape produces are web-verified
+    # immediately after it finishes, rather than waiting for the nightly job.
     asyncio.create_task(
-        scout_controller.run_web_source(request.url, request.source_type)
+        scout_controller.run_web_source_then_verify(request.url, request.source_type)
     )
     return {
         "status": "started",

@@ -264,6 +264,40 @@ def _extract_text(html: str) -> str:
     return text
 
 
+def _name_from_link(href: Optional[str], page_url: str) -> Optional[str]:
+    """
+    Company identity derived from a card's outbound link (Phase X-2).
+
+    A logo grid whose cards carry links to the companies' own websites but
+    no alt text still names every company — in the href. "agitect.com" ->
+    "Agitect", "https://www.aluco.io/" -> "Aluco", "alamos.gmbh" -> "Alamos".
+
+    Only EXTERNAL links qualify. A same-domain link is site navigation
+    ("/about", "/team"), and its domain is the host org's name, not a
+    portfolio company's — deriving from those would manufacture dozens of
+    fake records all named after the source itself. Returns None for
+    same-domain links, missing hrefs, and bare domains that carry no usable
+    label, so the caller keeps the card's own name when there is one.
+    """
+    if not href:
+        return None
+    domain = _base_domain(href)
+    if not domain or domain == _base_domain(page_url):
+        return None
+    label = domain.split(".")[0].strip()
+    # A single leading label of "www" means _base_domain didn't strip it
+    # (non-http scheme, say); anything shorter than 2 chars is noise.
+    if len(label) < 2 or label == "www":
+        return None
+    # Title-case is the best available guess: _base_domain lowercases the
+    # netloc (correctly — DNS is case-insensitive), so a brand's own casing
+    # ("WeSort.AI", "goNEON") is not recoverable from the href at all. The
+    # derived name is a STUB identity; web verification is what replaces it
+    # with the company's real name and casing — which is exactly why X-4
+    # queues these records for verification the moment they're created.
+    return label.title()
+
+
 @dataclass
 class PageContent:
     """
@@ -344,19 +378,54 @@ def extract_content(html: str, url: str, strategy=None) -> "PageContent":
         g = sig.primary_group
         if g is None:
             return PageContent(text=_extract_text(html))
-        names = g.names()
+
         # (name, absolute href) per card, regardless of mode — Phase R-6's
         # detail-page following needs to know which company a link came
         # from, and this is the one place that information (card membership)
         # is available; _extract_links() has no such scoping.
-        links = [
-            (i.name, urljoin(url, i.href) if i.href else None)
-            for i in g.items
-        ]
+        #
+        # Phase X-2 (5 Aug): a card with NO name but a link to an external
+        # domain still identifies a company — the linked domain IS the
+        # identity. Found live on schwaben.digital/startups: 37 logo cards,
+        # 36 linking to the companies' own sites (agitect.com, alitiq.com,
+        # avanera.de…), ZERO carrying alt text, so g.names() returned []
+        # and the whole page extracted nothing. It is the exact mirror of
+        # zollhof (116 names / 0 links, works fine) — same shape, opposite
+        # data placement. Deriving here rather than in
+        # site_inspector._item_name is deliberate: that feeds
+        # frac_unique_name and group scoring, so changing it would perturb
+        # which group is picked as primary on every already-working source.
+        links: list = []
+        names: list = []
+        for i in g.items:
+            href = urljoin(url, i.href) if i.href else None
+            name = i.name or _name_from_link(href, url)
+            links.append((name, href))
+            if name:
+                names.append(name)
+
         if mode == "alt_harvest":
-            return PageContent(text="", entity_names=names, entity_links=links, structural_count=g.n)
-        blocks = [(i.name, i.text) for i in g.items if i.text]
-        return PageContent(text="", entity_names=names, entity_blocks=blocks, entity_links=links, structural_count=g.n)
+            content = PageContent(text="", entity_names=names, entity_links=links,
+                                  structural_count=g.n)
+        else:
+            blocks = [(i.name, i.text) for i in g.items if i.text]
+            content = PageContent(text="", entity_names=names, entity_blocks=blocks,
+                                  entity_links=links, structural_count=g.n)
+
+        # Phase X-1 (5 Aug): a structural mode that yields nothing usable must
+        # degrade to full_text, exactly like the `g is None` branch above —
+        # never return an empty PageContent. _crawler_task's gate is
+        # `if page_text or entity_names or entity_blocks`, so an empty one
+        # silently DROPS the page: no record, no warning, no metric. That is
+        # how schwaben.digital/startups reported 0 of 37 for weeks.
+        if not content.entity_names and not content.entity_blocks:
+            logger.warning(
+                f"[Scraper] {url}: structural mode {mode!r} found a group of "
+                f"{g.n} item(s) but extracted no usable names or blocks — "
+                f"falling back to full_text"
+            )
+            return PageContent(text=_extract_text(html))
+        return content
 
     return PageContent(text=_extract_text(html))
 
@@ -638,6 +707,7 @@ class WebScraper:
                 page_item = PageItem(
                     url=outcome.url, text=content.text, source_type=source_type, source_url=source_url,
                     strategy=new_strategy, entity_names=content.entity_names, entity_blocks=content.entity_blocks,
+                    entity_links=content.entity_links,
                     expected_entity_count=expected,
                 )
 
@@ -856,6 +926,7 @@ class WebScraper:
                         strategy=strategy if adaptive else None,
                         entity_names=content.entity_names,
                         entity_blocks=content.entity_blocks,
+                        entity_links=content.entity_links,
                         expected_entity_count=strategy.expected_entity_count if adaptive else 0,
                         parent_entity_name=parent_entity_name,
                     ))

@@ -83,6 +83,16 @@ _NON_OFFICIAL_WEBSITE_EXTRA = {
 }
 
 
+# Every terminal branch of apply_verdict() writes exactly one of these into
+# verification_evidence["reason"]. That makes them the reliable "this record
+# has already been through web verification" marker — the only one available,
+# since the `staged` branch deliberately does NOT change verification_status.
+# web_verify_new_stubs' selection depends on this staying exhaustive: adding a
+# new terminal branch to apply_verdict without adding its reason here would
+# silently make that query non-self-clearing again.
+_WEB_VERIFIED_REASONS = ("web_verified", "web_verification_flagged", "identity_unconfirmed")
+
+
 def _is_official_website(url: str) -> bool:
     """
     True if `url` looks like a company's own homepage rather than a profile
@@ -335,62 +345,133 @@ async def web_verify_pending(limit: int = 15, run_id=None, progress=None) -> dic
             .limit(limit)
             .all()
         )
+        return await _process_candidates(db, candidates, run_id, progress)
+    finally:
+        db.close()
+
+
+async def _process_candidates(db, candidates: list, run_id, progress) -> dict:
+    """
+    The shared per-record loop: search -> verdict -> apply_verdict, with the
+    consecutive-timeout circuit breaker and progress bookkeeping.
+
+    Factored out (Phase X-4) so web_verify_pending (the no-excerpt backlog),
+    web_verify_ids (a human's explicit selection) and web_verify_new_stubs
+    (freshly-ingested name-only records) share ONE implementation and can
+    never drift apart in their error handling. Callers differ only in which
+    rows they select — that difference is the whole point, and it stays in
+    the callers.
+    """
+    counts = {"verified": 0, "staged": 0, "unchanged": 0, "errors": 0}
+    if progress is not None:
+        progress.total = len(candidates)
+
+    loop = asyncio.get_event_loop()
+    ollama_down = False
+    consecutive_timeouts = 0
+    # Require several timeouts IN A ROW before concluding Ollama itself
+    # is down, not just one slow record — see processing/verifier.py's
+    # identical fix (27 Jul) for the full story: one outlier timeout
+    # used to abandon the entire rest of a multi-hundred-record batch.
+    # web_verify_record already retries once internally, so this is a
+    # second line of defense, not the primary fix.
+    CONSECUTIVE_TIMEOUT_THRESHOLD = 3
+
+    for record in candidates:
         if progress is not None:
-            progress.total = len(candidates)
+            progress.current_name = record.name
+        try:
+            results = await loop.run_in_executor(None, _search_record, record)
+            if not results:
+                counts["unchanged"] += 1
+                continue
 
-        loop = asyncio.get_event_loop()
-        ollama_down = False
-        consecutive_timeouts = 0
-        # Require several timeouts IN A ROW before concluding Ollama itself
-        # is down, not just one slow record — see processing/verifier.py's
-        # identical fix (27 Jul) for the full story: one outlier timeout
-        # used to abandon the entire rest of a multi-hundred-record batch.
-        # web_verify_record already retries once internally, so this is a
-        # second line of defense, not the primary fix.
-        CONSECUTIVE_TIMEOUT_THRESHOLD = 3
+            if ollama_down:
+                counts["unchanged"] += 1
+                continue
 
-        for record in candidates:
-            if progress is not None:
-                progress.current_name = record.name
-            try:
-                results = await loop.run_in_executor(None, _search_record, record)
-                if not results:
-                    counts["unchanged"] += 1
-                    continue
+            verdict = await loop.run_in_executor(None, _verify_record, record, results)
+            consecutive_timeouts = 0
 
-                if ollama_down:
-                    counts["unchanged"] += 1
-                    continue
+            outcome = apply_verdict(db, record, results, verdict, run_id=run_id)
+            counts[outcome] += 1
 
-                verdict = await loop.run_in_executor(None, _verify_record, record, results)
+        except Exception as exc:
+            db.rollback()
+            logger.warning(
+                f"[WebVerifier] Failed for {record.id} ({record.name}): {exc}"
+            )
+            counts["errors"] += 1
+            msg = str(exc).lower()
+            if any(s in msg for s in ("connect", "timeout", "timed out", "refused", "unreachable")):
+                consecutive_timeouts += 1
+                if consecutive_timeouts >= CONSECUTIVE_TIMEOUT_THRESHOLD:
+                    ollama_down = True
+                    logger.warning(
+                        f"[WebVerifier] {CONSECUTIVE_TIMEOUT_THRESHOLD} consecutive timeouts — "
+                        f"treating Ollama as down for the rest of this batch"
+                    )
+            else:
                 consecutive_timeouts = 0
+        finally:
+            if progress is not None:
+                progress.processed += 1
 
-                outcome = apply_verdict(db, record, results, verdict, run_id=run_id)
-                counts[outcome] += 1
+    logger.info(f"[WebVerifier] Batch: {counts}")
+    return counts
 
-            except Exception as exc:
-                db.rollback()
-                logger.warning(
-                    f"[WebVerifier] Failed for {record.id} ({record.name}): {exc}"
-                )
-                counts["errors"] += 1
-                msg = str(exc).lower()
-                if any(s in msg for s in ("connect", "timeout", "timed out", "refused", "unreachable")):
-                    consecutive_timeouts += 1
-                    if consecutive_timeouts >= CONSECUTIVE_TIMEOUT_THRESHOLD:
-                        ollama_down = True
-                        logger.warning(
-                            f"[WebVerifier] {CONSECUTIVE_TIMEOUT_THRESHOLD} consecutive timeouts — "
-                            f"treating Ollama as down for the rest of this batch"
-                        )
-                else:
-                    consecutive_timeouts = 0
-            finally:
-                if progress is not None:
-                    progress.processed += 1
 
-        logger.info(f"[WebVerifier] Batch: {counts}")
-        return counts
+async def web_verify_new_stubs(limit: int = 25, run_id=None, progress=None) -> dict:
+    """
+    Enrich freshly-ingested NAME-ONLY records (Phase X-4, 5 Aug).
+
+    The adaptive pipeline's "if the page only gives you names, take the names"
+    fallback produces records with a name and nothing else — a logo grid is
+    working as designed when it yields 37 bare names. This is the other half
+    of that contract: those stubs go straight to web search for their real
+    details, rather than sitting bare until someone notices.
+
+    Chained after every web ingestion run (scout_controller.
+    run_web_source_then_verify) so new records are enriched in the same
+    session, and newest-first so a chained run naturally picks up exactly the
+    stubs the run that just finished created.
+
+    THE SELECTION PREDICATE MUST BE SELF-CLEARING — this is the one thing to
+    preserve if you touch this query. "description IS NULL AND website IS
+    NULL" alone is NOT: apply_verdict stages a review rather than writing
+    fields, so the row stays a bare stub forever, and the same top-N records
+    would be re-searched on every single run while the tail is never reached
+    — burning outbound search calls and enriching nothing. That exact bug
+    hit the sibling query live on 24 Jul (see web_verify_pending's comment).
+    The guard here is the evidence reason: apply_verdict writes exactly one
+    of web_verified / web_verification_flagged / identity_unconfirmed on
+    every terminal branch, so excluding those three means "never web-verified
+    before" and the predicate genuinely stops matching once processed.
+
+    Returns the same {"verified","staged","unchanged","errors"} shape.
+    Never raises.
+    """
+    from database.connection import SessionLocal
+    from database.models import Startup
+
+    db = SessionLocal()
+    try:
+        reason = cast(Startup.verification_evidence, JSONB)["reason"].astext
+        candidates = (
+            db.query(Startup)
+            .filter(Startup.description.is_(None) | (Startup.description == ""))
+            .filter(Startup.website.is_(None) | (Startup.website == ""))
+            .filter(
+                Startup.verification_evidence.is_(None)
+                | reason.is_(None)
+                | ~reason.in_(_WEB_VERIFIED_REASONS)
+            )
+            .order_by(Startup.created_at.desc().nullslast())
+            .limit(limit)
+            .all()
+        )
+        logger.info(f"[WebVerifier] New-stub batch: {len(candidates)} candidate(s)")
+        return await _process_candidates(db, candidates, run_id, progress)
     finally:
         db.close()
 

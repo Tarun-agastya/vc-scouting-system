@@ -154,6 +154,15 @@ class Settings(BaseSettings):
         "webflow.io,linktr.ee,youtube.com,crunchbase.com,angel.co,wefunder.com,"
         "eu-startups.com,gmail.com,google.com"
     )
+    # Phase X-4 (5 Aug): cap on how many name-only stubs one chained
+    # post-ingestion web-verify pass may process. Each record costs exactly one
+    # outbound search call, and ingestion/web_search.py has NO rate limiting,
+    # quota accounting or daily cap of any kind — this batch limit is the only
+    # cost control that exists, so a single large logo-grid source must not be
+    # able to fire hundreds of searches. The nightly 04:00 job remains the
+    # backlog drain; this chain exists for freshness, not throughput.
+    web_verify_chain_limit: int = 25
+
     # Pattern-decision thresholds (evidence patterns, not a single linear gate)
     dedup_strong_signal: float = 0.80     # a per-signal value >= this counts as "strong"
     dedup_anomaly_gap: float = 0.30       # domain strong but best other signal below this -> anomaly

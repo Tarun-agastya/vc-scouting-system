@@ -74,7 +74,9 @@ web_sources:
     source_name: THA Funkenwerk
     source_type: university_hub
     location: Augsburg, Germany
-    primary_url: https://funkenwerk.tha.de
+    # Domain moved (old funkenwerk.tha.de is NXDOMAIN as of 5 Aug); repointed
+    # at the startups listing rather than the landing page. Verified live.
+    primary_url: https://www.tha.de/tha-funkenwerk/Start-ups.html
     crawl_strategy: website_scrape
     crawl_frequency: weekly
     priority: HIGH
@@ -92,7 +94,9 @@ web_sources:
     source_name: Allgäu Digital
     source_type: startup_network
     location: Allgäu, Germany
-    primary_url: https://allgaeu-digital.de
+    # Old allgaeu-digital.de is NXDOMAIN as of 5 Aug; Allgäu Digital now lives
+    # under the Allgäu GmbH B2B portal. Verified live.
+    primary_url: https://b2b.allgaeu.de/allgaeudigital
     crawl_strategy: website_scrape
     crawl_frequency: weekly
     priority: HIGH
@@ -137,7 +141,9 @@ web_sources:
     source_name: KIT Gründerschmiede
     source_type: university_hub
     location: Karlsruhe, Germany
-    primary_url: https://www.gruenderschmiede.kit.edu
+    # Old gruenderschmiede.kit.edu is NXDOMAIN as of 5 Aug; repointed at the
+    # founders listing rather than the landing page. Verified live.
+    primary_url: https://kit-gruenderschmiede.de/en/founders/
     crawl_strategy: website_scrape
     crawl_frequency: weekly
     priority: HIGH

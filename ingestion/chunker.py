@@ -143,19 +143,28 @@ LOGO_GRID_CHUNK_HEADER = (
 )
 
 
-def split_name_batches(names: List[str], n: int) -> List[str]:
+def split_name_batches(names: List[str], n: int, links: List[tuple] = None) -> List[str]:
     """
     Phase R-4 — structured-list counterpart to split_web_page's name-batching:
     takes entity names the scraper already harvested structurally, no marker-
     text round-trip. Same batching/header convention so downstream (the
     candidate-filter bypass, the extraction prompt) treats these identically
     to the legacy logo-grid batches.
+
+    links (Phase X-2): optional [(name, absolute_href_or_None), ...] from the
+    same card group. When a name has a known link, the line is rendered
+    "Name — https://…" so the extractor can populate `website` directly
+    instead of leaving it empty for web verification to rediscover. Batching
+    is unchanged, so this costs no extra LLM calls — 37 companies still fit
+    in 6 calls at the default batch size, not 37. See EXTRACTION_PROMPT's
+    BARE NAME LISTS section for the rule that reads this format.
     """
     n = max(1, n)
+    by_name = {nm: href for nm, href in (links or []) if nm and href}
     names = [x for x in names if x and x.strip()]
     chunks: List[str] = []
     for i in range(0, len(names), n):
-        batch = names[i:i + n]
+        batch = [f"{nm} — {by_name[nm]}" if nm in by_name else nm for nm in names[i:i + n]]
         chunks.append(LOGO_GRID_CHUNK_HEADER + "\n" + "\n".join(batch))
     return chunks
 
