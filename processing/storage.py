@@ -580,17 +580,16 @@ def _is_value_suppressed(db, master_id, field, value) -> bool:
 
 # ── Review creation ───────────────────────────────────────────────────────────
 
-def _has_equivalent_pending_review(db, *, review_type, master_id, proposed_changes, incoming_name) -> bool:
+def _has_equivalent_pending_review(db, *, review_type, master_id, incoming_name) -> bool:
     """
-    True if a pending review already covers this exact issue for this master
-    (Phase D-1, 22 Jul). Without this, re-running the same source N times
-    stages N identical review items for a human to triage — this caps it at
-    one open review per real issue no matter how many times ingestion re-runs.
+    True if a pending possible_duplicate/anomaly review already covers this
+    exact pair for this master (Phase D-1, 22 Jul) — an existing pending
+    review of the same type whose incoming_name normalizes the same.
 
-    field_update           -> an existing pending field_update whose proposed
-                              {field: new_value} mapping is identical.
-    possible_duplicate/anomaly -> an existing pending review of the same type
-                              whose incoming_name normalizes the same.
+    field_update coverage is checked per-field by _uncovered_fields instead
+    (Phase Y-3, 5 Aug) — see that function's docstring for why a whole-dict
+    equality check here let the same startup accumulate dozens of pending
+    reviews.
     """
     from database.models import DuplicateReview
 
@@ -599,17 +598,80 @@ def _has_equivalent_pending_review(db, *, review_type, master_id, proposed_chang
         DuplicateReview.review_type == review_type,
         DuplicateReview.status == "pending",
     )
-    if review_type == "field_update":
-        new_changes = {f: c.get("new") for f, c in (proposed_changes or {}).items()}
-        return any(
-            {f: c.get("new") for f, c in (existing.proposed_changes or {}).items()} == new_changes
-            for existing in q.all()
-        )
     norm_name = normalize_company_name(incoming_name or "")
     return any(
         normalize_company_name(existing.incoming_name or "") == norm_name
         for existing in q.all()
     )
+
+
+def _uncovered_fields(db, master_id, proposed_changes: dict) -> dict:
+    """
+    Phase Y-3 (5 Aug, review-inbox-flooding audit). Per-field coverage check
+    for field_update proposals, replacing a whole-dict equality guard that
+    let the same startup accumulate dozens of pending reviews.
+
+    Measured live: 1,090 pending field_update reviews covered only 355
+    distinct startups — 223 startups had more than one pending review (Bliro
+    had 11, Omegga and Alqem 18 each). The old check compared the ENTIRE
+    {field: new_value} dict with strict ==, which two things routinely
+    defeated on every re-crawl of the same source page:
+      1. Wording drift — "Blickfeld builds..." vs "Blickfeld develops..." are
+         unequal strings for the same fact.
+      2. Different field sets — run A proposes {description, city}, run B
+         proposes {description} alone; whole-dict equality fails on ANY set
+         difference, so a 90%-identical proposal still got its own row.
+
+    This checks EACH field independently: a field is "covered" when an
+    existing pending review already proposes that field with a near-
+    identical value — reusing _text_changed (the same rapidfuzz
+    token_sort_ratio < 90 bar _diff_fields already uses against the
+    master's OWN value) for the free-text fields, and _norm equality for
+    everything else. founders/tags are additive UNION lists (see
+    _diff_fields), so exact-list equality is the correct test there — a
+    genuinely different founder name changes the union and must survive.
+
+    Returns proposed_changes with covered fields dropped (owner's "keep
+    genuinely new values" — a materially different value always survives
+    and gets staged, same as before).
+    """
+    from database.models import DuplicateReview
+
+    if not proposed_changes:
+        return {}
+
+    pending = (
+        db.query(DuplicateReview)
+        .filter(
+            DuplicateReview.master_id == master_id,
+            DuplicateReview.review_type == "field_update",
+            DuplicateReview.status == "pending",
+        )
+        .all()
+    )
+    if not pending:
+        return proposed_changes
+
+    surviving = {}
+    for field, change in proposed_changes.items():
+        new_val = change.get("new")
+        covered = False
+        for r in pending:
+            existing_new = ((r.proposed_changes or {}).get(field) or {}).get("new")
+            if existing_new is None:
+                continue
+            if field in _TEXT_FIELDS:
+                same = not _text_changed(_norm(existing_new), str(new_val))
+            elif field in ("founders", "tags"):
+                same = existing_new == new_val
+            else:
+                same = _norm(existing_new) == _norm(new_val)
+            if same:
+                covered = True
+                break
+        if not covered:
+            surviving[field] = change
+    return surviving
 
 
 def _create_review(db, *, review_type, master, incoming_row, incoming_data,
@@ -638,16 +700,41 @@ def _create_review(db, *, review_type, master, incoming_row, incoming_data,
             incoming_bare = not ((incoming_data or {}).get("description") or (incoming_data or {}).get("website"))
             evidence = {**(evidence or {}), "evidence_level": "minimal" if (master_bare and incoming_bare) else "normal"}
 
-        if master is not None and _has_equivalent_pending_review(
-            db, review_type=review_type, master_id=master.id,
-            proposed_changes=proposed_changes,
-            incoming_name=(incoming_data.get("name") or "").strip(),
-        ):
-            logger.debug(
-                f"[Storage] Skipping duplicate {review_type} review for "
-                f"'{master.name}' — an equivalent pending review already exists"
-            )
-            return
+        if master is not None:
+            if review_type == "field_update":
+                # Phase Y-3: drop fields already covered by a pending review
+                # for this master, keep only genuinely new/changed ones.
+                surviving = _uncovered_fields(db, master.id, proposed_changes)
+                if not surviving:
+                    logger.debug(
+                        f"[Storage] All proposed field(s) for '{master.name}' "
+                        f"already covered by a pending review — skipping"
+                    )
+                    return
+                if surviving != proposed_changes:
+                    dropped = set(proposed_changes) - set(surviving)
+                    logger.debug(
+                        f"[Storage] '{master.name}': dropped already-covered "
+                        f"field(s) {dropped}, staging only {set(surviving)}"
+                    )
+                proposed_changes = surviving
+                # Risk is per-field ("would this overwrite a populated value?")
+                # so it must be recomputed from whichever fields survived —
+                # a review that started high-risk but lost its only high-risk
+                # field to the coverage filter must not stay marked high.
+                risk_level = "high" if any(
+                    field not in ("founders", "tags") and change.get("old") not in (None, "", [])
+                    for field, change in proposed_changes.items()
+                ) else "low"
+            elif _has_equivalent_pending_review(
+                db, review_type=review_type, master_id=master.id,
+                incoming_name=(incoming_data.get("name") or "").strip(),
+            ):
+                logger.debug(
+                    f"[Storage] Skipping duplicate {review_type} review for "
+                    f"'{master.name}' — an equivalent pending review already exists"
+                )
+                return
 
         review = DuplicateReview(
             review_type=review_type,

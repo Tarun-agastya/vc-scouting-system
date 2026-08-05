@@ -80,6 +80,10 @@ export const api = {
   // ── Reviews ───────────────────────────────────────────────────────────
   listReviews: (filters) => get("/reviews", filters),
   getReview: (id) => get(`/reviews/${id}`),
+  /** Phase Y (5 Aug): the Review Inbox collapsed to one entry per startup. */
+  listReviewsGrouped: (filters) => get("/reviews/grouped", filters),
+  resolveGroupedReviews: (masterId, selections) =>
+    post(`/reviews/grouped/${masterId}/resolve`, { selections }),
   approveReview: (id) => post(`/reviews/${id}/approve`),
   rejectReview: (id) => post(`/reviews/${id}/reject`),
   /** Reverses an approved possible_duplicate/anomaly merge — reinserts the deleted row, leaves the master untouched. */

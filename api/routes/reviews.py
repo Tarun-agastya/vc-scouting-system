@@ -389,6 +389,109 @@ async def list_reviews_grouped(
     }
 
 
+class GroupResolveRequest(BaseModel):
+    selections: dict  # {field: chosen_value}; a field simply absent = reject all its candidates
+
+
+@router.post("/grouped/{master_id}/resolve")
+async def resolve_grouped_reviews(master_id: str, request: GroupResolveRequest, db: Session = Depends(get_db)):
+    """
+    Apply one pick per field across ALL of a startup's pending field_update
+    reviews, in one action (Phase Y-2, 5 Aug) — the other half of GET
+    /reviews/grouped. Reuses _apply_field_updates/_reindex/_do_reject
+    UNCHANGED, so approving through the grouped view behaves identically to
+    approving one review, just aggregated: one write to the master, one
+    _reindex (not one per constituent review — Bliro's 11 pending reviews
+    used to cost 11 embeds + 11 Qdrant upserts, all but the last thrown
+    away), and every constituent review still individually resolved with
+    its own audit trail (approved if its value was picked, rejected +
+    suppressed otherwise) rather than merged away.
+    """
+    master = db.query(Startup).filter(Startup.id == master_id).first()
+    if not master:
+        raise HTTPException(status_code=404, detail="Startup not found")
+
+    members = (
+        db.query(DuplicateReview)
+        .filter(
+            DuplicateReview.master_id == master_id,
+            DuplicateReview.review_type == "field_update",
+            DuplicateReview.status == "pending",
+        )
+        .all()
+    )
+    if not members:
+        raise HTTPException(status_code=404, detail="No pending field_update reviews for this startup")
+
+    selections = request.selections or {}
+
+    # Build ONE synthetic proposed_changes dict from the picks and reuse
+    # _apply_field_updates exactly as approve_review does — never a second
+    # implementation of what "apply a field" means.
+    to_apply = {}
+    for field, value in selections.items():
+        if value is None:
+            continue
+        source_meta = None
+        for r in members:
+            change = (r.proposed_changes or {}).get(field)
+            if change is not None and change.get("new") == value:
+                source_meta = change
+                break
+        to_apply[field] = {
+            "old": getattr(master, field, None),
+            "new": value,
+            "incoming_source": (source_meta or {}).get("incoming_source"),
+            "incoming_extracted_at": (source_meta or {}).get("incoming_extracted_at"),
+        }
+
+    if to_apply:
+        _apply_field_updates(db, master, to_apply)
+        db.commit()
+        _reindex(db, master)  # commits internally — the ONE reindex for this whole group
+
+    # Resolve every constituent review. A review is "approved" if EVERY field
+    # it proposed matches what was picked for that field (value + review),
+    # so a review proposing 3 fields where only 2 were picked correctly
+    # shows as rejected on its own un-picked field, not silently approved.
+    approved_ids, rejected_ids = [], []
+    now = datetime.utcnow()
+    for r in members:
+        proposed = r.proposed_changes or {}
+        member_approved = bool(proposed) and all(
+            selections.get(field) == change.get("new") for field, change in proposed.items()
+        )
+        if member_approved:
+            r.status = "approved"
+            approved_ids.append(str(r.id))
+        else:
+            # Same contract as _do_reject: suppress each proposed value so a
+            # future re-extraction doesn't re-stage the same rejected wording.
+            for field, change in proposed.items():
+                db.add(SuppressedMatch(
+                    kind="rejected_value", master_id=r.master_id,
+                    field=field, value=str(change.get("new")),
+                ))
+            r.status = "rejected"
+            rejected_ids.append(str(r.id))
+        r.resolved_at = now
+
+    db.commit()
+
+    logger.info(
+        f"[Reviews] Grouped resolve for '{master.name}' ({master_id}): "
+        f"{len(approved_ids)} review(s) approved, {len(rejected_ids)} rejected, "
+        f"{len(to_apply)} field(s) applied"
+    )
+    return {
+        "status": "resolved",
+        "master_id": master_id,
+        "applied_fields": list(to_apply.keys()),
+        "approved_review_ids": approved_ids,
+        "rejected_review_ids": rejected_ids,
+    }
+
+
 @router.get("/{review_id}")
 async def get_review(review_id: str, db: Session = Depends(get_db)):
     """Full side-by-side detail for one review."""

@@ -3,6 +3,12 @@
    The pipeline never auto-merges or auto-overwrites; every staged change
    waits here. Two-pane triage (list + detail) with keyboard shortcuts:
    j/k navigate, a approve, r reject — fast review of a growing queue.
+
+   Phase Y (5 Aug): field_update reviews are shown ONE ROW PER STARTUP
+   (grouped by master_id via GET /reviews/grouped), since a single startup
+   re-sighted across ingestion runs could otherwise show up dozens of times
+   (Bliro 11x, Omegga/Alqem 18x each). possible_duplicate/anomaly reviews
+   are genuine distinct pairs and stay ungrouped, in the flat /reviews list.
    ══════════════════════════════════════════════════════════════════════════ */
 
 import { api, fmt, esc } from "../api.js";
@@ -22,12 +28,12 @@ function debounce(fn, ms) {
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
 
-function rowLabel(rv) {
-  if (rv.review_type === "field_update") {
-    const fields = (rv.changed_fields || []).join(", ") || "—";
-    return `${esc(rv.master_name)} <span class="dim">· ${esc(fields)}</span>`;
+function rowLabel(entry) {
+  if (entry.kind === "group") {
+    const fieldCount = Object.keys(entry.fields || {}).length;
+    return `${esc(entry.master_name)} <span class="dim">· ${entry.review_count} change${entry.review_count === 1 ? "" : "s"} across ${fieldCount} field${fieldCount === 1 ? "" : "s"}</span>`;
   }
-  return `${esc(rv.incoming_name)} <span class="dim">~ ${esc(rv.master_name)}</span>`;
+  return `${esc(entry.incoming_name)} <span class="dim">~ ${esc(entry.master_name)}</span>`;
 }
 
 export default {
@@ -38,7 +44,8 @@ export default {
       status: "pending", type: "", risk: "", q: "", evidenceLevel: "",
       runId: params.run_id || "", // Phase Q2: batch filter — either deep-linked from Browse or picked below
       reviews: [], selectedId: null, busy: false,
-      selectedIds: new Set(), // Phase Q4: bulk-select for approve/reject, cleared on any filter change
+      selectedIds: new Set(), // Phase Q4: bulk-select for approve/reject, cleared on any filter change — singles only
+      groupTotals: { total_groups: 0, total_reviews: 0 }, // Phase Y: for the KPI strip
     };
 
     el.innerHTML = `
@@ -117,8 +124,17 @@ export default {
         const all = await api.listReviews({ status: "pending", limit: 500 });
         const c = { high: 0, low: 0, anomaly: 0 };
         for (const r of all.reviews) c[r.risk_level] = (c[r.risk_level] || 0) + 1;
+        // Phase Y: also surface "N startups / M changes" so the grouped view's
+        // count doesn't look contradictory next to the flat pending total.
+        let groupsKpi = "";
+        try {
+          const grouped = await api.listReviewsGrouped({ status: "pending", limit: 1 });
+          state.groupTotals = { total_groups: grouped.total_groups || 0, total_reviews: grouped.total_reviews || 0 };
+          groupsKpi = `<div class="kpi"><div class="kpi__label">Startups w/ changes</div><div class="kpi__value">${state.groupTotals.total_groups}</div></div>`;
+        } catch { /* non-fatal */ }
         countsEl.innerHTML = `
           <div class="kpi kpi--accent"><div class="kpi__label">Pending</div><div class="kpi__value">${all.total}</div></div>
+          ${groupsKpi}
           <div class="kpi"><div class="kpi__label">🔴 Conflicts</div><div class="kpi__value">${c.high}</div></div>
           <div class="kpi"><div class="kpi__label">🟡 New info</div><div class="kpi__value">${c.low}</div></div>
           <div class="kpi"><div class="kpi__label">⚠️ Anomalies</div><div class="kpi__value">${c.anomaly}</div></div>`;
@@ -126,24 +142,47 @@ export default {
     }
 
     async function loadList(preserveSelection = false) {
+      const commonFilters = {
+        status: state.status || undefined,
+        risk_level: state.risk || undefined,
+        evidence_level: state.evidenceLevel || undefined,
+        q: state.q || undefined,
+        run_id: state.runId || undefined,
+      };
+      // field_update entries come from the grouped endpoint (one row per
+      // startup); possible_duplicate/anomaly stay flat. Fetch whichever the
+      // type filter allows, in parallel.
+      const wantGroups = !state.type || state.type === "field_update";
+      const wantSingles = state.type !== "field_update";
+
       try {
-        const res = await api.listReviews({
-          status: state.status || undefined,
-          review_type: state.type || undefined,
-          risk_level: state.risk || undefined,
-          evidence_level: state.evidenceLevel || undefined,
-          q: state.q || undefined,
-          run_id: state.runId || undefined,
-          limit: 200,
-        });
-        state.reviews = res.reviews || [];
+        const [groupsRes, singlesRes] = await Promise.all([
+          wantGroups ? api.listReviewsGrouped({ ...commonFilters, limit: 200 }) : Promise.resolve({ groups: [] }),
+          wantSingles ? api.listReviews({ ...commonFilters, review_type: (state.type && state.type !== "field_update") ? state.type : undefined, limit: 200 }) : Promise.resolve({ reviews: [] }),
+        ]);
+        const groupEntries = (groupsRes.groups || []).map((g) => ({
+          entryId: g.master_id, kind: "group",
+          master_id: g.master_id, master_name: g.master_name,
+          review_ids: g.review_ids || [], review_count: g.review_count,
+          risk_level: g.risk_level, first_seen: g.first_seen, last_seen: g.last_seen,
+          fields: g.fields || {}, current: g.current || {}, master_missing: g.master_missing,
+          created_at: g.last_seen,
+        }));
+        // field_update rows are represented via groups above — drop any
+        // stray singles of that type so nothing shows twice.
+        const singleEntries = (singlesRes.reviews || [])
+          .filter((r) => r.review_type !== "field_update")
+          .map((r) => ({ entryId: r.id, kind: "single", ...r }));
+
+        state.reviews = [...groupEntries, ...singleEntries]
+          .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
       } catch (err) {
         listEl.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
         return;
       }
 
-      if (!preserveSelection || !state.reviews.some((r) => r.id === state.selectedId)) {
-        state.selectedId = state.reviews[0]?.id || null;
+      if (!preserveSelection || !state.reviews.some((r) => r.entryId === state.selectedId)) {
+        state.selectedId = state.reviews[0]?.entryId || null;
       }
       // Bulk selection: a filter change starts fresh; a background poll
       // refresh keeps it but drops any id that fell out of the loaded list
@@ -151,7 +190,7 @@ export default {
       if (!preserveSelection) {
         state.selectedIds.clear();
       } else {
-        const loadedIds = new Set(state.reviews.map((r) => r.id));
+        const loadedIds = new Set(state.reviews.filter((r) => r.kind === "single").map((r) => r.entryId));
         for (const id of state.selectedIds) if (!loadedIds.has(id)) state.selectedIds.delete(id);
       }
       renderList();
@@ -161,11 +200,10 @@ export default {
     function renderList() {
       // Phase Q4 (29 Jul, after the queue hit 1,010 pending): bulk-select is
       // only meaningful for pending reviews — approve/reject both require
-      // status=="pending". Recomputed every render (not a module-level
-      // const) since state.status changes live via the filter dropdown.
-      // Scoped to what's currently loaded (up to the 200 fetch limit);
-      // filter narrower + repeat for a bigger backlog.
+      // status=="pending". Grouped rows (Phase Y) don't have a single
+      // approve/reject action, so bulk-select only applies to single rows.
       const bulkEnabled = state.status === "pending";
+      const singles = state.reviews.filter((r) => r.kind === "single");
 
       if (!state.reviews.length) {
         listEl.innerHTML = `<div class="empty" style="padding:24px"><div class="empty__title">Nothing here</div>
@@ -173,32 +211,36 @@ export default {
         renderBulkToolbar();
         return;
       }
-      const allLoadedSelected = state.reviews.length > 0 && state.reviews.every((rv) => state.selectedIds.has(rv.id));
-      const header = bulkEnabled ? `
+      const allLoadedSelected = singles.length > 0 && singles.every((rv) => state.selectedIds.has(rv.entryId));
+      const header = bulkEnabled && singles.length ? `
         <div class="row" style="padding:8px 12px;border-bottom:1px solid var(--border);gap:8px">
           <input type="checkbox" id="select-all-loaded" ${allLoadedSelected ? "checked" : ""}>
-          <span class="dim" style="font-size:11px">Select all ${state.reviews.length} loaded</span>
+          <span class="dim" style="font-size:11px">Select all ${singles.length} loaded</span>
         </div>` : "";
 
-      listEl.innerHTML = header + state.reviews.map((rv) => {
-        const risk = RISK[rv.risk_level] || RISK.none;
-        const active = rv.id === state.selectedId;
+      listEl.innerHTML = header + state.reviews.map((entry) => {
+        const risk = RISK[entry.risk_level] || RISK.none;
+        const active = entry.entryId === state.selectedId;
+        const showCheckbox = bulkEnabled && entry.kind === "single";
+        const subLabel = entry.kind === "group"
+          ? `Field change (grouped) · ${fmt.dateTime(entry.last_seen)}`
+          : `${TYPE_LABEL[entry.review_type]} · ${fmt.dateTime(entry.created_at)}`;
         return `
-          <div class="row" data-review-id="${esc(rv.id)}"
+          <div class="row" data-entry-id="${esc(entry.entryId)}"
                style="padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border);gap:8px;
                       ${active ? "background:var(--brand-lime-glow);border-left:3px solid var(--brand-lime)" : "border-left:3px solid transparent"}">
-            ${bulkEnabled ? `<input type="checkbox" class="row-select" data-id="${esc(rv.id)}" ${state.selectedIds.has(rv.id) ? "checked" : ""} style="flex:none">` : ""}
+            ${showCheckbox ? `<input type="checkbox" class="row-select" data-id="${esc(entry.entryId)}" ${state.selectedIds.has(entry.entryId) ? "checked" : ""} style="flex:none">` : (bulkEnabled ? `<span style="flex:none;width:13px"></span>` : "")}
             <span style="flex:none">${risk.mark}</span>
             <div class="grow" style="min-width:0">
-              <div class="truncate" style="font-size:13px;font-weight:550">${rowLabel(rv)}</div>
-              <div class="dim truncate" style="font-size:11px">${TYPE_LABEL[rv.review_type]} · ${fmt.dateTime(rv.created_at)}</div>
+              <div class="truncate" style="font-size:13px;font-weight:550">${rowLabel(entry)}</div>
+              <div class="dim truncate" style="font-size:11px">${subLabel}</div>
             </div>
           </div>`;
       }).join("");
 
-      listEl.querySelectorAll("[data-review-id]").forEach((row) =>
+      listEl.querySelectorAll("[data-entry-id]").forEach((row) =>
         row.addEventListener("click", () => {
-          state.selectedId = row.dataset.reviewId;
+          state.selectedId = row.dataset.entryId;
           renderList();
           renderDetail();
         }));
@@ -206,8 +248,8 @@ export default {
       if (bulkEnabled) {
         listEl.querySelector("#select-all-loaded")?.addEventListener("click", (e) => {
           e.stopPropagation();
-          if (e.target.checked) state.reviews.forEach((rv) => state.selectedIds.add(rv.id));
-          else state.reviews.forEach((rv) => state.selectedIds.delete(rv.id));
+          if (e.target.checked) singles.forEach((rv) => state.selectedIds.add(rv.entryId));
+          else singles.forEach((rv) => state.selectedIds.delete(rv.entryId));
           renderList();
         });
         listEl.querySelectorAll(".row-select").forEach((cb) => {
@@ -271,62 +313,131 @@ export default {
       }
     }
 
+    /* ── Phase Y: grouped detail — one section per field, all candidates ── */
+    function renderGroupDetail(entry) {
+      const risk = RISK[entry.risk_level] || RISK.none;
+      const fieldNames = Object.keys(entry.fields);
+
+      detailEl.innerHTML = `
+        <div class="stack" style="gap:16px">
+          <div class="row">
+            <span style="font-size:18px">${risk.mark}</span>
+            <span class="card__title" style="font-size:15px">${esc(entry.master_name)}</span>
+            <span class="chip ${risk.chip}">${risk.label}</span>
+            <span class="dim" style="margin-left:auto;font-size:12px">${entry.review_count} pending change${entry.review_count === 1 ? "" : "s"} · first seen ${fmt.dateTime(entry.first_seen)}</span>
+          </div>
+
+          ${entry.master_missing ? `<div class="card" style="background:var(--surface-2)"><span class="chip chip--danger">Record no longer exists</span></div>` : ""}
+
+          <div class="dim" style="font-size:12px">Pick the value to keep for each field. Fields left on "Reject" won't change the record.</div>
+
+          <div class="stack" style="gap:14px">
+            ${fieldNames.map((field) => {
+              const candidates = entry.fields[field] || [];
+              const current = entry.current ? entry.current[field] : undefined;
+              return `
+                <div class="card" style="background:var(--surface-2)">
+                  <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">${esc(field)}</div>
+                  <div style="font-size:12px;margin-bottom:8px"><span class="dim">Current:</span> ${esc(String(current ?? ""), "—")}</div>
+                  <div class="stack" style="gap:6px">
+                    ${candidates.map((c, i) => `
+                      <label class="row" style="gap:8px;align-items:flex-start;font-size:13px">
+                        <input type="radio" name="field-${esc(field)}" value="${i}" ${i === 0 ? "checked" : ""} style="margin-top:3px">
+                        <span>${esc(String(c.value), "—")}
+                          <span class="dim" style="font-size:11px">
+                            ${c.count > 1 ? `× ${c.count} · ` : ""}${esc(c.sources?.[0]?.source, "unknown source")} · ${fmt.dateTime(c.sources?.[0]?.at)}
+                          </span>
+                        </span>
+                      </label>`).join("")}
+                    <label class="row" style="gap:8px;font-size:13px">
+                      <input type="radio" name="field-${esc(field)}" value="__reject__">
+                      <span class="dim">Reject — keep current value</span>
+                    </label>
+                  </div>
+                </div>`;
+            }).join("")}
+          </div>
+
+          <div class="row wrap" style="gap:10px">
+            <button class="btn btn--primary" id="apply-group-btn">✅ Apply selections</button>
+            <span class="dim" style="font-size:12px;align-self:center">Applies picks to the record and closes all ${entry.review_count} pending change${entry.review_count === 1 ? "" : "s"} for this startup.</span>
+          </div>
+        </div>`;
+
+      detailEl.querySelector("#apply-group-btn").addEventListener("click", () => applyGroupSelections(entry));
+    }
+
+    async function applyGroupSelections(entry) {
+      if (state.busy) return;
+      const selections = {};
+      for (const field of Object.keys(entry.fields)) {
+        const checked = detailEl.querySelector(`input[name="field-${CSS.escape(field)}"]:checked`);
+        if (checked && checked.value !== "__reject__") {
+          const idx = parseInt(checked.value, 10);
+          selections[field] = entry.fields[field][idx].value;
+        }
+      }
+      if (!confirmAction(`Apply the selected values to "${entry.master_name}" and close all ${entry.review_count} pending change${entry.review_count === 1 ? "" : "s"}? Unselected candidates are rejected and won't be re-proposed.`)) return;
+
+      state.busy = true;
+      try {
+        const res = await api.resolveGroupedReviews(entry.master_id, selections);
+        toast(`Applied ${res.applied_fields.length} field${res.applied_fields.length === 1 ? "" : "s"} · closed ${res.approved_review_ids.length + res.rejected_review_ids.length} review${(res.approved_review_ids.length + res.rejected_review_ids.length) === 1 ? "" : "s"}`);
+        await loadCounts();
+        await loadList();
+      } catch (err) {
+        toast(`Apply failed: ${err.message}`, "error");
+      } finally {
+        state.busy = false;
+      }
+    }
+
     async function renderDetail() {
       if (!state.selectedId) {
         detailEl.innerHTML = `<div class="empty" style="padding:40px">Select an item from the list</div>`;
         return;
       }
+      const entry = state.reviews.find((r) => r.entryId === state.selectedId);
+      if (!entry) {
+        detailEl.innerHTML = `<div class="empty" style="padding:40px">Select an item from the list</div>`;
+        return;
+      }
+      if (entry.kind === "group") {
+        renderGroupDetail(entry);
+        return;
+      }
+
       detailEl.innerHTML = `<div class="row" style="padding:40px;justify-content:center"><span class="spinner"></span></div>`;
 
       let rv;
-      try { rv = await api.getReview(state.selectedId); }
+      try { rv = await api.getReview(entry.id); }
       catch (err) { detailEl.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
 
       const risk = RISK[rv.risk_level] || RISK.none;
       const isPending = rv.status === "pending";
 
-      let bodyHtml;
-      if (rv.review_type === "field_update") {
-        const changes = rv.proposed_changes || {};
-        bodyHtml = `
-          <div class="table-wrap">
-            <table class="table">
-              <thead><tr><th>Field</th><th>Current</th><th>Proposed</th><th>From</th></tr></thead>
-              <tbody>
-                ${Object.entries(changes).map(([field, c]) => `
-                  <tr>
-                    <td><strong>${esc(field)}</strong></td>
-                    <td class="dim">${esc(c.old, "—")}</td>
-                    <td>${esc(c.new, "—")}</td>
-                    <td class="dim" style="font-size:12px">${esc(c.incoming_source, "—")}<br>${fmt.dateTime(c.incoming_extracted_at)}</td>
-                  </tr>`).join("")}
-              </tbody>
-            </table>
-          </div>`;
-      } else {
-        const m = rv.master || {}, inc = rv.incoming || {};
-        bodyHtml = `
-          <div class="grid-2">
-            <div>
-              <div class="row" style="margin-bottom:6px">
-                <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Existing record</div>
-                ${isPending ? `<button class="btn btn--ghost btn--sm" style="margin-left:auto;font-size:11px" id="delete-master-btn" title="Neither merge nor keep — permanently remove this record">🗑 Delete</button>` : ""}
-              </div>
-              <div class="stack" style="gap:4px;font-size:13px">
-                ${PROFILE_FIELDS.map((f) => `<div><span class="dim">${f}:</span> ${esc(m[f], "—")}</div>`).join("")}
-              </div>
+      const m = rv.master || {}, inc = rv.incoming || {};
+      const bodyHtml = `
+        <div class="grid-2">
+          <div>
+            <div class="row" style="margin-bottom:6px">
+              <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Existing record</div>
+              ${isPending ? `<button class="btn btn--ghost btn--sm" style="margin-left:auto;font-size:11px" id="delete-master-btn" title="Neither merge nor keep — permanently remove this record">🗑 Delete</button>` : ""}
             </div>
-            <div>
-              <div class="row" style="margin-bottom:6px">
-                <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Incoming record</div>
-                ${isPending ? `<button class="btn btn--ghost btn--sm" style="margin-left:auto;font-size:11px" id="delete-incoming-btn" title="Neither merge nor keep — permanently remove this record">🗑 Delete</button>` : ""}
-              </div>
-              <div class="stack" style="gap:4px;font-size:13px">
-                ${PROFILE_FIELDS.map((f) => `<div><span class="dim">${f}:</span> ${esc(inc[f], "—")}</div>`).join("")}
-              </div>
+            <div class="stack" style="gap:4px;font-size:13px">
+              ${PROFILE_FIELDS.map((f) => `<div><span class="dim">${f}:</span> ${esc(m[f], "—")}</div>`).join("")}
             </div>
-          </div>`;
-      }
+          </div>
+          <div>
+            <div class="row" style="margin-bottom:6px">
+              <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Incoming record</div>
+              ${isPending ? `<button class="btn btn--ghost btn--sm" style="margin-left:auto;font-size:11px" id="delete-incoming-btn" title="Neither merge nor keep — permanently remove this record">🗑 Delete</button>` : ""}
+            </div>
+            <div class="stack" style="gap:4px;font-size:13px">
+              ${PROFILE_FIELDS.map((f) => `<div><span class="dim">${f}:</span> ${esc(inc[f], "—")}</div>`).join("")}
+            </div>
+          </div>
+        </div>`;
 
       // Two unrelated evidence shapes share this field: the duplicate-matcher
       // produces {signal_name: 0.0-1.0, ...} (rendered as % bars below), but
@@ -396,37 +507,34 @@ export default {
           ${isPending ? `
             <div class="row wrap" style="gap:10px">
               <button class="btn btn--primary" id="approve-btn">
-                ✅ ${rv.review_type === "field_update" ? "Apply changes" : "Merge — same company"}
+                ✅ Merge — same company
               </button>
               <button class="btn btn--danger" id="reject-btn">
-                ✋ ${rv.review_type === "field_update" ? "Keep current (reject)" : "Keep separate — different"}
+                ✋ Keep separate — different
               </button>
-              ${rv.review_type === "field_update" ? `
-                <button class="btn btn--ghost" id="delete-master-btn" style="margin-left:auto">
-                  🗑 Delete this record
-                </button>` : ""}
             </div>` : `
             <div class="row wrap" style="gap:10px;align-items:center">
               <span class="chip">Already ${esc(rv.status)}</span>
-              ${rv.status === "approved" && rv.review_type !== "field_update" ? `
+              ${rv.status === "approved" ? `
                 <button class="btn btn--ghost btn--sm" id="undo-merge-btn" title="Reinsert the deleted record from this review's saved snapshot; the record it was merged into is left as-is">
                   ↩️ Undo merge
                 </button>` : ""}
             </div>`}
         </div>`;
 
-      detailEl.querySelector("#approve-btn")?.addEventListener("click", () => act("approve"));
-      detailEl.querySelector("#reject-btn")?.addEventListener("click", () => act("reject"));
+      detailEl.querySelector("#approve-btn")?.addEventListener("click", () => act("approve", entry.id));
+      detailEl.querySelector("#reject-btn")?.addEventListener("click", () => act("reject", entry.id));
       detailEl.querySelector("#delete-master-btn")?.addEventListener("click", () =>
-        act("delete", "master", rv.master_name || rv.master?.name));
+        act("delete", entry.id, "master", rv.master_name || rv.master?.name));
       detailEl.querySelector("#delete-incoming-btn")?.addEventListener("click", () =>
-        act("delete", "incoming", rv.incoming_name || rv.incoming?.name));
+        act("delete", entry.id, "incoming", rv.incoming_name || rv.incoming?.name));
       detailEl.querySelector("#undo-merge-btn")?.addEventListener("click", () =>
-        act("undo-merge", null, rv.incoming_name));
+        act("undo-merge", entry.id, null, rv.incoming_name));
     }
 
-    async function act(kind, target, recordName) {
-      if (state.busy || !state.selectedId) return;
+    async function act(kind, reviewId, target, recordName) {
+      const id = reviewId || state.selectedId;
+      if (state.busy || !id) return;
       if (kind === "delete") {
         const label = recordName ? `"${recordName}"` : "this record";
         if (!confirmAction(`Permanently delete ${label}? This removes it from the database entirely — not a merge, not a reject. This cannot be undone.`)) return;
@@ -437,10 +545,10 @@ export default {
       }
       state.busy = true;
       try {
-        if (kind === "approve") await api.approveReview(state.selectedId);
-        else if (kind === "reject") await api.rejectReview(state.selectedId);
-        else if (kind === "undo-merge") await api.undoMerge(state.selectedId);
-        else await api.deleteReview(state.selectedId, target);
+        if (kind === "approve") await api.approveReview(id);
+        else if (kind === "reject") await api.rejectReview(id);
+        else if (kind === "undo-merge") await api.undoMerge(id);
+        else await api.deleteReview(id, target);
         toast(
           kind === "approve" ? "Approved" :
           kind === "reject" ? "Rejected — won't be flagged again" :
@@ -460,20 +568,21 @@ export default {
     function onKeydown(e) {
       if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
       if (!state.reviews.length) return;
-      const idx = state.reviews.findIndex((r) => r.id === state.selectedId);
+      const idx = state.reviews.findIndex((r) => r.entryId === state.selectedId);
 
       if (e.key === "j" || e.key === "ArrowDown") {
         e.preventDefault();
-        state.selectedId = state.reviews[Math.min(idx + 1, state.reviews.length - 1)].id;
+        state.selectedId = state.reviews[Math.min(idx + 1, state.reviews.length - 1)].entryId;
         renderList(); renderDetail();
       } else if (e.key === "k" || e.key === "ArrowUp") {
         e.preventDefault();
-        state.selectedId = state.reviews[Math.max(idx - 1, 0)].id;
+        state.selectedId = state.reviews[Math.max(idx - 1, 0)].entryId;
         renderList(); renderDetail();
-      } else if (e.key === "a") {
-        act("approve");
-      } else if (e.key === "r") {
-        act("reject");
+      } else if (e.key === "a" || e.key === "r") {
+        // Grouped (field_update) entries don't have a single approve/reject
+        // action — the per-field picker is the only way to resolve them.
+        const entry = state.reviews[idx];
+        if (entry && entry.kind === "single") act(e.key === "a" ? "approve" : "reject", entry.id);
       }
     }
     document.addEventListener("keydown", onKeydown);
