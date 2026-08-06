@@ -42,6 +42,42 @@ class Settings(BaseSettings):
     epaper_publication: str = "Memminger Zeitung"
     press_monitor_recipients: str = "corinna.tappe@gt-hub.de,stefan.lenz@gt-hub.de"  # comma-separated
 
+    # ── Instagram business-account insights (Phase IG, 6 Aug 2026) ───────────
+    # Monthly/quarterly reporting on OUR OWN company Instagram account, via
+    # the OFFICIAL Meta Graph API only. Read-only by construction: the token
+    # carries instagram_basic + instagram_manage_insights + pages_read_engagement
+    # and NOTHING else, so it is not capable of posting, commenting, following
+    # or messaging even if code tried. Scraping / browser-automating
+    # instagram.com is the one real path to a business account being
+    # restricted, and is prohibited outright — see instagram_insights/README.md.
+    #
+    # Default OFF: the owner's staged-rollout requirement. Nothing collects
+    # until this is explicitly flipped on after a manual probe + manual run
+    # have both been verified. Also the kill switch — set False to stop all
+    # collection without uninstalling the launchd jobs.
+    ig_enabled: bool = False
+    ig_token_path: str = "./credentials/instagram_token.json"  # gitignored via credentials/*.json
+    # Pinned by scripts/ig_probe.py on its first successful run so the daily
+    # job never has to re-resolve it (one fewer call, one fewer failure mode).
+    ig_user_id: Optional[str] = None
+    # Graph API version. Metric names churn between versions (impressions and
+    # video_views were both retired in favour of `views` in v22.0), so this is
+    # pinned deliberately rather than tracking "latest" — an unannounced
+    # rename would otherwise silently blank a column. ig_probe.py validates it.
+    ig_api_version: str = "v23.0"
+    # Refresh a long-lived user token once it is this many days old. Meta's
+    # long-lived tokens last 60 days and can only be refreshed while still
+    # valid, so 30 leaves a full month of slack for an unattended machine.
+    # Irrelevant (and skipped) if a Business-Manager System User token is used,
+    # which never expires — that is the recommended setup for this box.
+    ig_token_refresh_days: int = 30
+    # Hard per-run cap on Graph API calls. Meta allows 200/hour/account; a
+    # daily collection needs ~10-20. This is a safety net against a loop bug
+    # turning into rate-limit abuse, following the same "one blunt per-run
+    # cap" pattern as web_verify_chain_limit above.
+    ig_max_calls_per_run: int = 60
+    ig_report_recipients: str = ""  # comma-separated; empty = report emailing disabled
+
     # Tavily (Phase W web verification search backend, 24 Jul — replaces the
     # DuckDuckGo HTML scrape, which an anti-bot block made unreliable; see
     # ingestion/web_search.py's module docstring for the full evaluation).
