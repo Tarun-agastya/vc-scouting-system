@@ -19,12 +19,16 @@ official API with a properly issued token is the exact thing that API exists for
 
 ### Hard rules — binding on anyone (human or AI) editing this module
 
-- **Never** point Playwright, Selenium, `httpx`, `requests`, or anything else at
-  `instagram.com` or `www.instagram.com`. Playwright is used in this module for
-  exactly one thing: rendering our own local HTML report file to an image. It
-  must never visit Instagram.
-- **Never** request a write scope (`instagram_content_publish`,
-  `instagram_manage_comments`, `instagram_manage_messages`).
+- **Never** write CODE that points Playwright, Selenium, `httpx`, `requests`,
+  or anything else at `instagram.com` / `www.instagram.com`. Playwright is
+  used in this module for exactly one thing: rendering our own local HTML
+  report file to an image. It must never visit Instagram. (The one narrow
+  exception is §2.4's App-Dashboard token popup — a human clicking through
+  Meta's own consent screen once, not code. See that section for why this
+  isn't a contradiction.)
+- **Never** request a write scope (`instagram_business_content_publish`,
+  `instagram_business_manage_comments`, `instagram_business_manage_messages`,
+  or their older `instagram_manage_*` equivalents).
 - **Never** store the Instagram account password. Anywhere. In any form.
 - **Never** call an undocumented endpoint (`i.instagram.com`, `/api/v1/…`).
   Those are what unofficial "Instagram API" libraries use, and they are exactly
@@ -36,15 +40,16 @@ official API with a properly issued token is the exact thing that API exists for
   enforcement.
 - **Never** commit or log the token.
 
-There is a standing verification for the first rule — it looks for real URLs
-rather than prose mentions, so it should return **nothing at all**:
+There is a standing verification for the first rule, scoped to **code**, not
+this doc's own prose about the Dashboard flow — it should return **nothing**:
 
 ```bash
-grep -rnE "https?://[a-z0-9.-]*instagram\.com" instagram_insights/ scripts/ig_probe.py
+grep -rnE "https?://[a-z0-9.-]*instagram\.com" instagram_insights/*.py scripts/ig_probe.py
 ```
 
-Any hit means something is pointed at the Instagram website instead of the
-Graph API. Run it before every commit that touches this module.
+Any hit means code — not a human in a browser — is pointed at the Instagram
+website instead of the Graph API. Run it before every commit that touches
+this module.
 
 ---
 
@@ -59,16 +64,21 @@ can work around.
 
 *Check:* Instagram app → Settings → Account type and tools.
 
-### 2.2 Linked Facebook Page
-The Instagram account must be **linked to a Facebook Page**, and you must be
-**admin of both**.
+### 2.2 Facebook Page — not required for this account
 
-*Check:* Facebook Page → Settings → Linked accounts → Instagram.
+**Confirmed 6 Aug 2026: this account has no linked Facebook Page**, so the
+setup below uses Meta's **"Business Login for Instagram"** path, which
+authenticates directly against the Instagram account and needs no Page and no
+Business Manager. (§2.2 in the original draft of this doc assumed a Page —
+that assumption was wrong for this account and has been corrected here. If a
+Page ever gets linked later, the alternative path in §2.6 becomes available
+and unlocks a token that never expires — worth revisiting then, not now.)
 
 ### 2.3 Meta app (leave it in Development mode)
 1. Go to <https://developers.facebook.com/apps> → **Create App**.
 2. Type: **Business**.
-3. Add the **Instagram Graph API** product.
+3. Add the **Instagram** product (specifically "API setup with Instagram
+   login" inside it — this is the no-Page path).
 4. **Leave the app in "Development" mode.** Do not publish it, and do not
    request App Review.
 
@@ -78,28 +88,43 @@ The Instagram account must be **linked to a Facebook Page**, and you must be
 > Access* in Development mode. This is the single biggest reason this project
 > takes a day instead of a month.
 
-### 2.4 Token — use a System User token if at all possible
+### 2.4 Generate the token — via the App Dashboard's built-in flow
 
-**Option A — System User token (strongly recommended).**
-Meta Business Manager → Business Settings → Users → **System Users** → Add →
-Assign the Facebook Page asset → **Generate new token** → select your app →
-choose these three permissions and *nothing else*:
+No coding, no OAuth redirect server needed — Meta's dashboard does this
+entirely in the browser:
 
-- `instagram_basic`
-- `instagram_manage_insights`
-- `pages_read_engagement`
+1. In your app, left sidebar → **Instagram** → **API setup with Instagram
+   login**.
+2. Under **Generate access tokens**, click **Add an Instagram Account**.
+3. A login popup opens — sign in with the Instagram Business/Creator account
+   itself and click **Allow** when it asks you to grant access.
+4. Copy the generated **access token**.
 
-Set the expiry to **Never**.
+**This one popup is the only moment anything Instagram-related happens in a
+browser, and it is you, a human, clicking through Meta's own official consent
+screen** — the same shape as the Gmail OAuth consent this project already
+uses (`ingestion/gmail_auth.py`). It is categorically different from, and not
+in conflict with, the "never automate instagram.com" rule in §1 — that rule
+is about *code* silently visiting Instagram, never about a person consenting
+through Meta's own sanctioned UI once.
 
-This is recommended because it removes the entire 60-day token-expiry failure
-mode. The Mac mini runs unattended for weeks at a time; a token that quietly
-dies mid-holiday means permanently lost data, because Instagram only retains
-insights for ~90 days and never backfills.
+When granting access, confirm only these permissions are requested — this is
+what makes the token physically incapable of writing anything:
 
-**Option B — long-lived user token (fallback).**
-Only if Business Manager isn't available. Lasts 60 days and must be refreshed
-while still valid; `instagram_insights/auth.py` handles that automatically, but
-it is strictly more fragile than Option A.
+- `instagram_business_basic`
+- `instagram_business_manage_insights`
+
+Do **not** grant `instagram_business_content_publish`,
+`instagram_business_manage_comments`, or `instagram_business_manage_messages`
+— none of them are needed and granting them would give the token capabilities
+this project must never use.
+
+> **No never-expiring option here.** Without a linked Facebook Page, there is
+> no Business Manager System User token — that path is Page-only (§2.6). This
+> token lasts **60 days** and must be refreshed before it dies; that refresh
+> is automatic once IG-1 (`instagram_insights/auth.py`) is built (default:
+> refresh at day 30, well inside the window). Until then, note the issue date
+> so a 60-day gap doesn't sneak up unattended.
 
 ### 2.5 Save the token
 
@@ -108,7 +133,7 @@ it is strictly more fragile than Option A.
 cat > credentials/instagram_token.json <<'JSON'
 {
   "access_token": "PASTE_TOKEN_HERE",
-  "token_type": "system_user",
+  "token_type": "instagram_login_long_lived",
   "issued_at": "2026-08-06T00:00:00Z"
 }
 JSON
@@ -116,8 +141,18 @@ chmod 600 credentials/instagram_token.json
 ```
 
 `credentials/*.json` is already in `.gitignore`, so this cannot be committed by
-accident. Use `"token_type": "long_lived_user"` instead if you used Option B —
-that is what tells `auth.py` whether refreshing is needed at all.
+accident.
+
+### 2.6 If a Facebook Page gets linked later (not this project's setup today)
+
+The alternative "Facebook Login" path becomes available: Meta Business
+Manager → Business Settings → Users → **System Users** → Add → assign the
+Page asset → generate a token scoped to `instagram_basic` +
+`instagram_manage_insights` + `pages_read_engagement`, expiry **Never**. That
+removes the 60-day refresh entirely. Switch `ig_auth_mode` from
+`instagram_login` to `facebook_login` in `.env` if this is ever done — nothing
+else in this module needs to change; the host and account-lookup call both
+branch on that one setting (`scripts/ig_probe.py::resolve_account`).
 
 ---
 
@@ -135,12 +170,11 @@ what it actually returns.
 
 It produces `instagram_insights/metric_support.json` and prints a summary,
 including — importantly — **which of the requested metrics are NOT available**
-for this account. Two are worth expecting:
-
-- **Audience demographics** (age / gender / city / country) require **100+
-  followers**. Below that, Meta returns nothing at all.
-- **`profile_views`** may have been retired at account level. The probe reports
-  the truth rather than guessing.
+for this account. Confirmed 6 Aug 2026: this account has >100 followers, so
+the 100-follower demographics floor is already cleared and isn't expected to
+be an issue. `profile_views` at account level is the one still worth watching
+— it may have been retired in a recent API version; the probe reports the
+truth rather than guessing.
 
 Read that output before we build anything on top of it.
 

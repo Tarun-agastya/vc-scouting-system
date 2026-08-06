@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     # collection without uninstalling the launchd jobs.
     ig_enabled: bool = False
     ig_token_path: str = "./credentials/instagram_token.json"  # gitignored via credentials/*.json
+    # "instagram_login" (default): "Business Login for Instagram" — the
+    # account authenticates directly, no Facebook Page needed. Confirmed 6 Aug
+    # 2026 to be this project's actual account (Instagram-only, no linked
+    # Page). Data host graph.instagram.com; tokens last 60 days and MUST be
+    # refreshed (no never-expire System User option without a Page).
+    # "facebook_login": the older Page-mediated path (graph.facebook.com),
+    # which DOES support a never-expiring Business Manager System User token
+    # — only relevant if a Facebook Page is linked later.
+    ig_auth_mode: str = "instagram_login"
     # Pinned by scripts/ig_probe.py on its first successful run so the daily
     # job never has to re-resolve it (one fewer call, one fewer failure mode).
     ig_user_id: Optional[str] = None

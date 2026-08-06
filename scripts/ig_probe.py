@@ -46,11 +46,27 @@ from config import settings  # noqa: E402
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _OUT_PATH = _PROJECT_ROOT / "instagram_insights" / "metric_support.json"
 
-# The ONLY host this module may ever contact. Asserted at call time so no
-# future edit can quietly retarget it at instagram.com — scraping the website
-# is the one realistic way to get a business account restricted, and it is
-# prohibited outright (instagram_insights/README.md).
-_GRAPH_HOST = "graph.facebook.com"
+# The ONLY hosts this module may ever contact — both are Meta's official
+# Graph API, never the consumer website. Asserted at call time so no future
+# edit can quietly retarget a request at instagram.com — scraping/automating
+# the website is the one realistic way to get a business account restricted,
+# and it is prohibited outright (instagram_insights/README.md).
+#
+# Two hosts because Meta has two distinct auth paths, and which one applies
+# depends on whether the account has a linked Facebook Page:
+#   - "instagram_login" (settings.ig_auth_mode default): the account
+#     authenticates directly with Instagram via "Business Login for
+#     Instagram" — no Facebook Page required. Data host: graph.instagram.com.
+#     This is the path for an Instagram-only business account (no Page),
+#     confirmed live 6 Aug 2026 to be this project's actual situation.
+#   - "facebook_login": the older path, requires a linked Facebook Page and
+#     (optionally) a Meta Business Manager System User token that never
+#     expires. Data host: graph.facebook.com. Kept for completeness in case
+#     a Page is linked later — NOT the path currently in use.
+_GRAPH_HOSTS = {
+    "instagram_login": "graph.instagram.com",
+    "facebook_login": "graph.facebook.com",
+}
 
 
 class ProbeStop(Exception):
@@ -101,9 +117,16 @@ def _load_token() -> tuple[str, str]:
 
 
 class Probe:
-    def __init__(self, token: str, api_version: str, budget: int):
+    def __init__(self, token: str, api_version: str, budget: int, auth_mode: str):
+        if auth_mode not in _GRAPH_HOSTS:
+            raise ProbeStop(
+                f"Unknown ig_auth_mode={auth_mode!r} — must be one of "
+                f"{list(_GRAPH_HOSTS)}. Check .env / config/__init__.py."
+            )
         self.token = token
-        self.base = f"https://{_GRAPH_HOST}/{api_version}"
+        self.auth_mode = auth_mode
+        self.host = _GRAPH_HOSTS[auth_mode]
+        self.base = f"https://{self.host}/{api_version}"
         self.calls = 0
         self.budget = budget
         self._client = httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0))
@@ -127,7 +150,8 @@ class Probe:
                 "only if you understand why."
             )
         url = f"{self.base}{path}"
-        assert url.startswith(f"https://{_GRAPH_HOST}/"), f"refusing non-Graph host: {url}"
+        assert url.startswith(f"https://{self.host}/"), f"refusing non-Graph host: {url}"
+        assert self.host in _GRAPH_HOSTS.values(), f"refusing unrecognized host: {self.host}"
 
         self.calls += 1
         try:
@@ -164,8 +188,16 @@ class Probe:
 
     # ── discovery ───────────────────────────────────────────────────────────
     def resolve_account(self) -> dict:
-        """Find the IG Business account behind this token, via its linked Page."""
+        """Find the IG Business account behind this token.
+
+        Two genuinely different mechanisms depending on ig_auth_mode — there
+        is no single call that works for both, so this branches explicitly
+        rather than silently guessing, since a wrong guess here would look
+        like a scope problem and send someone chasing the wrong fix.
+        """
         if settings.ig_user_id:
+            # Already pinned (e.g. by a prior successful probe) — skip
+            # discovery entirely, one fewer call.
             ok, payload = self.get(
                 f"/{settings.ig_user_id}",
                 {"fields": "id,username,name,followers_count,media_count"},
@@ -177,6 +209,27 @@ class Probe:
                 f"{payload.get('error')}"
             )
 
+        if self.auth_mode == "instagram_login":
+            # "Business Login for Instagram" — the account authenticates
+            # directly, no Facebook Page in the loop. The token itself
+            # resolves straight to the account via GET /me.
+            ok, payload = self.get(
+                "/me",
+                {"fields": "user_id,username,name,account_type,followers_count,media_count"},
+            )
+            if not ok:
+                raise ProbeStop(
+                    f"GET /me failed: {payload.get('error')}\n"
+                    "The token needs instagram_business_basic + "
+                    "instagram_business_manage_insights (README §2.4), and the "
+                    "account must be Business/Creator, not Personal (README §2.1)."
+                )
+            payload["id"] = payload.get("id") or payload.get("user_id")
+            return payload
+
+        # auth_mode == "facebook_login" — the older, Page-mediated path.
+        # Not this project's current setup (no linked Page, confirmed 6 Aug
+        # 2026) but kept working in case a Page is linked later.
         ok, payload = self.get(
             "/me/accounts",
             {"fields": "id,name,instagram_business_account{id,username,followers_count,media_count}"},
@@ -196,7 +249,8 @@ class Probe:
                 f"Token can see {len(pages)} Facebook Page(s), but none has a linked "
                 "Instagram Business account.\n"
                 "Check README §2.1 (account must be Business/Creator) and §2.2 "
-                "(must be linked to the Page)."
+                "(must be linked to the Page) — or set ig_auth_mode=instagram_login "
+                "if this account has no Facebook Page at all."
             )
         if len(linked) > 1:
             names = ", ".join(f"{p['name']} -> @{p['instagram_business_account'].get('username')}"
@@ -260,12 +314,17 @@ def _account_probes(since: int, until: int) -> list[dict]:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Read-only Instagram metric-support probe")
     ap.add_argument("--api-version", default=settings.ig_api_version)
+    ap.add_argument("--auth-mode", default=settings.ig_auth_mode,
+                    choices=list(_GRAPH_HOSTS),
+                    help="instagram_login (no Facebook Page — this project's setup) "
+                         "or facebook_login (Page + Business Manager)")
     ap.add_argument("--json-only", action="store_true")
     args = ap.parse_args()
 
     say = (lambda *a: None) if args.json_only else print
 
     say("Instagram metric-support probe — READ-ONLY, official Graph API only")
+    say(f"Auth mode: {args.auth_mode}  ({_GRAPH_HOSTS[args.auth_mode]})")
     say("=" * 72)
 
     try:
@@ -276,11 +335,16 @@ def main() -> int:
         say(f"\nNot set up yet:\n{stop}")
         return 1
 
-    probe = Probe(token, args.api_version, settings.ig_max_calls_per_run)
+    try:
+        probe = Probe(token, args.api_version, settings.ig_max_calls_per_run, args.auth_mode)
+    except ProbeStop as stop:
+        say(f"\nSTOPPED: {stop}")
+        return 1
 
     result: dict = {
         "probed_at": datetime.now(timezone.utc).isoformat(),
         "api_version": args.api_version,
+        "auth_mode": args.auth_mode,
         "token_type": token_type,
         "account": {},
         "metrics": {},
