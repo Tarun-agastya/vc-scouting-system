@@ -12,6 +12,7 @@ import browse from "./views/browse.js";
 import reviews from "./views/reviews.js";
 import ingestion from "./views/ingestion.js";
 import sources from "./views/sources.js";
+import regional from "./views/regional.js";
 
 /* ── Theme (persisted; falls back to the OS preference) ─────────────────── */
 const THEME_KEY = "scout.theme";
@@ -43,6 +44,7 @@ register("browse", browse);
 register("reviews", reviews);
 register("ingestion", ingestion);
 register("sources", sources);
+register("regional", regional);
 
 /* ── Command palette + manual refresh ─────────────────────────────────────
    Refresh re-navigates to the current hash; router.navigate() force-resolves

@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from api.routes import scout, matchmaking, ingestion, sources, reviews, verification, classification, theses
+from api.routes import scout, matchmaking, ingestion, sources, reviews, verification, classification, theses, regional
 from database.connection import init_db
 
 logging.basicConfig(
@@ -228,6 +228,11 @@ app.include_router(reviews.router,     prefix="/reviews",     tags=["Reviews"])
 app.include_router(verification.router, prefix="/verification", tags=["Verification"])
 app.include_router(classification.router, prefix="/classification", tags=["Classification"])
 app.include_router(theses.router,      prefix="/theses",       tags=["Theses"])
+# Phase RC — regional company register. Its own prefix and its own dashboard
+# page on purpose: it is a separate dataset from `startups` (established local
+# employers for membership outreach, not an investment funnel) and must not be
+# buried among them. Reads/writes only `regional_companies`.
+app.include_router(regional.router,    prefix="/regional",     tags=["Regional"])
 
 
 @app.get("/health", tags=["System"])

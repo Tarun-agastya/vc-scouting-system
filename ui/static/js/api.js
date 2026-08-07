@@ -94,6 +94,20 @@ export const api = {
   /** target: "incoming" | "master" | "both" — neither merge nor keep, just remove the data */
   deleteReview: (id, target) => post(`/reviews/${id}/delete?target=${target}`),
 
+  // ── Regional register (Phase RC) ──────────────────────────────────────
+  /** Established local employers tracked for membership outreach. A separate
+   *  dataset from startups — deliberately never mixed into Browse/search. */
+  listRegional: (filters) => get("/regional", filters),
+  regionalStats: () => get("/regional/stats"),
+  regionalFacets: () => get("/regional/facets"),
+  getRegional: (id) => get(`/regional/${id}`),
+  /** Only the CRM columns are writable; machine-gathered fields carry
+   *  citations and are owned by the enrichment pipeline. */
+  editRegional: (id, changes) => patch(`/regional/${id}`, changes),
+  /** Server-side CSV of the CURRENT filter set (not just the loaded page),
+   *  semicolon-delimited + BOM so German Excel opens it with umlauts intact. */
+  regionalExportUrl: (filters) => `/regional/export.csv${qs(filters)}`,
+
   // ── Sources ───────────────────────────────────────────────────────────
   listSources: () => get("/sources"),
   addWebSource: (src) => post("/sources/web", src),
