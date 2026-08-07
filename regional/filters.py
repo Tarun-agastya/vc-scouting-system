@@ -109,6 +109,22 @@ def is_institution(name: str, cfg: Optional[dict] = None) -> bool:
     return any(_word_present(t, name) for t in terms)
 
 
+# OSM labels buildings, gates and depots by name, so a `man_made=works` area
+# can be called "Halle 10" or "Tor 3". Confirmed live 7 Aug: the register had
+# Halle 2/3/5/9/10/11 as separate "companies", all from one industrial site.
+# These are places within a company, never a company.
+_BUILDING_LABEL_RE = re.compile(
+    r"^(halle|geb[äa]ude|haus|tor|pforte|werk|werkstor|lager|parkplatz|"
+    r"eingang|zufahrt|warenannahme|warenanlieferung|kantine|verwaltung|"
+    r"b[üu]ro|bau)\s*[-–]?\s*\d+[a-z]?$",
+    re.IGNORECASE)
+
+
+def is_building_label(name: str) -> bool:
+    """True for 'Halle 10', 'Tor 3', 'Gebäude 2' — a place inside a site."""
+    return bool(_BUILDING_LABEL_RE.match((name or "").strip()))
+
+
 def is_structural_junk(name: str) -> bool:
     """
     Headline / multi-entity / fragment shapes, the same structural tells
@@ -157,5 +173,7 @@ def accept(name: str, cfg: Optional[dict] = None) -> bool:
     """One call for the whole gate. Returns True if the candidate should be
     kept as a possible membership prospect."""
     cleaned = clean_name(name)
-    return bool(cleaned) and not is_structural_junk(cleaned) \
-        and not is_institution(cleaned, cfg)
+    return (bool(cleaned)
+            and not is_structural_junk(cleaned)
+            and not is_building_label(cleaned)
+            and not is_institution(cleaned, cfg))

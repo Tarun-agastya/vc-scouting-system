@@ -225,3 +225,79 @@ def test_band_edges_are_tier_one():
     assert triage.tier_for(employees=4000, source="osm") == triage.TIER_READY
     assert triage.tier_for(employees=99, source="osm") == triage.TIER_OUT_OF_BAND
     assert triage.tier_for(employees=4001, source="osm") == triage.TIER_OUT_OF_BAND
+
+
+# ── RC-2b: location-aware matching ──────────────────────────────────────────
+# Name alone cannot decide identity here. These two pairs are structurally
+# identical as strings but have opposite answers, which is why location had to
+# become part of the decision:
+#     "Urban"  vs "Urban Maschinenbau"           SAME      (both Memmingen)
+#     "Schmid" vs "Hubert Schmid Bauunternehmen" DIFFERENT (different towns)
+
+def test_same_town_merges_name_variants_of_one_company():
+    """All four were real duplicate ROWS in the register on 7 Aug."""
+    for a, b, city in [
+        ("3M Ceramics", "3M Technical Ceramics", "Kempten"),
+        ("Autohaus Seitz", "Seitz-Gruppe", "Kempten"),
+        ("Kolb Wellpappe GmbH", "Hans Kolb Wellpappe", "Memmingen"),
+        ("Urban GmbH", "Urban Maschinenbau", "Memmingen"),
+        ("HAWE", "HAWE Hydraulik", "Kaufbeuren"),
+        ("Sensortechnik Wiedemann", "Sensor-Technik Wiedemann GmbH", "Kaufbeuren"),
+        ("Franz Habisreutinger", "Habisreutinger", "Weingarten"),
+    ]:
+        assert matcher.is_same(a, b, a_city=city, b_city=city), f"{a} ~ {b}"
+
+
+def test_different_towns_keep_a_shared_surname_apart():
+    assert not matcher.is_same("Schmid GmbH", "Hubert Schmid Bauunternehmen",
+                               a_city="Weiler-Simmerberg", b_city="Marktoberdorf")
+
+
+def test_shared_generic_words_never_merge_even_in_one_town():
+    """The 220-pair disaster: an early version merged on ANY shared 4+ char
+    word, and German company names are built from a small pool of generic
+    ones. Every pair below is two unrelated companies in the same town."""
+    for a, b, city in [
+        ("Allgäuer Zeitungsverlag GmbH", "Allgäuer Überlandwerk GmbH", "Kempten"),
+        ("Schreinerei Thomas Baumgartner", "Schreinerei Hermann Rogg", "Memmingen"),
+        ("Amnesty International, Büro Ulm", "Maschuthi, Büro für Gestaltung", "Ulm"),
+        ("Super Team Energiesysteme GmbH", "Schreinerei Junges Team", "Memmingen"),
+        ("Bürogebäude Schäfer-Technik", "Greif-Technik-Schmid GmbH", "Ulm"),
+        ("Andreas Ritzl Maschinenbau GmbH", "Metzner Maschinenbau GmbH", "Ulm"),
+        ("Allgäu Mail", "Mona Allgäu", "Kempten"),
+        ("Wenger Engineering GmbH", "euro engineering AG", "Ulm"),
+    ]:
+        assert not matcher.is_same(a, b, a_city=city, b_city=city), f"{a} ~ {b}"
+
+
+def test_character_similarity_without_a_shared_word_does_not_merge():
+    """The clusters overlap on fuzzy score alone (FingerHaus~Fingerhut 84.2 vs
+    Sensortechnik~Sensor-Technik 82.1), so a shared WORD is required."""
+    assert not matcher.is_same("FingerHaus", "Fingerhut", a_city="Ulm", b_city="Ulm")
+    assert not matcher.is_same("Halle 10", "Halle 11", a_city="Ulm", b_city="Ulm")
+
+
+def test_location_is_only_consulted_when_known_for_both():
+    """Wikipedia candidates carry no location. An absent city must never be
+    read as 'different place', or they would be forced apart from everything."""
+    assert matcher.is_same("Josef Hebel", "Josef Hebel GmbH & Co. KG")
+    assert not matcher.is_same("Schmid GmbH", "Hubert Schmid Bauunternehmen")
+
+
+def test_nearby_coordinates_count_as_the_same_place():
+    """A registered office and its plant are often a few streets apart, and
+    geocoding a town name lands everyone on the town centre."""
+    assert matcher.is_same("Urban", "Urban Maschinenbau",
+                           a_coords=(47.9878, 10.1815), b_coords=(47.9900, 10.1900))
+    assert not matcher.is_same("Schmid", "Schmid Recycling",
+                               a_coords=(47.9878, 10.1815), b_coords=(48.3705, 10.8978))
+
+
+def test_building_labels_are_not_companies():
+    """OSM names buildings and gates: the register held Halle 2/3/5/9/10/11 as
+    six separate 'companies', all from one industrial site."""
+    for junk in ("Halle 10", "Tor 3", "Gebäude 2", "Pforte 1", "Lager 4"):
+        assert not filters.accept(junk), junk
+    # ...without catching a real company that merely starts with such a word.
+    assert filters.accept("Halle Präzision GmbH")
+    assert filters.accept("Haus des Handwerks Bau GmbH")
