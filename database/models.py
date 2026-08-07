@@ -433,6 +433,25 @@ class RegionalCompany(Base):
     phase           = Column(Text)
     wer_hat_kontakt = Column(String(255))
 
+    # Triage tier — which of these is worth a human's (or the enrichment
+    # pipeline's) attention, and in what order. Added 7 Aug after the first
+    # full discovery sweep wrote 1,317 companies of which only 60 were in the
+    # 100-4000 band: OSM maps every named site including one-person web-design
+    # shops and appliance-repair services, so "has no headcount yet" spans
+    # both a 900-employee Liebherr plant and a sole trader. Without this the
+    # enrichment queue is ~1,200 records, most of which cost a search and an
+    # LLM call to discover they are far too small.
+    #   1 = headcount known and inside the band          -> ready for outreach
+    #   2 = from a notability-filtered source (sheet /    -> worth enriching:
+    #       wikidata / wikipedia), headcount unknown         being notable at
+    #                                                        all correlates
+    #                                                        with being large
+    #   3 = OSM-only, headcount unknown                   -> low prior, enrich
+    #                                                        on demand only
+    #   9 = headcount known but outside the band          -> excluded, kept
+    #                                                        for auditability
+    triage_tier = Column(Integer, index=True)
+
     # ── provenance ────────────────────────────────────────────────────────
     source        = Column(String(50), index=True)  # sheet|wikidata|wikipedia|osm|search|manual
     source_url    = Column(String(500))

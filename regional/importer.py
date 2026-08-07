@@ -29,6 +29,7 @@ from typing import Optional
 
 from processing.deduplicator import normalize_company_name
 from regional.geocode import locate
+from regional.triage import tier_for
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +218,8 @@ def import_rows(db, rows: list[dict], *, apply: bool = False,
                 phase=rec.get("phase"),
                 wer_hat_kontakt=rec.get("wer_hat_kontakt"),
                 source=source,
+                triage_tier=tier_for(employees=rec.get('employees'),
+                                     source=source),
                 raw={"imported_at": datetime.utcnow().isoformat(),
                      "geocoded_as": geo.get("display_name")},
                 notes=note,

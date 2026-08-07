@@ -33,6 +33,33 @@ def run():
     Base.metadata.create_all(bind=engine, tables=[RegionalCompany.__table__])
     print("  ✓  created regional_companies (or already existed)")
 
+    # Added 7 Aug, after the table already existed in a live DB — create_all
+    # only creates whole tables, never new columns on an existing one, so this
+    # needs an explicit idempotent ALTER (same pattern as
+    # scripts/migrate_verification.py).
+    with engine.connect() as conn:
+        conn.execute(text(
+            "ALTER TABLE regional_companies "
+            "ADD COLUMN IF NOT EXISTS triage_tier INTEGER"))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_regional_companies_triage_tier "
+            "ON regional_companies (triage_tier)"))
+        conn.commit()
+    print("  ✓  triage_tier column + index present")
+
+    # Backfill: recompute for every row whose tier is unset. Cheap, idempotent,
+    # and it means an existing register gets tiers without a separate script.
+    from regional.triage import tier_for
+    from sqlalchemy.orm import Session
+    with Session(engine) as session:
+        pending = session.query(RegionalCompany).filter(
+            RegionalCompany.triage_tier.is_(None)).all()
+        for row in pending:
+            row.triage_tier = tier_for(employees=row.employees, source=row.source)
+        if pending:
+            session.commit()
+        print(f"  ✓  backfilled triage_tier on {len(pending)} row(s)")
+
     with engine.connect() as conn:
         total = conn.execute(text("SELECT COUNT(*) FROM regional_companies")).scalar()
         in_radius = conn.execute(
