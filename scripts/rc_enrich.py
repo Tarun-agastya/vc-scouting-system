@@ -21,9 +21,11 @@ Usage:
 """
 import argparse
 import asyncio
+import functools
 import logging
 import os
 import sys
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -33,6 +35,12 @@ from regional import enrich, triage               # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
+# Each company takes 30-180s, so a batch of 60 runs for hours. Without this,
+# stdout stays block-buffered when redirected to a log file and the run looks
+# dead until it finishes — confirmed 7 Aug watching an empty log for minutes
+# while the job was in fact working.
+print = functools.partial(print, flush=True)  # noqa: A001
+
 
 def _select(db, args):
     q = db.query(RegionalCompany).filter(RegionalCompany.in_radius.is_(True))
@@ -41,9 +49,13 @@ def _select(db, args):
     q = q.filter(RegionalCompany.triage_tier == args.tier)
     if args.tier == triage.TIER_ENRICH:
         q = q.filter(RegionalCompany.employees.is_(None))
-    # Nearest first: a company 3 km away is a better partnership prospect than
-    # one 48 km away, so if the batch limit cuts the queue, cut the far end.
-    return q.order_by(RegionalCompany.distance_km.nulls_last()).limit(args.limit).all()
+    # Never-attempted first, then nearest. A company nobody has looked at is
+    # always worth more than re-running one the web had nothing on, and a
+    # company 3 km away is a better prospect than one 48 km away — so when the
+    # batch limit cuts the queue, it cuts the already-tried and the far end.
+    return (q.order_by(RegionalCompany.last_verified_at.asc().nullsfirst(),
+                       RegionalCompany.distance_km.asc().nullslast())
+             .limit(args.limit).all())
 
 
 async def run(args) -> int:
@@ -70,6 +82,17 @@ async def run(args) -> int:
             if not proposals:
                 print("      no usable findings")
                 stats["no_result"] += 1
+                if args.apply:
+                    # Record the ATTEMPT even though it yielded nothing.
+                    # Without this, "tried and the web has no headcount for
+                    # this firm" is indistinguishable from "never tried", and
+                    # every later batch re-spends a search and a 100-second
+                    # LLM call on the same dead ends before reaching anything
+                    # new. Combined with the oldest-attempt-first ordering in
+                    # _select, a failure is retried eventually but never ahead
+                    # of a company nobody has looked at yet.
+                    company.last_verified_at = datetime.utcnow()
+                    db.commit()
                 continue
 
             shown = 0

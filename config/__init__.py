@@ -87,6 +87,19 @@ class Settings(BaseSettings):
     ig_max_calls_per_run: int = 60
     ig_report_recipients: str = ""  # comma-separated; empty = report emailing disabled
 
+    # ── Google Places (Phase RC-3, regional discovery) ───────────────────────
+    # The ONLY paid data source in this project. Optional: without a key the
+    # regional register still works from Wikidata + Wikipedia + OSM, it just
+    # reaches lower recall. Pro-tier fields cost ~$32 per 1000 calls, so a full
+    # 50 km sweep is roughly $20-30 — always run the estimate first.
+    google_places_api_key: Optional[str] = None
+    # Hard stop on calls per sweep. Like web_verify_chain_limit for Tavily,
+    # this batch cap is the only cost control that exists — there is no quota
+    # accounting anywhere. Raise it deliberately, never by reflex.
+    google_places_max_calls: int = 200
+    # Tile radius in km. Smaller = better coverage in dense towns, more calls.
+    google_places_tile_km: float = 4.0
+
     # Tavily (Phase W web verification search backend, 24 Jul — replaces the
     # DuckDuckGo HTML scrape, which an anti-bot block made unreliable; see
     # ingestion/web_search.py's module docstring for the full evaluation).

@@ -34,6 +34,11 @@ TIER_OUT_OF_BAND = 9  # headcount known, outside the band
 
 # Sources that carry an implicit notability filter, i.e. inclusion in them is
 # itself weak evidence the company is not tiny.
+# google_places is deliberately NOT here. Like OSM it has no notability
+# filter — anyone can register a Business Profile — so an unsized Google hit
+# is no more likely to be a 300-employee factory than a two-person workshop.
+# Its value is recall, not precision, so it lands in the low-prior tier until
+# enrichment establishes a headcount.
 NOTABILITY_SOURCES = {"sheet", "wikidata", "wikipedia", "manual", "search"}
 
 LABELS = {

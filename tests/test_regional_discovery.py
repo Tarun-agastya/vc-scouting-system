@@ -301,3 +301,53 @@ def test_building_labels_are_not_companies():
     # ...without catching a real company that merely starts with such a word.
     assert filters.accept("Halle Präzision GmbH")
     assert filters.accept("Haus des Handwerks Bau GmbH")
+
+
+# ── RC-3 Lever D: Google Places (the only paid source) ──────────────────────
+
+def test_tiling_covers_the_circle_and_overlaps():
+    """A single 50 km query returns at most 20 places and would silently imply
+    that is all of them, so the circle is tiled."""
+    from regional import google_places as gp
+    tiles = gp._tiles(radius_km=50.0, tile_km=4.0)
+    assert len(tiles) > 400
+    from regional.geocode import MEMMINGEN, haversine_km
+    # Every tile centre is inside the catchment (plus its own reach).
+    assert all(haversine_km(MEMMINGEN, t) <= 54.0 for t in tiles)
+    # The centre itself is covered.
+    assert any(haversine_km(MEMMINGEN, t) < 1.0 for t in tiles)
+
+
+def test_cost_estimate_makes_no_api_calls():
+    """This is the only script in the project that spends money, so the
+    estimate must be computable before any key exists."""
+    from regional import google_places as gp
+    est = gp.estimate_sweep(radius_km=50.0, tile_km=4.0)
+    assert est["tiles"] > 0
+    assert est["estimated_usd"] > 0
+    # Finer tiles cost more — the knob is honest about its tradeoff.
+    assert gp.estimate_sweep(tile_km=2.0)["min_calls"] > est["min_calls"]
+
+
+def test_types_target_industry_not_consumer_storefronts():
+    from regional import google_places as gp
+    assert "manufacturer" in gp.B2B_TYPES and "wholesaler" in gp.B2B_TYPES
+    for consumer in ("restaurant", "hair_care", "cafe", "clothing_store"):
+        assert consumer not in gp.B2B_TYPES
+
+
+def test_field_mask_stays_in_the_pro_tier():
+    """websiteUri / nationalPhoneNumber would promote every call to the more
+    expensive Enterprise tier and change the cost of the whole sweep."""
+    from regional import google_places as gp
+    assert "websiteUri" not in gp.FIELD_MASK
+    assert "nationalPhoneNumber" not in gp.FIELD_MASK
+    assert "places.displayName" in gp.FIELD_MASK
+
+
+def test_google_results_are_low_prior_until_sized():
+    """Anyone can register a Business Profile, so an unsized Google hit is no
+    more likely to be a real employer than an OSM one."""
+    from regional import triage
+    assert triage.tier_for(employees=None, source="google_places") == triage.TIER_LOW_PRIOR
+    assert triage.tier_for(employees=300, source="google_places") == triage.TIER_READY
