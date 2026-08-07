@@ -433,6 +433,18 @@ class RegionalCompany(Base):
     phase           = Column(Text)
     wer_hat_kontakt = Column(String(255))
 
+    # Ground footprint of the company's site in m², from OpenStreetMap
+    # geometry. A free, deterministic SIZE PROXY — no LLM call, no API cost.
+    # Measured 7 Aug on 342 real buildings and it separates the population
+    # cleanly: the largest are Grob-Werke (405,000 m²), Kögel Trailer
+    # (349,000), Peri (347,000), Daimler Buses (289,000), Max Weishaupt
+    # (148,000) — all major regional employers, several of which no other
+    # source had sized. The smallest are easy-page werbedesign (95 m²),
+    # design schmid (64) and a building literally named "Büro" (81).
+    # NULL means unknown (an OSM node rather than a mapped building), which is
+    # never read as "small".
+    footprint_m2 = Column(Float, index=True)
+
     # Triage tier — which of these is worth a human's (or the enrichment
     # pipeline's) attention, and in what order. Added 7 Aug after the first
     # full discovery sweep wrote 1,317 companies of which only 60 were in the

@@ -44,6 +44,13 @@ def run():
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_regional_companies_triage_tier "
             "ON regional_companies (triage_tier)"))
+        # Added 7 Aug — free OSM-derived size proxy, see models.py.
+        conn.execute(text(
+            "ALTER TABLE regional_companies "
+            "ADD COLUMN IF NOT EXISTS footprint_m2 DOUBLE PRECISION"))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_regional_companies_footprint "
+            "ON regional_companies (footprint_m2)"))
         conn.commit()
     print("  ✓  triage_tier column + index present")
 

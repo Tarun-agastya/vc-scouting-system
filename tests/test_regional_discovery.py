@@ -351,3 +351,55 @@ def test_google_results_are_low_prior_until_sized():
     from regional import triage
     assert triage.tier_for(employees=None, source="google_places") == triage.TIER_LOW_PRIOR
     assert triage.tier_for(employees=300, source="google_places") == triage.TIER_READY
+
+
+# ── RC-3b: OSM footprint as a free size proxy ───────────────────────────────
+
+def test_large_footprint_promotes_an_osm_row_into_the_enrichment_queue():
+    """Measured 7 Aug on 344 real buildings: the large end is Grob-Werke
+    (405,000 m²), Peri (347,000), Daimler Buses (289,000) — all major
+    employers; the small end is 'easy-page werbedesign' (95 m²) and a building
+    named 'Büro' (81). Area separates them for free, with no LLM call."""
+    from regional import triage
+    assert triage.tier_for(employees=None, source="osm",
+                           footprint_m2=404_994) == triage.TIER_ENRICH
+    assert triage.tier_for(employees=None, source="osm",
+                           footprint_m2=95) == triage.TIER_LOW_PRIOR
+
+
+def test_unknown_footprint_is_not_read_as_small():
+    """An OSM node with no mapped building has no area. That is missing
+    evidence, not evidence of being tiny."""
+    from regional import triage
+    assert triage.tier_for(employees=None, source="osm",
+                           footprint_m2=None) == triage.TIER_LOW_PRIOR
+    # ...and it must never demote a notability-sourced company.
+    assert triage.tier_for(employees=None, source="wikidata",
+                           footprint_m2=None) == triage.TIER_ENRICH
+
+
+def test_a_known_headcount_still_outranks_the_proxy():
+    """Footprint is a proxy for size; an actual headcount is the real thing."""
+    from regional import triage
+    assert triage.tier_for(employees=50, source="osm",
+                           footprint_m2=400_000) == triage.TIER_OUT_OF_BAND
+    assert triage.tier_for(employees=650, source="osm",
+                           footprint_m2=95) == triage.TIER_READY
+
+
+def test_polygon_area_is_right_for_a_known_rectangle():
+    """~100m x ~100m near Memmingen should measure ~10,000 m²."""
+    import importlib.util, pathlib
+    spec = importlib.util.spec_from_file_location(
+        "rc_fp", pathlib.Path(__file__).parent.parent / "scripts" / "rc_footprints.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    lat, lon = 47.9878, 10.1815
+    dlat = 100 / 110_574.0
+    import math
+    dlon = 100 / (111_320.0 * math.cos(math.radians(lat)))
+    square = [{"lat": lat, "lon": lon}, {"lat": lat, "lon": lon + dlon},
+              {"lat": lat + dlat, "lon": lon + dlon}, {"lat": lat + dlat, "lon": lon}]
+    assert 9_500 < mod.polygon_area_m2(square) < 10_500
+    assert mod.polygon_area_m2([{"lat": lat, "lon": lon}]) == 0.0

@@ -49,9 +49,29 @@ LABELS = {
 }
 
 
+# A site this large is strong evidence of a substantial employer, and is
+# treated as equivalent to coming from a notability-filtered source. Chosen
+# from the measured distribution of 342 real buildings (7 Aug): the median is
+# 3,021 m² and the 75th percentile 13,045 m², while everything above ~10,000
+# in the sample was an unambiguous industrial site — Grob-Werke, Kögel,
+# Peri, Daimler Buses, Liebherr, ZwickRoell, Käserei Champignon. Below it sit
+# the one-person offices this tier exists to skip.
+LARGE_FOOTPRINT_M2 = 10_000.0
+
+
 def tier_for(*, employees: Optional[int], source: Optional[str],
+             footprint_m2: Optional[float] = None,
              lo: int = DEFAULT_MIN_EMPLOYEES,
              hi: int = DEFAULT_MAX_EMPLOYEES) -> int:
     if employees is not None:
         return TIER_READY if lo <= employees <= hi else TIER_OUT_OF_BAND
+
+    # A big mapped site earns the enrichment queue regardless of source. This
+    # is what makes the OSM pile tractable: enriching all 978 would cost ~27h
+    # of GPU, mostly to establish that sole traders are sole traders, whereas
+    # the ~30% with a large footprint cost ~3h and are nearly all real
+    # employers. An unknown footprint is NOT read as small.
+    if footprint_m2 is not None and footprint_m2 >= LARGE_FOOTPRINT_M2:
+        return TIER_ENRICH
+
     return TIER_ENRICH if (source or "") in NOTABILITY_SOURCES else TIER_LOW_PRIOR
