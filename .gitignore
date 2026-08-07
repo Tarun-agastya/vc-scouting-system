@@ -64,3 +64,9 @@ validation/*/
 
 # ── Runtime logs (launchd services write here) ───────────────────────────────
 logs/
+
+# ── Regional register (Phase RC) ──────────────────────────────────────────────
+# The membership sheet's CRM columns hold named individuals' direct phone
+# numbers and e-mail addresses — never commit them.
+regional/data/
+regional/_geocode_cache.json

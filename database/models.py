@@ -371,3 +371,78 @@ class SiteProfile(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RegionalCompany(Base):
+    """
+    Regional company register (Phase RC, 6 Aug 2026) — established SMEs within
+    a radius of Memmingen, tracked as GreenTech Hub membership prospects.
+
+    DELIBERATELY NOT the `startups` table, and this separation is the point,
+    not an implementation detail. These are different entities with a
+    different lifecycle and a different purpose: `startups` is an investment-
+    scouting funnel of young companies discovered from VC/accelerator sources,
+    while this is a finite, geographically-bounded list of established
+    employers (100-4000 staff) that a human works through for partnership
+    outreach. Mixing them would bury ~500 regional firms among 1,200+ startups
+    and would pollute thesis-relevance ranking on both sides. Nothing here
+    shares an id with, or is searchable alongside, a Startup.
+
+    Two halves, with a hard rule about who writes which:
+      * The five DATA columns (name, city, employees, branche,
+        kurzbeschreibung) are machine-gathered and machine-refreshable, each
+        carrying a citation in `field_sources` so any number can be checked
+        against its source.
+      * The five CRM columns (prio, kontakt, status, phase, wer_hat_kontakt)
+        mirror the team's existing Excel sheet and are HUMAN-ONLY. No
+        automated step may ever write them — losing a hand-recorded "Absage,
+        spoke to the GF on 27.2." to a scraper would be worse than having no
+        automation at all.
+
+    Out-of-radius rows are KEPT (in_radius=False), not deleted: several carry
+    real contact history from the manual outreach effort.
+    """
+    __tablename__ = "regional_companies"
+    __table_args__ = (
+        UniqueConstraint("normalized_name", "city", name="uq_regional_name_city"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # ── the five data columns, mirroring the team's sheet ──────────────────
+    name             = Column(String(255), nullable=False, index=True)
+    normalized_name  = Column(String(255), index=True)   # deduplicator.normalize_company_name
+    city             = Column(String(255), index=True)   # "Standort"
+    employees        = Column(Integer, index=True)       # "Mitarbeiter"
+    branche          = Column(String(255))               # "Branche"
+    kurzbeschreibung = Column(Text)                      # "Kurzbeschreibung"
+
+    # ── geography (computed once at import, refreshed only if city changes) ─
+    lat         = Column(Float)
+    lon         = Column(Float)
+    distance_km = Column(Float, index=True)   # great-circle from Memmingen
+    in_radius   = Column(Boolean, default=True, index=True)
+    postcode    = Column(String(20))
+    address     = Column(String(500))
+    country     = Column(String(100), default="Germany")
+
+    # ── the five CRM columns — HUMAN-ONLY, never machine-written ───────────
+    prio            = Column(Integer, index=True)
+    kontakt         = Column(Text)          # free text as in the sheet
+    status          = Column(String(50), index=True)   # e.g. Absage | aktiv | ""
+    phase           = Column(Text)
+    wer_hat_kontakt = Column(String(255))
+
+    # ── provenance ────────────────────────────────────────────────────────
+    source        = Column(String(50), index=True)  # sheet|wikidata|wikipedia|osm|search|manual
+    source_url    = Column(String(500))
+    website       = Column(String(500))
+    # {field_name: source_url} — per-field citation written by enrichment so
+    # the dashboard can show where each machine-gathered value came from.
+    field_sources = Column(JSON)
+    raw           = Column(JSON)            # untouched payload from the source
+    notes         = Column(Text)            # import warnings, e.g. a corrected location
+
+    last_verified_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
