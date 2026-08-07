@@ -16,7 +16,7 @@
    ══════════════════════════════════════════════════════════════════════════ */
 
 import { api, fmt, esc } from "../api.js";
-import { toast } from "../router.js";
+import { toast, poll } from "../router.js";
 
 const TIER_CHIP = {
   1: { label: "bereit", cls: "chip--ok" },
@@ -44,6 +44,7 @@ export default {
     el.innerHTML = `
       <div class="stack">
         <div class="kpis" id="rc-kpis"></div>
+        <div id="rc-progress"></div>
         <div class="card">
           <div class="row wrap" style="gap:8px">
             <input class="input" id="rc-q" placeholder="Name, Branche, Ort…" style="max-width:220px">
@@ -105,6 +106,49 @@ export default {
         max_employees: state.maxEmployees || undefined,
         missing_employees: state.missingEmployees || undefined,
       };
+    }
+
+    /** Background enrichment progress. Hidden entirely when there is nothing
+     *  to report, so the page is not cluttered by an idle empty bar. */
+    async function loadProgress() {
+      const box = $("#rc-progress");
+      let s;
+      try { s = await api.regionalEnrichmentStatus(); }
+      catch { box.innerHTML = ""; return; }
+
+      if (!s.queue_remaining && !s.active) { box.innerHTML = ""; return; }
+
+      const total = s.attempted + s.queue_remaining;
+      const donePct = total ? Math.round((s.attempted / total) * 100) : 0;
+      const mins = s.seconds_since_last == null ? null : Math.floor(s.seconds_since_last / 60);
+
+      box.innerHTML = `
+        <div class="card">
+          <div class="row" style="gap:10px;align-items:center">
+            <span style="font-size:16px">${s.active ? "⏳" : "⏸"}</span>
+            <strong style="font-size:13px">
+              ${s.active ? "Anreicherung läuft" : "Anreicherung pausiert"}
+            </strong>
+            <span class="dim" style="font-size:12px">
+              ${fmt.num(s.attempted)} von ${fmt.num(total)} bearbeitet ·
+              ${fmt.num(s.queue_remaining)} offen
+              ${s.queue_remaining ? ` · noch ca. ${s.eta_hours} h` : ""}
+            </span>
+            <span class="grow"></span>
+            <span class="dim" style="font-size:11px">
+              ${mins == null ? "" : `letzte Aktivität vor ${mins} min`}
+            </span>
+          </div>
+          <div style="background:var(--surface-2);border-radius:4px;height:8px;
+                      overflow:hidden;margin-top:8px">
+            <span style="display:block;height:100%;width:${donePct}%;
+                         background:var(--brand-lime)"></span>
+          </div>
+          ${s.active ? "" : `<div class="dim" style="font-size:11px;margin-top:6px">
+            Kein Fortschritt seit ${mins} min — der Lauf ist beendet oder gestoppt.
+            Neu starten: <code>python3 -u scripts/rc_enrich.py --limit 400 --apply</code>
+          </div>`}
+        </div>`;
     }
 
     async function loadKpis() {
@@ -304,12 +348,14 @@ export default {
       window.location.href = api.regionalExportUrl(filters());
     });
 
-    await Promise.all([loadKpis(), loadFacets()]);
+    await Promise.all([loadKpis(), loadFacets(), loadProgress()]);
     await load();
 
-    // No polling: this dataset changes when someone runs discovery or
-    // enrichment, not continuously, so a background poll would only fight
-    // with whatever the user is typing.
-    return () => {};
+    // The TABLE is not polled — it would fight with whatever the user is
+    // typing into a filter. Only the progress strip and the KPI counts
+    // refresh, every 30s, since an enrichment run takes hours and a static
+    // page gave no sign it was working at all.
+    const stop = poll(() => { loadProgress(); loadKpis(); }, 30000);
+    return () => stop();
   },
 };

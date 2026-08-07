@@ -100,6 +100,9 @@ export const api = {
   listRegional: (filters) => get("/regional", filters),
   regionalStats: () => get("/regional/stats"),
   regionalFacets: () => get("/regional/facets"),
+  /** Background enrichment progress — inferred from the data, so it is
+   *  accurate whoever started the run. */
+  regionalEnrichmentStatus: () => get("/regional/enrichment-status"),
   getRegional: (id) => get(`/regional/${id}`),
   /** Only the CRM columns are writable; machine-gathered fields carry
    *  citations and are owned by the enrichment pipeline. */

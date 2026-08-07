@@ -174,3 +174,49 @@ def test_register_never_touches_the_startup_table():
     db = SessionLocal()
     assert db.query(Startup).count() == before
     db.close()
+
+
+# ── enrichment progress ─────────────────────────────────────────────────────
+
+def test_enrichment_status_infers_activity_from_the_data():
+    """'Is it running?' is answered from committed rows, not from a process
+    table — so it stays correct whether the run was started by hand, by
+    launchd, or over SSH.
+
+    SCOPE WARNING, learned the hard way: an earlier version of this test aged
+    EVERY row with a last_verified_at in order to assert the inactive branch,
+    and destroyed the real enrichment timestamps of 63 live companies. These
+    tests share a database with production data, so a write must never reach
+    beyond the PYTEST-prefixed fixtures. The inactive branch is therefore
+    covered as a pure unit below rather than by mutating shared state.
+    """
+    from datetime import datetime
+
+    db = SessionLocal()
+    row = db.query(RegionalCompany).filter_by(name=f"{PREFIX} Far").one()
+    row.last_verified_at = datetime.utcnow()      # only a PYTEST row
+    db.commit()
+    db.close()
+
+    s = _run(R.enrichment_status(db=SessionLocal()))
+    assert s["active"] is True
+    assert s["seconds_since_last"] is not None and s["seconds_since_last"] < 60
+    assert s["attempted"] >= 1
+
+
+def test_inactivity_threshold_is_longer_than_one_company_takes():
+    """A company takes 1-3 minutes, so the 'stopped' threshold must sit well
+    above that or a normal gap between records would read as a dead run.
+    Asserted on the constant rather than by ageing shared rows."""
+    import inspect
+    src = inspect.getsource(R.enrichment_status)
+    assert "600" in src, "inactivity threshold changed — is it still > 3 min?"
+
+
+def test_enrichment_status_reports_a_queue_and_an_eta():
+    s = _run(R.enrichment_status(db=SessionLocal()))
+    assert s["queue_remaining"] >= 0
+    assert s["eta_hours"] >= 0
+    # An empty queue must not claim time remaining.
+    if s["queue_remaining"] == 0:
+        assert s["eta_hours"] == 0

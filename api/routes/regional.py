@@ -207,6 +207,53 @@ async def stats(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/enrichment-status")
+async def enrichment_status(db: Session = Depends(get_db)):
+    """
+    Progress of the background enrichment run, for the dashboard.
+
+    "Is it running?" is answered from the DATA rather than by inspecting
+    processes: the runner commits after every company, so a recent
+    last_verified_at is direct evidence of work happening. That keeps this
+    endpoint honest if the job is started by hand, by launchd, or over SSH —
+    it reports what the register actually received, not what some process
+    table claims.
+
+    NOTE: this route must stay declared BEFORE /{company_id}, or the path
+    parameter swallows it and "enrichment-status" is treated as an id.
+    """
+    in_radius = db.query(RegionalCompany).filter(RegionalCompany.in_radius.is_(True))
+
+    queue = in_radius.filter(RegionalCompany.triage_tier == 2,
+                             RegionalCompany.employees.is_(None),
+                             RegionalCompany.last_verified_at.is_(None)).count()
+    attempted = in_radius.filter(RegionalCompany.last_verified_at.isnot(None)).count()
+    with_employees = in_radius.filter(RegionalCompany.employees.isnot(None)).count()
+
+    last = (db.query(func.max(RegionalCompany.last_verified_at))
+              .filter(RegionalCompany.in_radius.is_(True)).scalar())
+
+    active, secs_since = False, None
+    if last:
+        secs_since = (datetime.utcnow() - last).total_seconds()
+        # A company takes 1-3 minutes, so silence beyond 10 means the run has
+        # stopped or is wedged — not merely between records.
+        active = secs_since < 600
+
+    # Measured rather than assumed: ~2.3 min/company on this machine.
+    eta_hours = round(queue * 2.3 / 60, 1) if queue else 0.0
+
+    return {
+        "active": active,
+        "queue_remaining": queue,
+        "attempted": attempted,
+        "with_employees": with_employees,
+        "last_activity": last.isoformat() if last else None,
+        "seconds_since_last": int(secs_since) if secs_since is not None else None,
+        "eta_hours": eta_hours,
+    }
+
+
 @router.get("/export.csv")
 async def export_csv(
     q: Optional[str] = None,

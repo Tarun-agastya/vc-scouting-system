@@ -246,6 +246,68 @@ def apply_proposals(company, proposals: dict) -> dict:
     return {"filled": filled, "proposed_only": proposed_only}
 
 
+# Verdict shape the model must return. Declared here rather than reused from
+# qwen_client so this module keeps its own contract and needs no edit to the
+# main pipeline.
+_VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "identity_match": {"type": "boolean"},
+        "summary": {"type": "string"},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "field":         {"type": "string"},
+                    "verdict":       {"type": "string"},
+                    "correct_value": {"type": "string"},
+                    "source_url":    {"type": "string"},
+                },
+                "required": ["field", "verdict", "correct_value", "source_url"],
+            },
+        },
+    },
+    "required": ["identity_match", "summary", "findings"],
+}
+
+
+def _verify_sync(prompt: str) -> dict:
+    """
+    One structured-output call on the SMALL model.
+
+    Deliberately not qwen_client.web_verify_record, which targets the 14B
+    reasoning model. Measured 7 Aug on this Mac mini: the 14B wedged Ollama
+    outright — a trivial "Say OK" prompt timed out after 60s while the machine
+    sat at 20% free memory with 50k pageouts, and the enrichment run stalled on
+    a single company for over an hour. The 14B needs 10.4 GB resident, which on
+    24 GB alongside Postgres, Qdrant and the API is simply too tight to hold
+    for hours. The same prompt on qwen2.5:7b-instruct answered in 3.3 seconds.
+
+    This is the project's own §A.2 two-tier rule applied where it had been
+    overlooked: high-volume work belongs on the small model, and enrichment
+    across 1,200 companies is high-volume work. It is also exactly what the
+    deferred Phase T-5 recommended for the recheck path.
+    """
+    import ollama
+    from config import settings
+
+    client = ollama.Client(host=settings.ollama_base_url, timeout=120)
+    resp = client.chat(
+        model=settings.ollama_extract_model,
+        messages=[
+            {"role": "system",
+             "content": "You verify public facts about established German companies. "
+                        "Answer only from the supplied search results. Never invent a value."},
+            {"role": "user", "content": prompt},
+        ],
+        format=_VERDICT_SCHEMA,
+        options={"temperature": 0, "num_predict": 800},
+    )
+    import json as _json
+    return _json.loads(resp["message"]["content"])
+
+
 async def enrich_one(company) -> dict:
     """
     One company: search -> local LLM verdict -> proposals. Does not write.
@@ -254,7 +316,6 @@ async def enrich_one(company) -> dict:
     """
     from ingestion.web_search import search
     from processing.scout_controller import scout_controller
-    from reasoning.qwen_client import qwen_client
 
     loop = asyncio.get_event_loop()
     try:
@@ -270,9 +331,9 @@ async def enrich_one(company) -> dict:
     prompt = build_prompt(company, results)
     async with scout_controller.gpu_mutex:
         try:
-            verdict = await loop.run_in_executor(
-                None, lambda: qwen_client.web_verify_record(prompt))
+            verdict = await loop.run_in_executor(None, lambda: _verify_sync(prompt))
         except Exception as exc:
+            # One company failing must never stop a batch of hundreds.
             logger.warning(f"[RegionalEnrich] verify failed for {company.name!r}: {exc}")
             return {}
 
