@@ -18,6 +18,12 @@ Usage:
     python3 scripts/rc_enrich.py --limit 20 --apply
     python3 scripts/rc_enrich.py --tier 1 --limit 10    # refresh known ones
     python3 scripts/rc_enrich.py --name "Otto Christ" --apply
+    python3 scripts/rc_enrich.py --all-tiers --limit 1000 --apply
+        # every in-radius company with no Kurzbeschreibung yet, tier ignored —
+        # for "at least get a description on everyone", including the ~875
+        # tier-3 companies the tiering deliberately deprioritises for
+        # headcount (a description is a much cheaper thing to ask the same
+        # call for, so there is no reason to withhold it from tier 3 too).
 """
 import argparse
 import asyncio
@@ -46,9 +52,23 @@ def _select(db, args):
     q = db.query(RegionalCompany).filter(RegionalCompany.in_radius.is_(True))
     if args.name:
         return q.filter(RegionalCompany.name.ilike(f"%{args.name}%")).all()
-    q = q.filter(RegionalCompany.triage_tier == args.tier)
-    if args.tier == triage.TIER_ENRICH:
-        q = q.filter(RegionalCompany.employees.is_(None))
+
+    if args.all_tiers:
+        # Ignores the triage tier entirely — the tiering exists to gate the
+        # EXPENSIVE, low-yield hunt for a headcount on tier-3's ~875 mostly
+        # small OSM finds, not to withhold a description from them too. Every
+        # enrich_one() call already asks for Mitarbeiter/Branche/
+        # Kurzbeschreibung/Website in one shot, so running it here costs the
+        # same per company and simply keeps whatever it happens to find
+        # (usually the description, per the measured 83%/49%/36% hit rates on
+        # Branche/Kurzbeschreibung/Mitarbeiter — description is NOT the
+        # highest-yield field, but this is "at least try everyone" mode).
+        q = q.filter(RegionalCompany.kurzbeschreibung.is_(None))
+    else:
+        q = q.filter(RegionalCompany.triage_tier == args.tier)
+        if args.tier == triage.TIER_ENRICH:
+            q = q.filter(RegionalCompany.employees.is_(None))
+
     # Never-attempted first, then nearest. A company nobody has looked at is
     # always worth more than re-running one the web had nothing on, and a
     # company 3 km away is a better prospect than one 48 km away — so when the
@@ -146,7 +166,11 @@ def main() -> int:
                     help="max companies this run (default 5 — each costs a "
                          "search + an LLM call)")
     ap.add_argument("--tier", type=int, default=triage.TIER_ENRICH,
-                    help=f"triage tier to work (default {triage.TIER_ENRICH})")
+                    help=f"triage tier to work (default {triage.TIER_ENRICH}); "
+                         f"ignored if --all-tiers is set")
+    ap.add_argument("--all-tiers", action="store_true",
+                    help="ignore tier — target every in-radius company with "
+                         "no Kurzbeschreibung yet (includes tier 3)")
     ap.add_argument("--name", help="enrich companies matching this name instead")
     ap.add_argument("--apply", action="store_true", help="write results")
     args = ap.parse_args()

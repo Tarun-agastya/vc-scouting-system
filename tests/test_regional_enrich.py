@@ -143,3 +143,58 @@ def test_prior_citations_are_preserved():
         "branche": {"value": "Bau", "source_url": "https://new.de"}})
     assert co.field_sources["website"] == "https://old.de"
     assert co.field_sources["branche"] == "https://new.de"
+
+
+# ── --all-tiers selection mode ──────────────────────────────────────────────
+
+def test_all_tiers_mode_ignores_triage_tier_and_targets_missing_description():
+    """'At least get a description on everyone' means the tier gate — which
+    exists to withhold the EXPENSIVE headcount hunt from tier 3's ~875 mostly
+    small OSM finds — must not also withhold the cheap Kurzbeschreibung field
+    the same call already asks for."""
+    import argparse
+    import importlib.util
+    import pathlib
+
+    from database.connection import SessionLocal
+    from database.models import RegionalCompany
+    from regional import triage
+
+    spec = importlib.util.spec_from_file_location(
+        "rc_enrich_mod", pathlib.Path(__file__).parent.parent / "scripts" / "rc_enrich.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    prefix = "PYTEST-RCENRICH-ALLTIERS"
+    db = SessionLocal()
+    try:
+        db.query(RegionalCompany).filter(
+            RegionalCompany.name.like(f"{prefix}%")).delete(synchronize_session=False)
+        db.add_all([
+            RegionalCompany(name=f"{prefix} Tier3 NoDesc", normalized_name="x1",
+                            in_radius=True, triage_tier=triage.TIER_LOW_PRIOR,
+                            kurzbeschreibung=None, source="osm", distance_km=5.0),
+            RegionalCompany(name=f"{prefix} Tier1 HasDesc", normalized_name="x2",
+                            in_radius=True, triage_tier=triage.TIER_READY,
+                            kurzbeschreibung="already has one", employees=200,
+                            source="sheet", distance_km=1.0),
+            RegionalCompany(name=f"{prefix} Tier9 NoDesc", normalized_name="x3",
+                            in_radius=True, triage_tier=triage.TIER_OUT_OF_BAND,
+                            kurzbeschreibung=None, employees=50000,
+                            source="wikidata", distance_km=2.0),
+        ])
+        db.commit()
+
+        args = argparse.Namespace(name=None, all_tiers=True, limit=100, tier=triage.TIER_ENRICH)
+        selected = {c.name for c in mod._select(db, args)}
+
+        # Missing a description, regardless of tier (including tier 9/3):
+        assert f"{prefix} Tier3 NoDesc" in selected
+        assert f"{prefix} Tier9 NoDesc" in selected
+        # Already has one -> not selected, even though it's tier 1:
+        assert f"{prefix} Tier1 HasDesc" not in selected
+    finally:
+        db.query(RegionalCompany).filter(
+            RegionalCompany.name.like(f"{prefix}%")).delete(synchronize_session=False)
+        db.commit()
+        db.close()
