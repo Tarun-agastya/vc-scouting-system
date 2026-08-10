@@ -31,7 +31,6 @@ Usage:
 """
 import argparse
 import json
-import math
 import os
 import sys
 import urllib.parse
@@ -43,26 +42,9 @@ from database.connection import SessionLocal        # noqa: E402
 from database.models import RegionalCompany         # noqa: E402
 from regional import triage                         # noqa: E402
 from regional.discovery import OVERPASS_MIRRORS, _USER_AGENT  # noqa: E402
+from regional.geometry import polygon_area_m2        # noqa: E402
 
 BATCH = 150
-
-
-def polygon_area_m2(coords) -> float:
-    """Shoelace on a local equirectangular projection — accurate to well
-    within a percent for building-sized polygons at this latitude, and it
-    avoids pulling in a geometry dependency for one formula."""
-    if len(coords) < 3:
-        return 0.0
-    lat0 = sum(c["lat"] for c in coords) / len(coords)
-    mx = 111_320.0 * math.cos(math.radians(lat0))
-    my = 110_574.0
-    pts = [(c["lon"] * mx, c["lat"] * my) for c in coords]
-    s = 0.0
-    for i in range(len(pts)):
-        x1, y1 = pts[i]
-        x2, y2 = pts[(i + 1) % len(pts)]
-        s += x1 * y2 - x2 * y1
-    return abs(s) / 2.0
 
 
 def _fetch(way_ids) -> dict:
