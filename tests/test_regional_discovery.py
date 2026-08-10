@@ -403,3 +403,25 @@ def test_polygon_area_is_right_for_a_known_rectangle():
               {"lat": lat + dlat, "lon": lon + dlon}, {"lat": lat + dlat, "lon": lon}]
     assert 9_500 < mod.polygon_area_m2(square) < 10_500
     assert mod.polygon_area_m2([{"lat": lat, "lon": lon}]) == 0.0
+
+
+# ── OSM "Branche" must be descriptive, not structural noise ────────────────
+
+def test_osm_structural_tags_are_not_stored_as_branche():
+    """Measured on the real register (10 Aug): 563 companies got
+    Branche='company' and 282 got 'works' — OSM's OWN vocabulary for 'this is
+    a business site', not a description of what it does. 'yes' is OSM's
+    generic freeform-tag placeholder and carries no information at all."""
+    from regional.discovery import _osm_branche
+    assert _osm_branche({"office": "company"}) is None
+    assert _osm_branche({"man_made": "works"}) is None
+    assert _osm_branche({"industrial": "yes"}) is None
+    assert _osm_branche({}) is None
+
+
+def test_osm_genuinely_descriptive_tags_are_kept():
+    """These DO say something real about the business and must survive the
+    filter that removes the structural noise above."""
+    from regional.discovery import _osm_branche
+    for val in ("scrap_yard", "slaughterhouse", "sawmill", "grinding_mill"):
+        assert _osm_branche({"industrial": val}) == val

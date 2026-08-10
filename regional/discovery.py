@@ -258,13 +258,31 @@ def from_osm(radius_km: int = 50, center=MEMMINGEN) -> List[Candidate]:
             name=name, source="osm",
             city=tags.get("addr:city"),
             lat=lat, lon=lon,
-            branche=tags.get("industrial") or tags.get("man_made") or tags.get("office"),
+            branche=_osm_branche(tags),
             website=tags.get("website") or tags.get("contact:website"),
             source_url=f"https://www.openstreetmap.org/{el.get('type')}/{el.get('id')}",
             raw={"postcode": tags.get("addr:postcode")},
         ))
     logger.info(f"[Regional] OSM returned {len(out)} named sites")
     return out
+
+
+# OSM's own STRUCTURAL vocabulary for "this is a business site" — not a
+# description of what the business does. Storing these as if they were an
+# industry label produced, on the real register (10 Aug): 563 companies
+# labelled Branche="company" and 282 labelled "works", drowning out the
+# genuinely informative tag values from the same fields ("scrap_yard",
+# "slaughterhouse", "sawmill", "grinding_mill", which DO say something real
+# and are kept). "yes" is OSM's generic freeform-tag placeholder and carries
+# no information at all.
+_NON_DESCRIPTIVE_OSM_VALUES = {"yes", "company", "works"}
+
+
+def _osm_branche(tags: dict) -> Optional[str]:
+    val = tags.get("industrial") or tags.get("man_made") or tags.get("office")
+    if not val or val.lower() in _NON_DESCRIPTIVE_OSM_VALUES:
+        return None
+    return val
 
 
 # ── orchestration ───────────────────────────────────────────────────────────
