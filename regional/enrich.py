@@ -303,14 +303,38 @@ def build_prompt(company, results: List[dict]) -> str:
                           current_year=this_year, previous_year=this_year - 1)
 
 
-def proposals_from_verdict(company, verdict: dict) -> dict:
+def _normalize_for_match(url: str) -> str:
+    """Loose form for citation matching: strip scheme, 'www.', trailing
+    slash. Tolerates the trivial variations a model reproduces a URL with
+    (e.g. dropping https://) without accepting a URL for a different page."""
+    u = (url or "").strip().lower()
+    u = re.sub(r"^https?://", "", u)
+    u = re.sub(r"^www\.", "", u)
+    return u.rstrip("/")
+
+
+def proposals_from_verdict(company, verdict: dict, valid_source_urls=None) -> dict:
     """
     verdict -> {field: {"value": ..., "source_url": ...}}, applying the
     plausibility and official-domain guards. Returns {} when the model says
     the results describe a different company.
+
+    `valid_source_urls`, when given, is the set of URLs the model was ACTUALLY
+    shown in its search results. A finding whose source_url isn't one of them
+    is discarded rather than trusted — live 11 Aug: the model fabricated a
+    plausible-looking Northdata revenue citation for Diehl Controls that
+    never appeared anywhere in its search results (invented value AND
+    invented URL). `None` skips this check, for callers (mainly unit tests)
+    constructing a verdict directly without a real result set; every live
+    call site must pass the real one. This does not replace the
+    official-domain guard on `website` below, which is a different check
+    (is the domain a company's own vs. an aggregator, not was it in-context).
     """
     if not verdict or verdict.get("identity_match") is False:
         return {}
+
+    valid_norm = ({_normalize_for_match(u) for u in valid_source_urls}
+                  if valid_source_urls is not None else None)
 
     out: dict = {}
     for f in verdict.get("findings") or []:
@@ -321,6 +345,12 @@ def proposals_from_verdict(company, verdict: dict) -> dict:
         if raw is None or str(raw).strip() == "":
             continue
         src = (f.get("source_url") or "").strip()
+        if valid_norm is not None and _normalize_for_match(src) not in valid_norm:
+            logger.warning(f"[RegionalEnrich] discarding {attr}={raw!r} for "
+                           f"{company.name!r}: source_url {src!r} was not in "
+                           f"the search results shown to the model (fabricated "
+                           f"citation)")
+            continue
         extra: dict = {}
 
         if attr == "employees":
@@ -476,4 +506,5 @@ async def enrich_one(company) -> dict:
             logger.warning(f"[RegionalEnrich] verify failed for {company.name!r}: {exc}")
             return {}
 
-    return proposals_from_verdict(company, verdict)
+    valid_source_urls = {r.get("url") for r in results if r.get("url")}
+    return proposals_from_verdict(company, verdict, valid_source_urls)

@@ -201,3 +201,61 @@ def test_apply_proposals_never_overwrites_existing_revenue():
                                  "source_url": "https://x.de"}})
     assert co.revenue_eur_millions == 100.0 and co.revenue_year == 2026
     assert res["proposed_only"] == ["revenue_eur_millions"]
+
+
+# ── citation validation: a source_url must trace to an actual search result ─
+#
+# Live 11 Aug: enriching Diehl Controls, the model returned a revenue finding
+# citing https://www.northdata.de/en/company-profile/diehl-controls-germany
+# -- a URL that never appeared anywhere in the 5 search results it was
+# actually shown (confirmed by inspecting the real search() call). It
+# fabricated both the figure (1.06) and the citation. proposals_from_verdict
+# had no way to catch this because it never saw what the model was shown.
+
+def test_finding_with_a_fabricated_source_url_is_discarded():
+    v = {"identity_match": True, "findings": [
+        {"field": "revenue", "verdict": "contradicted",
+         "correct_value": "1,06 Mio. EUR (2025)",
+         "source_url": "https://www.northdata.de/en/company-profile/diehl-controls-germany"}]}
+    valid = {"https://www.schwaebische.de/regional/allgaeu/wangen/x",
+             "https://new.diehl.com/controls/de"}
+    out = enrich.proposals_from_verdict(_co(), v, valid_source_urls=valid)
+    assert out == {}
+
+
+def test_finding_with_a_genuine_source_url_is_kept():
+    v = {"identity_match": True, "findings": [
+        {"field": "employees", "verdict": "contradicted", "correct_value": "540",
+         "source_url": "https://www.schwaebische.de/regional/allgaeu/wangen/x"}]}
+    valid = {"https://www.schwaebische.de/regional/allgaeu/wangen/x"}
+    out = enrich.proposals_from_verdict(_co(), v, valid_source_urls=valid)
+    assert out["employees"]["value"] == 540
+
+
+def test_trivial_url_variants_are_not_treated_as_fabricated():
+    """A model that reproduces a shown URL without 'https://', without
+    'www.', or with/without a trailing slash is repeating what it saw, not
+    inventing a new source -- only a URL that never appeared at all should
+    be rejected."""
+    valid = {"https://www.new.diehl.com/controls/de"}
+    for variant in ("new.diehl.com/controls/de", "https://new.diehl.com/controls/de/",
+                    "http://www.new.diehl.com/controls/de"):
+        v = {"identity_match": True, "findings": [
+            {"field": "branche", "verdict": "contradicted",
+             "correct_value": "Maschinenbau", "source_url": variant}]}
+        out = enrich.proposals_from_verdict(_co(), v, valid_source_urls=valid)
+        assert out.get("branche", {}).get("value") == "Maschinenbau", variant
+
+
+def test_no_valid_source_urls_argument_skips_the_check():
+    """valid_source_urls=None (the default) is for callers that construct a
+    verdict directly without a real result set -- mainly the other unit
+    tests in this file and test_regional_enrich.py, which predate this
+    guard. Every LIVE call site (regional.enrich.enrich_one) always passes
+    the real set; this is what makes omitting it deliberate rather than an
+    accident."""
+    v = {"identity_match": True, "findings": [
+        {"field": "employees", "verdict": "contradicted",
+         "correct_value": "200", "source_url": "https://anything-at-all.de"}]}
+    out = enrich.proposals_from_verdict(_co(), v)
+    assert out["employees"]["value"] == 200
