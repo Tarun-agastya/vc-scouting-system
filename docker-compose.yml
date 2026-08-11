@@ -34,6 +34,32 @@ services:
       timeout: 5s
       retries: 5
 
+  # Self-hosted free web-search fallback (11 Aug 2026), for
+  # ingestion/web_search.py. Sits between Tavily (paid, 1,000 free
+  # credits/month, exhausted by the RC-4 --all-tiers enrichment run) and the
+  # DuckDuckGo HTML scrape (already documented, in that module, as fragile —
+  # it got anti-bot-blocked outright on 24 Jul after ~250 queries). SearXNG
+  # aggregates dozens of upstream engines behind one JSON API we control
+  # ourselves, so there is no external quota to run out and no scraping-vs-
+  # anti-bot arms race. Genuinely free forever — the only cost is local
+  # compute, same as Postgres/Qdrant above.
+  searxng:
+    image: searxng/searxng:latest
+    container_name: vc_searxng
+    restart: unless-stopped
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/search?q=health&format=json"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
 volumes:
   postgres_data:
   qdrant_data:

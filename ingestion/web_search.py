@@ -31,6 +31,18 @@ unconfigured or its call fails) — it fails SAFELY (empty results, clearly
 logged), unlike Bing's decoy-content risk, so it's a reasonable last resort
 rather than a liability.
 
+11 Aug 2026 — added SearXNG, self-hosted (docker-compose.yml's `searxng`
+service), BETWEEN Tavily and DuckDuckGo. Motivation: Tavily's free tier is
+1,000 credits/month, shared across every caller of this module — a single
+~1,000-company regional-enrichment batch exhausted it outright mid-run (the
+"432" responses in that run's log). SearXNG aggregates dozens of upstream
+engines behind our own JSON API, so it has no external quota to run out and
+no scraping-vs-anti-bot arms race — genuinely free forever, at the cost of
+local compute only, same as Postgres/Qdrant. Placed ahead of DuckDuckGo
+specifically because DuckDuckGo's OWN scrape is the thing that failed first,
+20 lines above — SearXNG is the more robust free option, not an equal
+alternative to it.
+
 This whole module is the ONE explicit exception to the "all inference stays
 local" invariant (A.1) — the search query (a public startup name) leaves the
 machine; the LLM reasoning over the results still runs locally.
@@ -115,6 +127,36 @@ def _search_tavily(query: str, max_results: int, timeout: float) -> list:
     ][:max_results]
 
 
+# ── SearXNG (free fallback — self-hosted, no quota, no key) ─────────────────
+
+def _search_searxng(query: str, max_results: int, timeout: float) -> list:
+    from config import settings
+
+    resp = httpx.get(
+        f"{settings.searxng_url.rstrip('/')}/search",
+        params={"q": query, "format": "json", "language": "de"},
+        timeout=timeout,
+    )
+    # A non-2xx here is almost always "the container isn't up" (connection
+    # refused raises before this point) or a misconfigured instance (JSON
+    # format not enabled -> 403). Either way: unavailable, try the next
+    # provider — never crash the batch over an optional local service.
+    resp.raise_for_status()
+    data = resp.json()
+
+    return [
+        {
+            "title": r.get("title", ""),
+            "url": r.get("url", ""),
+            # SearXNG's JSON schema calls this field "content", not "snippet"
+            # — the one real difference from Tavily's/DuckDuckGo's shape.
+            "snippet": r.get("content", ""),
+        }
+        for r in data.get("results", [])
+        if r.get("url")
+    ][:max_results]
+
+
 # ── DuckDuckGo (fallback — fails safely, empty results, no decoy risk) ──────
 
 _DDG_URL = "https://html.duckduckgo.com/html/"
@@ -164,13 +206,18 @@ def _search_duckduckgo(query: str, max_results: int, timeout: float) -> list:
     return results
 
 
-_PROVIDERS = [("tavily", _search_tavily), ("duckduckgo", _search_duckduckgo)]
+_PROVIDERS = [
+    ("tavily", _search_tavily),
+    ("searxng", _search_searxng),
+    ("duckduckgo", _search_duckduckgo),
+]
 
 
 def search(query: str, max_results: int = 5, timeout: float = 15.0) -> list:
     """
     Query the web via whichever provider actually works, in order (Tavily,
-    then DuckDuckGo as fallback). Synchronous (matches
+    then self-hosted SearXNG, then DuckDuckGo as a last resort). Synchronous
+    (matches
     reasoning/qwen_client.py's sync-client pattern; the caller dispatches it
     off the event loop via run_in_executor, same as every Ollama call).
 

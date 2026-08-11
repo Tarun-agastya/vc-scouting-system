@@ -1,0 +1,38 @@
+# SearXNG config for the local free web-search fallback (11 Aug 2026).
+# See ingestion/web_search.py for the client, and the comment above the
+# `searxng` service in docker-compose.yml for why this exists.
+#
+# use_default_settings: true means we inherit SearXNG's full built-in engine
+# list (Google, Bing, DuckDuckGo, Wikipedia, and dozens more) and only
+# override what's actually needed below — never hand-maintain 70+ engines.
+use_default_settings: true
+
+general:
+  instance_name: "vc-scouting-local-search"
+  # This instance is never exposed to the internet — it's bound to
+  # localhost:8888 for one trusted local consumer (ingestion/web_search.py).
+  # Contributing anonymised usage stats back to SearXNG's public stats
+  # collector would be pointless for a private single-user instance.
+  donation_url: false
+  contact_url: false
+  enable_metrics: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  # JSON is OFF by default in SearXNG (a 403 otherwise) — this is the one
+  # setting that actually matters here.
+  formats:
+    - html
+    - json
+
+server:
+  # Not a documented default value — generated locally for this instance.
+  # Low-stakes either way (CSRF/cookie signing only; never internet-facing),
+  # but a real random secret costs nothing to set correctly.
+  secret_key: "fe8430ab6e2ee941cbda219109964a5d6a6040f734a1c244b32244eb0d423047"
+  # The request-rate limiter exists to stop a PUBLIC instance being abused by
+  # strangers. This instance has exactly one caller — our own pipeline, on
+  # the same machine — so the limiter would only ever throttle ourselves.
+  limiter: false
+  image_proxy: false

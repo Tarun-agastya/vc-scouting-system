@@ -103,8 +103,16 @@ class Settings(BaseSettings):
     # Tavily (Phase W web verification search backend, 24 Jul — replaces the
     # DuckDuckGo HTML scrape, which an anti-bot block made unreliable; see
     # ingestion/web_search.py's module docstring for the full evaluation).
-    # Optional — if unset, ingestion.web_search falls back to DuckDuckGo.
+    # Optional — if unset, ingestion.web_search falls back to SearXNG/DuckDuckGo.
     tavily_api_key: Optional[str] = None
+
+    # SearXNG (11 Aug 2026) — self-hosted, free web-search fallback used
+    # BETWEEN Tavily and the DuckDuckGo scrape. Runs as the `searxng` service
+    # in docker-compose.yml; see the comment there and
+    # ingestion/web_search.py for why it exists. No API key: it's our own
+    # container. Only the base URL is configurable (e.g. if the port is ever
+    # remapped, or a shared instance is used instead of the local one).
+    searxng_url: str = "http://localhost:8888"
 
     # API
     api_host: str = "0.0.0.0"
