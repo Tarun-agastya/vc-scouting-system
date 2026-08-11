@@ -8,9 +8,11 @@
 
    The table keeps the team's own Excel column order so the page reads as the
    familiar artefact. Two halves with different owners:
-     · Standort / Mitarbeiter / Branche / Kurzbeschreibung are machine-
-       gathered and each carry a source link — hover the ⓘ to see where a
-       value came from.
+     · Standort / Mitarbeiter / Umsatz / Branche / Kurzbeschreibung are
+       machine-gathered and each carry a source link — hover the ⓘ to see
+       where a value came from. Umsatz is a FALLBACK qualifying signal
+       (11 Aug 2026) — many established firms don't publish a headcount, so a
+       recent, sourced EUR 25m+ revenue figure counts just as much.
      · Prio / Status / Phase / Kontakt / Wer hat Kontakt are HUMAN-ONLY and
        editable here; no automated step ever writes them.
    ══════════════════════════════════════════════════════════════════════════ */
@@ -36,7 +38,7 @@ export default {
   async mount(el) {
     const state = {
       q: "", tier: "", branche: "", city: "", status: "",
-      maxDistance: "", minEmployees: "", maxEmployees: "",
+      maxDistance: "", minEmployees: "", maxEmployees: "", minRevenue: "",
       missingEmployees: false, sort: "distance",
       limit: 100, offset: 0, total: 0, rows: [], selected: null,
     };
@@ -64,6 +66,7 @@ export default {
             </select>
             <input class="input" id="rc-minemp" type="number" placeholder="MA ab" style="max-width:100px">
             <input class="input" id="rc-maxemp" type="number" placeholder="MA bis" style="max-width:100px">
+            <input class="input" id="rc-minrev" type="number" placeholder="Umsatz ab (Mio. €)" style="max-width:150px">
             <select class="select" id="rc-sort" style="max-width:180px">
               <option value="distance">Nach Entfernung</option>
               <option value="employees">Nach Mitarbeitern</option>
@@ -104,6 +107,7 @@ export default {
         max_distance: state.maxDistance || undefined,
         min_employees: state.minEmployees || undefined,
         max_employees: state.maxEmployees || undefined,
+        min_revenue: state.minRevenue || undefined,
         missing_employees: state.missingEmployees || undefined,
       };
     }
@@ -160,6 +164,7 @@ export default {
           <div class="kpi"><div class="kpi__label">Bereit (Stufe 1)</div><div class="kpi__value">${fmt.num(tier(1))}</div></div>
           <div class="kpi"><div class="kpi__label">Anzureichern (Stufe 2)</div><div class="kpi__value">${fmt.num(tier(2))}</div></div>
           <div class="kpi"><div class="kpi__label">Mit Mitarbeiterzahl</div><div class="kpi__value">${fmt.num(s.with_employees)}</div></div>
+          <div class="kpi"><div class="kpi__label">Mit Umsatz</div><div class="kpi__value">${fmt.num(s.with_revenue)}</div></div>
           <div class="kpi"><div class="kpi__label">Kontaktiert</div><div class="kpi__value">${fmt.num(s.contacted)}</div></div>`;
       } catch { /* KPIs are a convenience */ }
     }
@@ -191,6 +196,15 @@ export default {
       render();
     }
 
+    /** "45,2 Mio. EUR (2025)" — mirrors the exact format the enrichment
+     *  prompt asks the model for, so the dashboard reads like the source. */
+    function formatRevenue(row) {
+      if (row.revenue_eur_millions == null) return null;
+      const num = row.revenue_eur_millions.toLocaleString("de-DE", { maximumFractionDigits: 1 });
+      const year = row.revenue_year ? ` (${row.revenue_year})` : "";
+      return `${num} Mio. €${year}`;
+    }
+
     /** Machine-gathered values show a ⓘ linking to their source. This is the
      *  register's core promise — every number can be traced, nothing has to
      *  be taken on trust. */
@@ -212,7 +226,8 @@ export default {
       tableEl.innerHTML = `
         <thead><tr>
           <th>Name</th><th>Standort</th><th style="text-align:right">km</th>
-          <th style="text-align:right">Mitarbeiter</th><th>Branche</th>
+          <th style="text-align:right">Mitarbeiter</th><th style="text-align:right">Umsatz</th>
+          <th>Branche</th>
           <th>Kurzbeschreibung</th><th>Status</th><th>Prio</th><th>Stufe</th>
         </tr></thead>
         <tbody>${state.rows.map((r) => {
@@ -225,6 +240,7 @@ export default {
             <td>${cite(r, "city", r.city)}</td>
             <td style="text-align:right" class="mono">${r.distance_km != null ? r.distance_km.toFixed(0) : "—"}</td>
             <td style="text-align:right" class="mono">${cite(r, "employees", r.employees)}</td>
+            <td style="text-align:right" class="mono">${cite(r, "revenue_eur_millions", formatRevenue(r))}</td>
             <td>${cite(r, "branche", r.branche)}</td>
             <td class="truncate" style="max-width:320px">${esc(r.kurzbeschreibung, "—")}</td>
             <td>${r.status ? `<span class="chip">${esc(r.status)}</span>` : '<span class="dim">—</span>'}</td>
@@ -334,6 +350,7 @@ export default {
     $("#rc-dist").addEventListener("change", (e) => { state.maxDistance = e.target.value; reload(); });
     $("#rc-minemp").addEventListener("input", debounce((e) => { state.minEmployees = e.target.value; reload(); }, 400));
     $("#rc-maxemp").addEventListener("input", debounce((e) => { state.maxEmployees = e.target.value; reload(); }, 400));
+    $("#rc-minrev").addEventListener("input", debounce((e) => { state.minRevenue = e.target.value; reload(); }, 400));
     $("#rc-sort").addEventListener("change", (e) => { state.sort = e.target.value; reload(); });
     $("#rc-missing").addEventListener("change", (e) => { state.missingEmployees = e.target.checked; reload(); });
     $("#rc-prev").addEventListener("click", () => {

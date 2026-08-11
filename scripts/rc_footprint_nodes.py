@@ -88,8 +88,14 @@ def main() -> int:
 
         if args.apply:
             for c in promotable:
+                # Pass revenue through too, even though this script never sets it
+                # itself — a footprint-triggered recompute must not silently
+                # regress a company an earlier enrichment run already
+                # qualified via revenue.
                 c.triage_tier = triage.tier_for(employees=c.employees, source=c.source,
-                                                footprint_m2=c.footprint_m2)
+                                                footprint_m2=c.footprint_m2,
+                                                revenue_eur_millions=c.revenue_eur_millions,
+                                                revenue_year=c.revenue_year)
             db.commit()
             print(f"\n  ✓ stored {matched} proxy footprints, "
                   f"promoted {len(promotable)} into the enrichment queue")

@@ -51,8 +51,18 @@ def run():
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_regional_companies_footprint "
             "ON regional_companies (footprint_m2)"))
+        # Added 11 Aug — revenue as a second qualifying signal, see models.py.
+        conn.execute(text(
+            "ALTER TABLE regional_companies "
+            "ADD COLUMN IF NOT EXISTS revenue_eur_millions DOUBLE PRECISION"))
+        conn.execute(text(
+            "ALTER TABLE regional_companies "
+            "ADD COLUMN IF NOT EXISTS revenue_year INTEGER"))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_regional_companies_revenue "
+            "ON regional_companies (revenue_eur_millions)"))
         conn.commit()
-    print("  ✓  triage_tier column + index present")
+    print("  ✓  triage_tier / footprint_m2 / revenue columns + indexes present")
 
     # Backfill: recompute for every row whose tier is unset. Cheap, idempotent,
     # and it means an existing register gets tiers without a separate script.

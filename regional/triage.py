@@ -20,12 +20,24 @@ plants of foreign parents AND the worst precision on corner shops.
 This is a prior, not a verdict: a tier-3 record is deprioritised, never
 discarded. If a human filters to tier 3 and finds a real prospect, that costs
 nothing but a click.
+
+11 Aug 2026 — added revenue as a second, independent qualifying signal
+alongside employees, not a replacement for it: many established Mittelstand
+firms simply don't publish a headcount, but a recent, sourced revenue figure
+(EUR 25m+, dated to the current or prior fiscal year — see
+regional.filters.meets_revenue_threshold) is equally strong evidence of
+scale. Employees still decides first when known; revenue only ever fills the
+gap when it isn't.
 """
 from __future__ import annotations
 
 from typing import Optional
 
-from regional.filters import DEFAULT_MAX_EMPLOYEES, DEFAULT_MIN_EMPLOYEES
+from regional.filters import (
+    DEFAULT_MAX_EMPLOYEES,
+    DEFAULT_MIN_EMPLOYEES,
+    meets_revenue_threshold,
+)
 
 TIER_READY = 1        # headcount known, inside the band
 TIER_ENRICH = 2       # notability-filtered source, headcount unknown
@@ -61,10 +73,26 @@ LARGE_FOOTPRINT_M2 = 10_000.0
 
 def tier_for(*, employees: Optional[int], source: Optional[str],
              footprint_m2: Optional[float] = None,
+             revenue_eur_millions: Optional[float] = None,
+             revenue_year: Optional[int] = None,
              lo: int = DEFAULT_MIN_EMPLOYEES,
              hi: int = DEFAULT_MAX_EMPLOYEES) -> int:
     if employees is not None:
         return TIER_READY if lo <= employees <= hi else TIER_OUT_OF_BAND
+
+    # Revenue is the FALLBACK qualifying signal (11 Aug 2026, owner) — used
+    # only when headcount is unknown, never as an override when it is known.
+    # Many established Mittelstand firms don't publish a headcount at all,
+    # but a recent, sourced revenue figure is equally strong evidence of
+    # scale. Only fires when the figure is fresh enough to trust (current
+    # year or the one prior) — see filters.meets_revenue_threshold. A stale
+    # or undated figure returns None here and falls through to the existing
+    # footprint/source-based prior below, exactly as if revenue were unknown.
+    revenue_verdict = meets_revenue_threshold(revenue_eur_millions, revenue_year)
+    if revenue_verdict is True:
+        return TIER_READY
+    if revenue_verdict is False:
+        return TIER_OUT_OF_BAND
 
     # A big mapped site earns the enrichment queue regardless of source. This
     # is what makes the OSM pile tractable: enriching all 978 would cost ~27h

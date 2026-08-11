@@ -48,6 +48,8 @@ EXPORT_COLUMNS = [
     ("city", "Standort"),
     ("distance_km", "Entfernung (km)"),
     ("employees", "Mitarbeiter"),
+    ("revenue_eur_millions", "Umsatz (Mio. EUR)"),
+    ("revenue_year", "Umsatz Jahr"),
     ("branche", "Branche"),
     ("kurzbeschreibung", "Kurzbeschreibung"),
     ("website", "Website"),
@@ -72,6 +74,8 @@ def _row(c: RegionalCompany) -> dict:
         "distance_km": c.distance_km,
         "in_radius": c.in_radius,
         "employees": c.employees,
+        "revenue_eur_millions": c.revenue_eur_millions,
+        "revenue_year": c.revenue_year,
         "branche": c.branche,
         "kurzbeschreibung": c.kurzbeschreibung,
         "website": c.website,
@@ -93,7 +97,8 @@ def _row(c: RegionalCompany) -> dict:
 
 def _filtered(db: Session, *, q=None, tier=None, status=None, branche=None,
               city=None, min_employees=None, max_employees=None,
-              max_distance=None, in_radius=True, missing_employees=False):
+              min_revenue=None, max_distance=None, in_radius=True,
+              missing_employees=False):
     query = db.query(RegionalCompany)
 
     if in_radius is not None:
@@ -118,6 +123,12 @@ def _filtered(db: Session, *, q=None, tier=None, status=None, branche=None,
         query = query.filter(RegionalCompany.employees >= min_employees)
     if max_employees is not None:
         query = query.filter(RegionalCompany.employees <= max_employees)
+    if min_revenue is not None:
+        # A plain floor, no band — see regional.filters.REVENUE_THRESHOLD_EUR_MILLIONS.
+        # Deliberately does NOT require freshness here: this is a manual
+        # dashboard filter for a human to browse, not the automated tier
+        # decision, so a stale-but-real figure is still worth surfacing.
+        query = query.filter(RegionalCompany.revenue_eur_millions >= min_revenue)
     if max_distance is not None:
         query = query.filter(RegionalCompany.distance_km <= max_distance)
     if missing_employees:
@@ -134,6 +145,7 @@ async def list_regional(
     city: Optional[str] = None,
     min_employees: Optional[int] = None,
     max_employees: Optional[int] = None,
+    min_revenue: Optional[float] = None,
     max_distance: Optional[float] = None,
     in_radius: bool = True,
     missing_employees: bool = False,
@@ -149,8 +161,8 @@ async def list_regional(
 
     query = _filtered(db, q=q, tier=tier, status=status, branche=branche, city=city,
                       min_employees=min_employees, max_employees=max_employees,
-                      max_distance=max_distance, in_radius=in_radius,
-                      missing_employees=missing_employees)
+                      min_revenue=min_revenue, max_distance=max_distance,
+                      in_radius=in_radius, missing_employees=missing_employees)
     total = query.count()
 
     # Nearest-first by default: for partnership outreach a company 3 km away
@@ -200,6 +212,8 @@ async def stats(db: Session = Depends(get_db)):
                            .filter(RegionalCompany.in_radius.is_(False)).count(),
         "with_employees": in_radius.filter(
             RegionalCompany.employees.isnot(None)).count(),
+        "with_revenue": in_radius.filter(
+            RegionalCompany.revenue_eur_millions.isnot(None)).count(),
         "contacted": in_radius.filter(RegionalCompany.status.isnot(None)).count(),
         "by_tier": [{"tier": t, "label": LABELS.get(t, "?"), "count": n}
                     for t, n in sorted(by_tier.items(), key=lambda kv: (kv[0] is None, kv[0]))],
@@ -263,6 +277,7 @@ async def export_csv(
     city: Optional[str] = None,
     min_employees: Optional[int] = None,
     max_employees: Optional[int] = None,
+    min_revenue: Optional[float] = None,
     max_distance: Optional[float] = None,
     in_radius: bool = True,
     missing_employees: bool = False,
@@ -279,8 +294,8 @@ async def export_csv(
     """
     rows = _filtered(db, q=q, tier=tier, status=status, branche=branche, city=city,
                      min_employees=min_employees, max_employees=max_employees,
-                     max_distance=max_distance, in_radius=in_radius,
-                     missing_employees=missing_employees) \
+                     min_revenue=min_revenue, max_distance=max_distance,
+                     in_radius=in_radius, missing_employees=missing_employees) \
         .order_by(RegionalCompany.distance_km.asc().nullslast()).all()
 
     buf = io.StringIO()

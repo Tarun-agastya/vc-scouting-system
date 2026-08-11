@@ -417,6 +417,19 @@ class RegionalCompany(Base):
     branche          = Column(String(255))               # "Branche"
     kurzbeschreibung = Column(Text)                      # "Kurzbeschreibung"
 
+    # Annual revenue (Umsatz), in millions of EUR, added 11 Aug 2026 — a
+    # second, independent qualifying signal alongside `employees`. Many
+    # established Mittelstand firms simply don't publish a headcount, but a
+    # recent, sourced revenue figure is equally strong evidence of scale.
+    # revenue_year is the fiscal year the figure applies to — REQUIRED for
+    # the value to be trusted for automated qualification (see
+    # regional.filters.meets_revenue_threshold): a number with no year, or an
+    # old one, is stored for a human to see but is never used to promote or
+    # disqualify a company on its own. Never guessed — always paired with a
+    # citation in field_sources, same as every other machine-gathered field.
+    revenue_eur_millions = Column(Float, index=True)
+    revenue_year         = Column(Integer)
+
     # ── geography (computed once at import, refreshed only if city changes) ─
     lat         = Column(Float)
     lon         = Column(Float)

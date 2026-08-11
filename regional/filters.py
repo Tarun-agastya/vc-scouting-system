@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,55 @@ def in_employee_band(employees, *, lo: int = DEFAULT_MIN_EMPLOYEES,
     headcount returns False here — callers decide separately whether to keep
     unsized candidates for enrichment (RC-4 does; a final report should not)."""
     return employees is not None and lo <= employees <= hi
+
+
+# Revenue as a SECOND, independent qualifying signal (11 Aug 2026, owner):
+# many established Mittelstand firms simply don't publish a headcount, but a
+# recent, sourced revenue figure is equally strong evidence of scale. Owner's
+# own words: "the threshold is 25 million at least if its lower we will not
+# consider and skip" — a floor, not a band (unlike employees, there is no
+# upper revenue cutoff; a large, well-documented revenue figure is never
+# grounds to exclude a company).
+REVENUE_THRESHOLD_EUR_MILLIONS = 25.0
+
+# "needs to be the latest which is of the latest year or the previous year" —
+# a revenue figure is only trusted for an automated decision if it is dated
+# to the current fiscal year or the one immediately before it. Older or
+# undated figures are still stored (a human can see them via their citation)
+# but are never used to auto-qualify or auto-disqualify a company.
+REVENUE_MAX_AGE_YEARS = 1
+
+
+def meets_revenue_threshold(revenue_eur_millions, revenue_year, *,
+                            min_revenue: float = REVENUE_THRESHOLD_EUR_MILLIONS,
+                            max_age_years: int = REVENUE_MAX_AGE_YEARS,
+                            as_of_year: Optional[int] = None) -> Optional[bool]:
+    """
+    Three-way answer, never a guess:
+
+      True  — revenue is known, dated to the current year or the one prior,
+              and meets the EUR 25m floor.
+      False — revenue is known and fresh enough to trust, but BELOW the
+              floor. Per the owner's own instruction, this is treated exactly
+              like a headcount outside the employee band: skip.
+      None  — revenue is unknown, OR known but undated / too old to trust for
+              an automated decision. The value may still be worth showing a
+              human (it stays in the database with its citation) — it simply
+              cannot decide the tier on its own. "Unknown" is never silently
+              read as "too small", the same discipline `in_employee_band`
+              and the footprint proxy already apply.
+
+    `as_of_year` is only ever overridden by tests (so the freshness window is
+    testable without depending on wall-clock time); production code always
+    uses the real current year.
+    """
+    if revenue_eur_millions is None:
+        return None
+    if as_of_year is None:
+        as_of_year = datetime.utcnow().year
+    if revenue_year is None or revenue_year < as_of_year - max_age_years:
+        return None
+    return revenue_eur_millions >= min_revenue
 
 # Legal-form and generic suffixes to ignore when comparing names.
 _LEGAL_SUFFIX_RE = re.compile(

@@ -90,8 +90,8 @@ async def run(args) -> int:
         print(f"{mode}: enriching {len(targets)} companies "
               f"(1 search + 1 local LLM call each)\n")
 
-        stats = {"processed": 0, "no_result": 0,
-                 "filled": 0, "proposed_only": 0, "employees_found": 0}
+        stats = {"processed": 0, "no_result": 0, "filled": 0,
+                 "proposed_only": 0, "employees_found": 0, "revenue_found": 0}
 
         for i, company in enumerate(targets, 1):
             d = f"{company.distance_km:.0f}km" if company.distance_km is not None else "?"
@@ -140,8 +140,20 @@ async def run(args) -> int:
                 stats["proposed_only"] += len(res["proposed_only"])
                 if "employees" in res["filled"]:
                     stats["employees_found"] += 1
+                if "revenue_eur_millions" in res["filled"]:
+                    stats["revenue_found"] += 1
+                # Recompute whenever EITHER qualifying signal was filled —
+                # revenue can now promote/disqualify a company on its own,
+                # same as employees always could. Pass every signal already
+                # on the row (not just what THIS call filled), so a footprint
+                # or revenue value from an earlier run is never silently
+                # dropped by a recompute that only knows about today's finding.
+                if "employees" in res["filled"] or "revenue_eur_millions" in res["filled"]:
                     company.triage_tier = triage.tier_for(
-                        employees=company.employees, source=company.source)
+                        employees=company.employees, source=company.source,
+                        footprint_m2=company.footprint_m2,
+                        revenue_eur_millions=company.revenue_eur_millions,
+                        revenue_year=company.revenue_year)
                 db.commit()
 
         print(f"\n{'='*70}")
@@ -152,6 +164,7 @@ async def run(args) -> int:
         if args.apply:
             print(f"  fields filled      {stats['filled']}")
             print(f"  headcounts found   {stats['employees_found']}")
+            print(f"  revenues found     {stats['revenue_found']}")
             print(f"  differed (kept for a human, not overwritten) {stats['proposed_only']}")
         else:
             print("\n  Nothing written. Re-run with --apply.")

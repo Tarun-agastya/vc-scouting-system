@@ -1,8 +1,25 @@
 """
 Field enrichment for the regional register (Phase RC-4).
 
-Fills Mitarbeiter / Branche / Kurzbeschreibung / Website from live web search,
-with a source URL recorded per field.
+Fills Mitarbeiter / Branche / Kurzbeschreibung / Website / Umsatz from live
+web search, with a source URL recorded per field.
+
+REVENUE (11 Aug 2026, owner) is a second, independent qualifying signal
+alongside Mitarbeiter — many established Mittelstand firms simply don't
+publish a headcount, but a recent, sourced revenue figure is equally strong
+evidence of scale (EUR 25m floor; see regional.filters/triage). Two
+requirements the owner stated explicitly shape how it's parsed and gated:
+
+  1. AUTHENTIC — never guessed. `_parse_revenue` only accepts a figure that
+     carries a recognisable unit (Mio./Million/Mrd./Billion, or a full raw
+     EUR amount) — a bare unitless number is rejected as ambiguous rather
+     than assumed to already be in millions.
+  2. LATEST — the fiscal YEAR the figure applies to is parsed out alongside
+     the amount and stored separately (`revenue_year`). A figure with no
+     year, or an old one, is still stored (a human can see it via its
+     citation) but `regional.filters.meets_revenue_threshold` refuses to use
+     it to automatically qualify or disqualify a company — see that
+     function's docstring for the exact freshness rule.
 
 ISOLATION — this is the point of the module (owner, 7 Aug: "don't mix this
 with our main pipeline"). It imports exactly three things from the rest of the
@@ -57,9 +74,13 @@ FIELD_ALIASES = {
     "short_description": "kurzbeschreibung", "summary": "kurzbeschreibung",
     "website": "website", "url": "website", "homepage": "website",
     "city": "city", "standort": "city", "location": "city",
+    "revenue": "revenue_eur_millions", "umsatz": "revenue_eur_millions",
+    "jahresumsatz": "revenue_eur_millions", "turnover": "revenue_eur_millions",
+    "annual_revenue": "revenue_eur_millions", "sales": "revenue_eur_millions",
 }
 
-ENRICHABLE = ("employees", "branche", "kurzbeschreibung", "website", "city")
+ENRICHABLE = ("employees", "branche", "kurzbeschreibung", "website", "city",
+              "revenue_eur_millions")
 
 # Aggregator/social/directory hosts that are never a company's own site.
 # Same guard as the startup path applies, restated here rather than imported
@@ -85,7 +106,7 @@ Search results:
 {results}
 
 For each field you can establish from the results, return a finding with:
-  field         one of: employees, branche, kurzbeschreibung, website
+  field         one of: employees, branche, kurzbeschreibung, website, revenue
   verdict       "confirmed" if the known value is right, "contradicted" if the
                 results give a different or a previously-missing value
   correct_value the value the results support
@@ -101,8 +122,20 @@ omit the finding entirely.
 company actually makes or does.
   - website: the company's OWN domain. Never LinkedIn, Wikipedia, Northdata, \
 Kununu, a job board or any directory.
-  - Set identity_match=false if the results are clearly about a DIFFERENT \
-company that merely shares the name. Do not return findings in that case.
+  - revenue: the company's most recent ANNUAL revenue (Jahresumsatz/Umsatz), \
+formatted EXACTLY as "<number> Mio. EUR (<year>)", e.g. "45,2 Mio. EUR (2025)" \
+or "128 Mio. EUR (2024)". The year is REQUIRED and must be the source's own \
+stated fiscal year — never your estimate, never a "current run-rate", never a \
+figure with no year attached. Only report it if that year is {current_year} \
+or {previous_year} — if every figure you find is older than that, omit the \
+finding entirely rather than reporting a stale number.
+  - IMPORTANT: identity_match is not "do the results confirm every known \
+value" -- an empty known value is normal (that's what we're trying to fill) \
+and must never make the model say identity_match=false. \
+identity_match is about whether the search results are about THIS company \
+at all -- set it to true whenever they are, even if they only confirm SOME \
+fields and say nothing about others. Set it to false ONLY if the results are \
+clearly about a DIFFERENT, unrelated company that merely shares the name.
   - Never guess. A missing finding is always better than a fabricated value.
 """
 
@@ -155,6 +188,96 @@ def _parse_employees(raw) -> Optional[int]:
     return val if 1 <= val <= 500_000 else None
 
 
+# "45,2 Mio. EUR (2025)" / "128 Mio EUR" / "1,2 Mrd. Euro (2024)" / a bare
+# 6+ digit EUR amount. Requires a recognisable magnitude UNIT or a long raw
+# digit run — see _parse_revenue's docstring for why a bare small number is
+# rejected rather than assumed to already be in millions.
+_REVENUE_UNIT_RE = re.compile(
+    r"([\d]+(?:[.,]\d+)*)\s*"
+    r"(mio\.?|million\w*|mrd\.?|milliard\w*|billion\w*|md\.?)",
+    re.IGNORECASE)
+_REVENUE_RAW_RE = re.compile(r"\b(\d{6,})\b")
+_YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
+
+_BILLION_UNITS = ("mrd", "milliard", "billion", "md")
+
+# Sanity bounds on the final MILLIONS-of-EUR figure, catching a parsing bug
+# rather than any real company: below is not company-scale revenue at all
+# (more likely a misparsed phone number or postcode fragment); above is
+# larger than Volkswagen Group's global revenue, implausible for anything
+# this register would ever encounter.
+_MIN_PLAUSIBLE_REVENUE_M = 0.01
+_MAX_PLAUSIBLE_REVENUE_M = 1_000_000.0
+
+
+def _parse_number(num_str: str) -> Optional[float]:
+    """'45,2' (German decimal) or '45.2' (already normalised) -> 45.2.
+    '1.234,5' (German thousands+decimal) -> 1234.5.
+    '1,234.5' (English thousands+decimal) -> 1234.5.
+
+    Whichever of '.'/',' occurs LAST is the decimal separator; every earlier
+    occurrence of either is a thousands separator and is dropped. A bare
+    single separator (no repeats) is handled the same way, since the 'last
+    occurrence' rule degenerates correctly to the old two-case logic."""
+    s = num_str.strip()
+    last_dot, last_comma = s.rfind("."), s.rfind(",")
+    if last_dot == -1 and last_comma == -1:
+        pass
+    elif last_comma > last_dot:
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", "")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _parse_revenue(raw) -> Optional[tuple]:
+    """
+    '45,2 Mio. EUR (2025)' -> (45.2, 2025). Returns (value_in_millions, year)
+    where year is None if the source text carried no 4-digit year — the
+    caller decides what an undated figure is worth (see this module's and
+    filters.meets_revenue_threshold's docstrings: never used to auto-qualify,
+    but still stored for a human to see).
+
+    Deliberately conservative on the magnitude: a bare unitless number (e.g.
+    the model just returning "45") is REJECTED rather than assumed to already
+    be denominated in millions — that assumption would silently be one guess
+    away from being off by a factor of a thousand. Only a figure carrying an
+    explicit Mio./Mrd./Million/Billion unit, or a full 6+ digit raw EUR
+    amount, is accepted.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+
+    year_m = _YEAR_RE.search(text)
+    year = int(year_m.group(0)) if year_m else None
+    # Strip the year before parsing the amount, so "(2025)" is never
+    # mistaken for part of the revenue figure itself.
+    text_wo_year = _YEAR_RE.sub("", text) if year_m else text
+
+    unit_m = _REVENUE_UNIT_RE.search(text_wo_year)
+    if unit_m:
+        num = _parse_number(unit_m.group(1))
+        if num is None:
+            return None
+        millions = num * 1000.0 if unit_m.group(2).lower().startswith(_BILLION_UNITS) else num
+    else:
+        raw_m = _REVENUE_RAW_RE.search(text_wo_year)
+        if not raw_m:
+            return None  # unitless and short -> ambiguous, refuse to guess
+        millions = int(raw_m.group(1)) / 1_000_000.0
+
+    if not (_MIN_PLAUSIBLE_REVENUE_M <= millions <= _MAX_PLAUSIBLE_REVENUE_M):
+        return None
+
+    return (round(millions, 2), year)
+
+
 def build_query(company) -> str:
     """SME-shaped, NOT startup-shaped. Deliberately different from
     web_verifier._build_search_query, which appends 'startup founded'."""
@@ -174,8 +297,10 @@ def build_prompt(company, results: List[dict]) -> str:
             for r in results)
     else:
         rendered = "(no results found)"
+    this_year = datetime.utcnow().year
     return _PROMPT.format(name=company.name, city=company.city or "unknown",
-                          fields=known, results=rendered)
+                          fields=known, results=rendered,
+                          current_year=this_year, previous_year=this_year - 1)
 
 
 def proposals_from_verdict(company, verdict: dict) -> dict:
@@ -196,6 +321,7 @@ def proposals_from_verdict(company, verdict: dict) -> dict:
         if raw is None or str(raw).strip() == "":
             continue
         src = (f.get("source_url") or "").strip()
+        extra: dict = {}
 
         if attr == "employees":
             val = _parse_employees(raw)
@@ -209,12 +335,19 @@ def proposals_from_verdict(company, verdict: dict) -> dict:
                 logger.info(f"[RegionalEnrich] rejected non-official website for "
                             f"{company.name!r}: {val!r}")
                 continue
+        elif attr == "revenue_eur_millions":
+            parsed = _parse_revenue(raw)
+            if parsed is None:
+                logger.info(f"[RegionalEnrich] unparseable/unitless revenue for "
+                            f"{company.name!r}: {raw!r}")
+                continue
+            val, extra["year"] = parsed
         else:
             val = " ".join(str(raw).split())
             if not val:
                 continue
 
-        out[attr] = {"value": val, "source_url": src}
+        out[attr] = {"value": val, "source_url": src, **extra}
     return out
 
 
@@ -232,6 +365,12 @@ def apply_proposals(company, proposals: dict) -> dict:
             setattr(company, attr, p["value"])
             sources[attr] = p["source_url"]
             filled.append(attr)
+            # revenue_eur_millions and revenue_year are always a pair — the
+            # year is a companion to the amount, not a separately-citable
+            # field, so it rides along here rather than getting its own
+            # proposal entry / its own line in the sources list.
+            if attr == "revenue_eur_millions" and "year" in p:
+                company.revenue_year = p["year"]
         elif str(current).strip() != str(p["value"]).strip():
             # Disagreement with an existing value is recorded, not applied —
             # a human decides. Mirrors the project's never-auto-overwrite rule.
