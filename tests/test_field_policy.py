@@ -6,7 +6,7 @@ ones that shaped better_freetext's design — sampled live from the pending
 review queue before writing the rule, not invented afterward to fit it.
 """
 from processing.field_policy import (
-    better_freetext, is_empty, norm_value, split_proposal,
+    _detect_language, better_freetext, is_empty, norm_value, split_proposal,
 )
 
 
@@ -50,6 +50,25 @@ def test_genuine_tie_keeps_old_not_churn():
     old = "Builds AI agents for insurance companies handling claims intake."
     new = "Offers AI agents for insurance companies handling claims intake."
     assert better_freetext(old, new) == old
+
+
+def test_carboninsights_language_swap_is_rejected():
+    """The real case found live dry-running the backlog drain, BEFORE this
+    guard existed: a longer German candidate would have silently replaced a
+    real English description purely on length. 95 of 339 non-empty applies
+    in the live backlog were this shape (28%) -- length isn't a valid
+    informativeness proxy across a language boundary."""
+    old = "Automates CO2 emission data collection and analysis for businesses."
+    new = ("CarbonInsights automatisiert die Erfassung und Strukturierung von "
+          "Emissionsdaten aus Geschäftsunterlagen, um CO2-Bilanzierungen für "
+          "Unternehmen zu vereinfachen.")
+    assert better_freetext(old, new) == old
+
+
+def test_language_swap_rejected_in_either_direction():
+    old_de = "Automatisiert die Buchhaltung für kleine Unternehmen in Deutschland."
+    new_en = "Automates bookkeeping for small businesses across Europe with AI."
+    assert better_freetext(old_de, new_en) == old_de
 
 
 # ── better_freetext: boundary behaviour ─────────────────────────────────────
@@ -115,3 +134,20 @@ def test_norm_value_does_not_collapse_genuinely_different_values():
 def test_norm_value_handles_none_and_whitespace():
     assert norm_value(None) == ""
     assert norm_value("  Munich  ") == norm_value("Munich")
+
+
+# ── _detect_language: never guesses when inconclusive ───────────────────────
+
+def test_detect_language_recognizes_german():
+    assert _detect_language("Wir bauen eine Plattform für Unternehmen und Kunden.") == "de"
+
+
+def test_detect_language_recognizes_english():
+    assert _detect_language("We are a company that provides software for the team.") == "en"
+
+
+def test_detect_language_inconclusive_on_a_bare_name():
+    """A short value with no real stopwords must return None, not guess —
+    e.g. a bare product name shouldn't block a legitimate same-language
+    upgrade just because it happens to share a token with both lists."""
+    assert _detect_language("Sovaro GmbH") is None

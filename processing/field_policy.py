@@ -36,6 +36,7 @@ caller's job, and tests/test_field_policy.py locks in that expectation.
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Optional
 
@@ -48,6 +49,41 @@ TRIVIAL_REWORD_RATIO = 90
 # neither value is clearly richer, so stability wins over churn — otherwise
 # two near-equal descriptions ping-pong on every re-crawl forever.
 LENGTH_MARGIN = 1.20
+
+# Found live while dry-running the Phase Z backlog drain (12 Aug), BEFORE
+# applying anything: CarbonInsights' English short_description
+# ("Automates CO2 emission data collection...") would have been silently
+# replaced by a longer GERMAN candidate purely because it was longer — 95 of
+# 339 non-empty applies in the live backlog were a cross-language swap of
+# this shape (28%). Length is not a valid informativeness proxy across a
+# language boundary: a longer German sentence isn't "richer" than a shorter
+# English one, they're incomparable. _detect_language + the guard in
+# better_freetext below stop a length comparison from ever being attempted
+# across a detected language mismatch — the existing value is kept rather
+# than guessed away, same as a genuine tie.
+_DE_STOPWORDS = {
+    "der", "die", "das", "und", "für", "fur", "mit", "von", "zu", "ist",
+    "sind", "eine", "einen", "einer", "unternehmen", "wir", "auf", "im",
+    "sich", "durch", "werden", "wird", "auch", "bei", "als", "aus", "nicht",
+}
+_EN_STOPWORDS = {
+    "the", "and", "for", "with", "of", "to", "is", "are", "a", "an",
+    "company", "we", "on", "in", "by", "provides", "offers", "that", "as",
+    "its", "their", "was", "were", "this",
+}
+_WORD_RE = re.compile(r"[a-zà-ÿ]+")
+
+
+def _detect_language(text: str) -> Optional[str]:
+    """Crude DE/EN stopword-overlap detector. Returns None when inconclusive
+    (too short, or an equal/zero match on both sides) rather than guessing —
+    an unresolved language is treated as "don't know", not as a match."""
+    words = set(_WORD_RE.findall(text.lower()))
+    de = len(words & _DE_STOPWORDS)
+    en = len(words & _EN_STOPWORDS)
+    if de == en:
+        return None
+    return "de" if de > en else "en"
 
 # Locale variants seen re-staging indefinitely on the live queue because
 # _diff_fields compares with exact strip+lower equality. Deliberately a small
@@ -127,6 +163,8 @@ def better_freetext(old, new) -> Optional[str]:
       - new empty                  -> None   (never blank out a real value)
       - old empty                  -> new    (a plain fill)
       - similarity >= 90           -> None   (trivial reword, ignore)
+      - detected language mismatch -> old    (can't compare length across
+                                              languages — see _detect_language)
       - new is >=20% longer        -> new    (a genuine upgrade)
       - otherwise                  -> old    (keep; stability beats churn)
 
@@ -134,7 +172,10 @@ def better_freetext(old, new) -> Optional[str]:
     against the real failure cases and gets both directions right (Heliatek
     upgrade, Knowmanity downgrade) — see this module's docstring. It is also
     deterministic and explainable, which matters more here than being clever:
-    this runs unattended on every ingest.
+    this runs unattended on every ingest. The language guard exists because
+    length stops being a valid proxy the moment the two texts aren't even in
+    the same language (see _DE_STOPWORDS' docstring for the live CarbonInsights
+    case this was found against).
     """
     old_s = "" if old is None else str(old).strip()
     new_s = "" if new is None else str(new).strip()
@@ -145,6 +186,9 @@ def better_freetext(old, new) -> Optional[str]:
         return new_s
     if _ratio(old_s, new_s) >= TRIVIAL_REWORD_RATIO:
         return None
+    old_lang, new_lang = _detect_language(old_s), _detect_language(new_s)
+    if old_lang and new_lang and old_lang != new_lang:
+        return old_s
     if len(new_s) >= len(old_s) * LENGTH_MARGIN:
         return new_s
     return old_s
