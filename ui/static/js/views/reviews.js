@@ -40,12 +40,20 @@ export default {
   title: "Review Inbox",
 
   mount(el, params = {}) {
+    const PAGE_SIZE = 200;
     const state = {
       status: "pending", type: "", risk: "", q: "", evidenceLevel: "",
       runId: params.run_id || "", // Phase Q2: batch filter — either deep-linked from Browse or picked below
       reviews: [], selectedId: null, busy: false,
       selectedIds: new Set(), // Phase Q4: bulk-select for approve/reject, cleared on any filter change — singles only
       groupTotals: { total_groups: 0, total_reviews: 0 }, // Phase Y: for the KPI strip
+      // Phase Z-4: pagination past the first PAGE_SIZE rows — the "primary"
+      // list is groups when field_update rows are shown (the dominant case,
+      // and the one Z-4 was built to unblock), else singles. A merged
+      // groups+singles view (no type filter) paginates groups only, since
+      // singles' own total is small enough to sit comfortably on one page —
+      // narrow the type filter to page through singles specifically.
+      offset: 0, primaryTotal: 0,
     };
 
     el.innerHTML = `
@@ -81,23 +89,31 @@ export default {
           </div>
           <div class="row wrap" style="gap:8px;margin-top:8px" id="batch-row"></div>
         </div>
+        <div id="queue-actions"></div>
         <div id="bulk-toolbar"></div>
         <div class="inbox-grid" id="inbox-grid" style="align-items:start">
           <div class="card" id="review-list" style="padding:0;max-height:70vh;overflow-y:auto"></div>
           <div class="card" id="review-detail"></div>
         </div>
+        <div class="row" id="pagination" style="gap:8px;justify-content:center"></div>
       </div>`;
 
     const countsEl = el.querySelector("#counts");
+    const queueActions = el.querySelector("#queue-actions");
     const bulkToolbar = el.querySelector("#bulk-toolbar");
     const listEl = el.querySelector("#review-list");
     const detailEl = el.querySelector("#review-detail");
+    const paginationEl = el.querySelector("#pagination");
 
-    el.querySelector("#f-status").addEventListener("change", (e) => { state.status = e.target.value; loadList(); });
-    el.querySelector("#f-type").addEventListener("change", (e) => { state.type = e.target.value; loadList(); });
-    el.querySelector("#f-risk").addEventListener("change", (e) => { state.risk = e.target.value; loadList(); });
-    el.querySelector("#f-evidence").addEventListener("change", (e) => { state.evidenceLevel = e.target.value; loadList(); });
-    el.querySelector("#f-q").addEventListener("input", debounce((e) => { state.q = e.target.value; loadList(); }, 300));
+    // Any filter change starts back at the first page — an offset from the
+    // old filter's result set is meaningless against a new one.
+    function resetAndLoad() { state.offset = 0; loadList(); }
+
+    el.querySelector("#f-status").addEventListener("change", (e) => { state.status = e.target.value; resetAndLoad(); });
+    el.querySelector("#f-type").addEventListener("change", (e) => { state.type = e.target.value; resetAndLoad(); });
+    el.querySelector("#f-risk").addEventListener("change", (e) => { state.risk = e.target.value; resetAndLoad(); });
+    el.querySelector("#f-evidence").addEventListener("change", (e) => { state.evidenceLevel = e.target.value; resetAndLoad(); });
+    el.querySelector("#f-q").addEventListener("input", debounce((e) => { state.q = e.target.value; resetAndLoad(); }, 300));
 
     // Re-render just the batch row (picker selection / clear button visibility)
     // without rebuilding the whole filter card.
@@ -114,16 +130,19 @@ export default {
         <input class="input mono" id="f-batch-id" placeholder="or paste a batch/run id…" style="max-width:280px;font-size:12px" value="${esc(state.runId)}">
         ${state.runId ? `<button class="btn btn--ghost btn--sm" id="f-batch-clear">✕ Clear batch filter</button>` : ""}
         ${state.runId ? `<span class="chip" style="font-size:11px">Showing only this batch</span>` : ""}`;
-      row.querySelector("#f-batch-pick").addEventListener("change", (e) => { state.runId = e.target.value; mountBatchRow(); loadList(); });
-      row.querySelector("#f-batch-id").addEventListener("input", debounce((e) => { state.runId = e.target.value.trim(); loadList(); }, 300));
-      row.querySelector("#f-batch-clear")?.addEventListener("click", () => { state.runId = ""; mountBatchRow(); loadList(); });
+      row.querySelector("#f-batch-pick").addEventListener("change", (e) => { state.runId = e.target.value; mountBatchRow(); resetAndLoad(); });
+      row.querySelector("#f-batch-id").addEventListener("input", debounce((e) => { state.runId = e.target.value.trim(); resetAndLoad(); }, 300));
+      row.querySelector("#f-batch-clear")?.addEventListener("click", () => { state.runId = ""; mountBatchRow(); resetAndLoad(); });
     }
 
     async function loadCounts() {
       try {
-        const all = await api.listReviews({ status: "pending", limit: 500 });
-        const c = { high: 0, low: 0, anomaly: 0 };
-        for (const r of all.reviews) c[r.risk_level] = (c[r.risk_level] || 0) + 1;
+        // Phase Z-4: real SQL GROUP BY, not a capped client-side sample — the
+        // old `limit: 500` fetch-and-tally silently under-reported the risk
+        // tiles once pending passed 500, disagreeing with the Pending tile
+        // (which already used the true count.count()).
+        const counts = await api.reviewCounts("pending");
+        const c = counts.by_risk_level || {};
         // Phase Y: also surface "N startups / M changes" so the grouped view's
         // count doesn't look contradictory next to the flat pending total.
         let groupsKpi = "";
@@ -133,11 +152,11 @@ export default {
           groupsKpi = `<div class="kpi"><div class="kpi__label">Startups w/ changes</div><div class="kpi__value">${state.groupTotals.total_groups}</div></div>`;
         } catch { /* non-fatal */ }
         countsEl.innerHTML = `
-          <div class="kpi kpi--accent"><div class="kpi__label">Pending</div><div class="kpi__value">${all.total}</div></div>
+          <div class="kpi kpi--accent"><div class="kpi__label">Pending</div><div class="kpi__value">${counts.total ?? 0}</div></div>
           ${groupsKpi}
-          <div class="kpi"><div class="kpi__label">🔴 Conflicts</div><div class="kpi__value">${c.high}</div></div>
-          <div class="kpi"><div class="kpi__label">🟡 New info</div><div class="kpi__value">${c.low}</div></div>
-          <div class="kpi"><div class="kpi__label">⚠️ Anomalies</div><div class="kpi__value">${c.anomaly}</div></div>`;
+          <div class="kpi"><div class="kpi__label">🔴 Conflicts</div><div class="kpi__value">${c.high || 0}</div></div>
+          <div class="kpi"><div class="kpi__label">🟡 New info</div><div class="kpi__value">${c.low || 0}</div></div>
+          <div class="kpi"><div class="kpi__label">⚠️ Anomalies</div><div class="kpi__value">${c.anomaly || 0}</div></div>`;
       } catch { /* non-fatal — counts are a convenience */ }
     }
 
@@ -151,15 +170,21 @@ export default {
       };
       // field_update entries come from the grouped endpoint (one row per
       // startup); possible_duplicate/anomaly stay flat. Fetch whichever the
-      // type filter allows, in parallel.
+      // type filter allows, in parallel. Groups are the "primary" paginated
+      // list whenever they're shown (the dominant, Z-4-motivating case);
+      // singles get their own offset only when narrowed to singles alone —
+      // see the state.offset comment above.
       const wantGroups = !state.type || state.type === "field_update";
       const wantSingles = state.type !== "field_update";
+      const groupsGetOffset = wantGroups;
+      const singlesGetOffset = wantSingles && !wantGroups;
 
       try {
         const [groupsRes, singlesRes] = await Promise.all([
-          wantGroups ? api.listReviewsGrouped({ ...commonFilters, limit: 200 }) : Promise.resolve({ groups: [] }),
-          wantSingles ? api.listReviews({ ...commonFilters, review_type: (state.type && state.type !== "field_update") ? state.type : undefined, limit: 200 }) : Promise.resolve({ reviews: [] }),
+          wantGroups ? api.listReviewsGrouped({ ...commonFilters, limit: PAGE_SIZE, offset: groupsGetOffset ? state.offset : 0 }) : Promise.resolve({ groups: [] }),
+          wantSingles ? api.listReviews({ ...commonFilters, review_type: (state.type && state.type !== "field_update") ? state.type : undefined, limit: PAGE_SIZE, offset: singlesGetOffset ? state.offset : 0 }) : Promise.resolve({ reviews: [] }),
         ]);
+        state.primaryTotal = groupsGetOffset ? (groupsRes.total_groups || 0) : (singlesRes.total || 0);
         const groupEntries = (groupsRes.groups || []).map((g) => ({
           entryId: g.master_id, kind: "group",
           master_id: g.master_id, master_name: g.master_name,
@@ -195,6 +220,8 @@ export default {
       }
       renderList();
       renderDetail();
+      renderQueueActions();
+      renderPagination();
     }
 
     function renderList() {
@@ -263,6 +290,116 @@ export default {
         });
       }
       renderBulkToolbar();
+    }
+
+    /* ── Phase Z-4: pagination past the first PAGE_SIZE rows ────────────── */
+    function renderPagination() {
+      const total = state.primaryTotal;
+      if (total <= PAGE_SIZE) { paginationEl.innerHTML = ""; return; }
+      const from = total ? state.offset + 1 : 0;
+      const to = Math.min(state.offset + PAGE_SIZE, total);
+      paginationEl.innerHTML = `
+        <button class="btn btn--ghost btn--sm" id="page-prev" ${state.offset === 0 ? "disabled" : ""}>← Previous</button>
+        <span class="dim" style="font-size:12px;align-self:center">${fmt.num(from)}–${fmt.num(to)} of ${fmt.num(total)}</span>
+        <button class="btn btn--ghost btn--sm" id="page-next" ${to >= total ? "disabled" : ""}>Next →</button>`;
+      paginationEl.querySelector("#page-prev")?.addEventListener("click", () => {
+        state.offset = Math.max(0, state.offset - PAGE_SIZE); loadList();
+      });
+      paginationEl.querySelector("#page-next")?.addEventListener("click", () => {
+        state.offset += PAGE_SIZE; loadList();
+      });
+    }
+
+    /* ── Phase Z-4: act on EVERY review matching the current filter ─────── */
+    function currentFilters() {
+      return {
+        status: state.status || undefined,
+        risk_level: state.risk || undefined,
+        evidence_level: state.evidenceLevel || undefined,
+        q: state.q || undefined,
+        run_id: state.runId || undefined,
+      };
+    }
+
+    function renderQueueActions() {
+      // Only meaningful for the pending queue — approve/reject and majority-
+      // resolve both require status=="pending", same gate the per-row bulk
+      // toolbar uses.
+      if (state.status !== "pending") { queueActions.innerHTML = ""; return; }
+      const wantGroups = !state.type || state.type === "field_update";
+      const wantSingles = state.type !== "field_update";
+      queueActions.innerHTML = `
+        <div class="card row wrap" style="gap:10px;align-items:center">
+          <strong style="font-size:12px" class="dim">Clear the whole queue, not just this page:</strong>
+          ${wantSingles ? `
+            <button class="btn btn--ghost btn--sm" id="queue-approve-all">✅ Approve all matching filter</button>
+            <button class="btn btn--ghost btn--sm" id="queue-reject-all">✋ Reject all matching filter</button>` : ""}
+          ${wantGroups ? `
+            <button class="btn btn--ghost btn--sm" id="queue-resolve-majority">🎯 Auto-resolve by majority vote (matching filter)</button>` : ""}
+        </div>`;
+
+      queueActions.querySelector("#queue-approve-all")?.addEventListener("click", () => queueResolveFiltered("approve"));
+      queueActions.querySelector("#queue-reject-all")?.addEventListener("click", () => queueResolveFiltered("reject"));
+      queueActions.querySelector("#queue-resolve-majority")?.addEventListener("click", () => queueResolveGrouped());
+    }
+
+    async function queueResolveFiltered(action) {
+      if (state.busy) return;
+      state.busy = true;
+      try {
+        const dry = await api.bulkResolveFiltered(currentFilters(), action, true);
+        if (!dry.matched) { toast("Nothing matches this filter"); return; }
+        const verb = action === "approve" ? "Approve" : "Reject";
+        const byType = Object.entries(dry.by_review_type || {}).map(([t, n]) => `${n} ${TYPE_LABEL[t] || t}`).join(", ");
+        if (!confirmAction(`${verb} ALL ${dry.matched} review${dry.matched === 1 ? "" : "s"} matching the current filter (${byType})? This cannot be selectively undone — check the filter is what you mean before confirming.`)) return;
+
+        const res = await api.bulkResolveFiltered(currentFilters(), action, false);
+        const failN = (res.failed || []).length;
+        toast(
+          failN ? `${verb}d ${res.resolved} of ${res.total} — ${failN} failed (see console)` : `${verb}d ${res.resolved} review${res.resolved === 1 ? "" : "s"}`,
+          failN ? "error" : "ok",
+        );
+        if (failN) console.warn(`[Reviews] bulk-resolve-filtered failures:`, res.failed);
+        state.offset = 0;
+        await loadCounts();
+        await loadList();
+      } catch (err) {
+        toast(`Bulk ${action} failed: ${err.message}`, "error");
+      } finally {
+        state.busy = false;
+      }
+    }
+
+    async function queueResolveGrouped() {
+      if (state.busy) return;
+      state.busy = true;
+      try {
+        const dry = await api.bulkResolveGrouped(currentFilters(), true);
+        if (!dry.groups_matched) { toast("Nothing matches this filter"); return; }
+        if (!dry.groups_resolvable) {
+          toast(`All ${dry.groups_matched} matching startup${dry.groups_matched === 1 ? "" : "s"} ${dry.groups_matched === 1 ? "has" : "have"} at least one tied field — none can be auto-resolved. Pick manually per startup.`);
+          return;
+        }
+        if (!confirmAction(
+          `Auto-resolve ${dry.groups_resolvable} of ${dry.groups_matched} matching startup${dry.groups_matched === 1 ? "" : "s"} by majority vote (${dry.fields_would_apply} field${dry.fields_would_apply === 1 ? "" : "s"} total)? ` +
+          `${dry.groups_skipped_tie} startup${dry.groups_skipped_tie === 1 ? "" : "s"} with a true tie on at least one field will be left pending for you to pick manually — never partially resolved.`
+        )) return;
+
+        const res = await api.bulkResolveGrouped(currentFilters(), false);
+        const errN = (res.errors || []).length;
+        toast(
+          errN ? `Resolved ${res.groups_resolved} startups — ${errN} failed (see console)` : `Resolved ${res.groups_resolved} startup${res.groups_resolved === 1 ? "" : "s"} by majority vote`,
+          errN ? "error" : "ok",
+        );
+        if (errN) console.warn(`[Reviews] grouped bulk-resolve failures:`, res.errors);
+        state.offset = 0;
+        await loadCounts();
+        await loadList();
+      } catch (err) {
+        toast(`Majority resolve failed: ${err.message}`, "error");
+      } finally {
+        state.busy = false;
+      }
     }
 
     function renderBulkToolbar() {

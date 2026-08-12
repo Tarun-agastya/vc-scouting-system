@@ -93,6 +93,20 @@ export const api = {
   bulkRejectReviews: (ids) => post("/reviews/bulk-reject", { ids }),
   /** target: "incoming" | "master" | "both" — neither merge nor keep, just remove the data */
   deleteReview: (id, target) => post(`/reviews/${id}/delete?target=${target}`),
+  /** Exact SQL-aggregated risk-level breakdown (Phase Z-4) — never disagrees
+   *  with the Pending KPI tile the way a capped client-side sample could. */
+  reviewCounts: (status = "pending") => get("/reviews/counts", { status }),
+  /**
+   * Phase Z-4 (12 Aug): act on EVERY review matching a filter, not just a
+   * loaded page — the queue-clearing endpoints. Both re-embed/re-score per
+   * row they touch, so give them real headroom past the 30s default; always
+   * call with dry_run:true first (the default) to get a real count for a
+   * confirm dialog before ever passing dry_run:false.
+   */
+  bulkResolveFiltered: (filters, action, dryRun = true) =>
+    post("/reviews/bulk-resolve-filtered", { ...filters, action, dry_run: dryRun }, { timeout: 120000 }),
+  bulkResolveGrouped: (filters, dryRun = true) =>
+    post("/reviews/grouped/bulk-resolve", { ...filters, dry_run: dryRun }, { timeout: 120000 }),
 
   // ── Regional register (Phase RC) ──────────────────────────────────────
   /** Established local employers tracked for membership outreach. A separate

@@ -27,6 +27,7 @@ from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from fastapi import Depends
@@ -239,6 +240,7 @@ async def list_reviews(
     run_id: Optional[str] = None,  # Phase Q2: filter to one bulk-verify/recheck batch's results
     evidence_level: Optional[str] = None,  # Phase J-2 (4 Aug): "minimal" | "normal" — see storage._create_review
     limit: int = 100,
+    offset: int = 0,  # Phase Z-4 (12 Aug): content past the first `limit` rows was unreachable — no offset existed at all
     db: Session = Depends(get_db),
 ):
     """List reviews (pending by default). The dashboard Review Inbox reads this."""
@@ -252,7 +254,7 @@ async def list_reviews(
     # at 200 forever regardless of how many reviews got resolved (found live
     # 29 Jul — the "pending count never changes" report, true count was 594).
     total = query.count()
-    rows = query.order_by(DuplicateReview.created_at.desc()).limit(limit).all()
+    rows = query.order_by(DuplicateReview.created_at.desc()).offset(offset).limit(limit).all()
     return {
         "total": total,
         "reviews": [
@@ -277,6 +279,29 @@ async def list_reviews(
     }
 
 
+# NOTE: this route MUST stay declared BEFORE @router.get("/{review_id}") too,
+# same reason as /grouped below.
+@router.get("/counts")
+async def review_counts(status: str = Query("pending"), db: Session = Depends(get_db)):
+    """
+    Risk-level breakdown by real SQL aggregation (Phase Z-4, 12 Aug 2026) —
+    fixes the KPI strip's risk tiles disagreeing with the Pending tile on a
+    large queue. loadCounts() used to fetch `limit: 500` reviews and tally
+    risk_level client-side while the Pending tile used the accurate
+    query.count() — once the true pending count passed 500 the two numbers
+    visibly stopped summing to each other. GROUP BY doesn't have that
+    problem: it's exact regardless of queue size.
+    """
+    rows = (
+        db.query(DuplicateReview.risk_level, func.count())
+        .filter(DuplicateReview.status == status)
+        .group_by(DuplicateReview.risk_level)
+        .all()
+    )
+    by_risk = {level or "none": n for level, n in rows}
+    return {"total": sum(by_risk.values()), "by_risk_level": by_risk}
+
+
 # NOTE: this route MUST stay declared BEFORE @router.get("/{review_id}") —
 # FastAPI matches in declaration order, so a later /grouped would be swallowed
 # by the path-param route and 404 as "review 'grouped' not found".
@@ -288,6 +313,7 @@ async def list_reviews_grouped(
     run_id: Optional[str] = None,
     evidence_level: Optional[str] = None,
     limit: int = 200,
+    offset: int = 0,  # Phase Z-4 (12 Aug): groups past the first `limit` were unreachable
     db: Session = Depends(get_db),
 ):
     """
@@ -390,7 +416,7 @@ async def list_reviews_grouped(
     return {
         "total_groups": len(groups),
         "total_reviews": len(rows),
-        "groups": groups[:limit],
+        "groups": groups[offset:offset + limit],
     }
 
 

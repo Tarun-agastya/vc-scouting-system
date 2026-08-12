@@ -135,3 +135,17 @@ def test_approve_duplicate_merges_rows(make, db):
     db.expire_all()
     # keeper survives, the other row is gone
     assert db.query(Startup).filter(Startup.id == master_id).first() is not None
+
+
+def test_counts_endpoint_exact_regardless_of_sample_size(make, db):
+    """Phase Z-4: GET /reviews/counts uses real SQL GROUP BY, so it can't
+    disagree with the Pending KPI tile the way the old 500-row client-side
+    tally did once the queue passed 500."""
+    rid, _ = make("Rev Counts", website="pytest-rev-counts.com", city="Munich",
+                  funding_stage="Pre-Seed")
+    make("Rev Counts", website="pytest-rev-counts.com", city="Munich",
+         funding_stage="Seed")  # a real conflict -> risk_level="high"
+
+    res = asyncio.run(R.review_counts(status="pending", db=SessionLocal()))
+    assert res["total"] == sum(res["by_risk_level"].values())
+    assert res["by_risk_level"].get("high", 0) >= 1
