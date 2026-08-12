@@ -16,6 +16,11 @@ Nothing in the master DB changes except through an explicit approve here.
                                   company that should never have been stored)
   POST   /reviews/bulk-approve    approve N reviews in one call (Phase Q4)
   POST   /reviews/bulk-reject     reject N reviews in one call (Phase Q4)
+  POST   /reviews/bulk-resolve-filtered   approve/reject EVERY review matching
+                                  a filter, not just a loaded page (Phase Z-4)
+  POST   /reviews/grouped/bulk-resolve    auto-pick the majority candidate for
+                                  every field across every matching group,
+                                  skipping any group with a true tie (Phase Z-4)
 """
 import logging
 from datetime import datetime
@@ -761,6 +766,209 @@ async def bulk_reject_reviews(request: BulkReviewRequest, db: Session = Depends(
             failed.append({"id": review_id, "error": str(exc)})
 
     return {"rejected": len(rejected), "failed": failed, "total": len(request.ids)}
+
+
+class BulkResolveFilteredRequest(BaseModel):
+    action: str                       # "approve" | "reject"
+    status: Optional[str] = "pending"
+    review_type: Optional[str] = None
+    risk_level: Optional[str] = None
+    q: Optional[str] = None
+    run_id: Optional[str] = None
+    evidence_level: Optional[str] = None
+    dry_run: bool = True
+
+
+@router.post("/bulk-resolve-filtered")
+async def bulk_resolve_filtered(request: BulkResolveFilteredRequest, db: Session = Depends(get_db)):
+    """
+    Approve or reject EVERY review matching a filter, not just what's
+    loaded in the UI (Phase Z-4, 12 Aug 2026) — the flat-list counterpart
+    to bulk-approve/bulk-reject's id-list, for a queue too large to
+    select-then-click through in pages of <=200. Same filter surface as
+    GET /reviews (_filtered_reviews), so "resolve everything matching what
+    I'm looking at" is the whole feature.
+
+    dry_run=True (the default — this project's standing convention after
+    the 12 Aug review-queue incident) writes nothing and returns the count
+    that WOULD be affected. The dashboard button calls this first and shows
+    the real number in a confirm dialog before ever passing dry_run=false.
+
+    Reuses _do_approve/_do_reject exactly, one review at a time — no new
+    resolution logic, just a different way of selecting which reviews to
+    run it on. One bad row never aborts the rest, same as bulk-approve/
+    bulk-reject.
+    """
+    if request.action not in ("approve", "reject"):
+        raise HTTPException(status_code=422, detail="action must be 'approve' or 'reject'")
+
+    query = _filtered_reviews(
+        db, status=request.status, review_type=request.review_type,
+        risk_level=request.risk_level, q=request.q, run_id=request.run_id,
+        evidence_level=request.evidence_level,
+    )
+    matched = query.all()
+
+    if request.dry_run:
+        by_type: dict = {}
+        for r in matched:
+            by_type[r.review_type] = by_type.get(r.review_type, 0) + 1
+        return {"dry_run": True, "matched": len(matched), "by_review_type": by_type}
+
+    do = _do_approve if request.action == "approve" else _do_reject
+    resolved, failed = [], []
+    for r in matched:
+        try:
+            do(db, r)
+            resolved.append(str(r.id))
+        except HTTPException as exc:
+            db.rollback()
+            failed.append({"id": str(r.id), "error": exc.detail})
+        except Exception as exc:
+            db.rollback()
+            logger.error(f"[Reviews] bulk-resolve-filtered failed for {r.id}: {exc}")
+            failed.append({"id": str(r.id), "error": str(exc)})
+
+    logger.info(f"[Reviews] bulk-resolve-filtered({request.action}): "
+                f"{len(resolved)} resolved, {len(failed)} failed, of {len(matched)} matched")
+    return {"dry_run": False, "action": request.action,
+            "resolved": len(resolved), "failed": failed, "total": len(matched)}
+
+
+class GroupedBulkResolveRequest(BaseModel):
+    q: Optional[str] = None
+    risk_level: Optional[str] = None
+    run_id: Optional[str] = None
+    evidence_level: Optional[str] = None
+    dry_run: bool = True
+
+
+@router.post("/grouped/bulk-resolve")
+async def bulk_resolve_grouped(request: GroupedBulkResolveRequest, db: Session = Depends(get_db)):
+    """
+    Auto-pick the majority candidate for every field across every pending
+    startup group matching a filter (Phase Z-4, 12 Aug 2026), applying it
+    through the exact same machinery POST /reviews/grouped/{id}/resolve
+    uses per group (_apply_field_updates + one _reindex + per-review
+    approve/suppress-reject) — this just computes `selections` from vote
+    counts instead of a human's explicit picks.
+
+    SAFETY RULE, non-negotiable after the 12 Aug multi-candidate clobber
+    incident (see scripts/revert_multi_candidate_clobbers.py's post-
+    mortem): a group is resolved ONLY IF every field it proposes has a
+    clear majority winner (strictly more votes than the runner-up). If
+    EVEN ONE field in the group is a true tie, the ENTIRE group is skipped
+    and left fully pending — never partially resolved. A single review can
+    propose several fields at once; closing it over its majority-decided
+    fields while leaving a tied field dangling would silently destroy that
+    tied field's candidate evidence, since the review carrying that vote
+    would no longer be pending anywhere. Whole-group-or-nothing costs some
+    otherwise-resolvable fields sitting pending alongside a genuine tie —
+    an acceptable trade given what got clobbered the last time this
+    shortcut was taken.
+
+    dry_run=True (default) writes nothing — returns counts only.
+    """
+    from collections import defaultdict
+
+    query = _filtered_reviews(
+        db, status="pending", review_type="field_update", risk_level=request.risk_level,
+        q=request.q, run_id=request.run_id, evidence_level=request.evidence_level,
+    )
+    rows = query.all()
+
+    by_master = defaultdict(list)
+    for r in rows:
+        by_master[str(r.master_id)].append(r)
+
+    resolvable, skipped_tie = [], []
+    for mid, members in by_master.items():
+        fields = defaultdict(lambda: defaultdict(int))
+        for r in members:
+            for field, change in (r.proposed_changes or {}).items():
+                fields[field][str(change.get("new"))] += 1
+
+        has_tie = False
+        winners = {}
+        for field, counts in fields.items():
+            ordered = sorted(counts.items(), key=lambda kv: -kv[1])
+            if len(ordered) > 1 and ordered[0][1] == ordered[1][1]:
+                has_tie = True
+                break
+            winners[field] = ordered[0][0]
+
+        (skipped_tie if has_tie else resolvable).append((mid, members, winners))
+
+    if request.dry_run:
+        fields_would_apply = sum(len(w) for _, _, w in resolvable)
+        return {
+            "dry_run": True,
+            "groups_matched": len(by_master),
+            "groups_resolvable": len(resolvable),
+            "groups_skipped_tie": len(skipped_tie),
+            "fields_would_apply": fields_would_apply,
+        }
+
+    resolved_masters, errors = [], []
+    for mid, members, winners in resolvable:
+        try:
+            master = db.query(Startup).filter(Startup.id == mid).first()
+            if not master:
+                errors.append({"master_id": mid, "error": "master no longer exists"})
+                continue
+
+            to_apply = {}
+            for field, value in winners.items():
+                source_meta = None
+                for r in members:
+                    change = (r.proposed_changes or {}).get(field)
+                    if change is not None and change.get("new") == value:
+                        source_meta = change
+                        break
+                to_apply[field] = {
+                    "old": getattr(master, field, None), "new": value,
+                    "incoming_source": (source_meta or {}).get("incoming_source"),
+                    "incoming_extracted_at": (source_meta or {}).get("incoming_extracted_at"),
+                }
+
+            _apply_field_updates(db, master, to_apply)
+            db.commit()
+            _reindex(db, master)  # commits internally — one reindex per group
+
+            now = datetime.utcnow()
+            approved_ids, rejected_ids = [], []
+            for r in members:
+                proposed = r.proposed_changes or {}
+                member_approved = bool(proposed) and all(
+                    winners.get(field) == change.get("new") for field, change in proposed.items()
+                )
+                if member_approved:
+                    r.status = "approved"
+                    approved_ids.append(str(r.id))
+                else:
+                    for field, change in proposed.items():
+                        db.add(SuppressedMatch(
+                            kind="rejected_value", master_id=r.master_id,
+                            field=field, value=str(change.get("new")),
+                        ))
+                    r.status = "rejected"
+                    rejected_ids.append(str(r.id))
+                r.resolved_at = now
+            db.commit()
+            resolved_masters.append(mid)
+        except Exception as exc:
+            db.rollback()
+            logger.error(f"[Reviews] grouped bulk-resolve failed for master {mid}: {exc}")
+            errors.append({"master_id": mid, "error": str(exc)})
+
+    logger.info(f"[Reviews] grouped bulk-resolve: {len(resolved_masters)} groups resolved, "
+                f"{len(skipped_tie)} skipped (tie), {len(errors)} errors")
+    return {
+        "dry_run": False,
+        "groups_resolved": len(resolved_masters),
+        "groups_skipped_tie": len(skipped_tie),
+        "errors": errors,
+    }
 
 
 @router.post("/{review_id}/delete")

@@ -46,6 +46,75 @@ def test_reject_field_update_suppresses_reflag(make, db):
     assert status == "no_op"
 
 
+def test_bulk_resolve_filtered_dry_run_writes_nothing(make, db):
+    rid, _ = make("Rev BulkDry", website="pytest-rev-bulkdry.com", city="Munich")
+    make("Rev BulkDry", website="pytest-rev-bulkdry.com", city="Munich",
+         funding_stage="Pre-Seed")
+    make("Rev BulkDry", website="pytest-rev-bulkdry.com", city="Munich",
+         funding_stage="Seed")
+    rev = _pending_field_update(db, rid)
+    assert rev is not None
+
+    res = asyncio.run(R.bulk_resolve_filtered(
+        R.BulkResolveFilteredRequest(action="approve", q="Rev BulkDry", dry_run=True),
+        db=SessionLocal(),
+    ))
+    assert res["dry_run"] is True
+    assert res["matched"] >= 1
+    db.expire_all()
+    assert db.query(DuplicateReview).filter(DuplicateReview.id == rev.id).first().status == "pending"
+
+
+def test_bulk_resolve_filtered_approve_applies_matching_reviews(make, db):
+    rid, _ = make("Rev BulkApprove", website="pytest-rev-bulkapp.com", city="Munich",
+                  funding_stage="Pre-Seed")
+    make("Rev BulkApprove", website="pytest-rev-bulkapp.com", city="Munich",
+         funding_stage="Seed")
+    rev = _pending_field_update(db, rid)
+    assert rev is not None
+
+    res = asyncio.run(R.bulk_resolve_filtered(
+        R.BulkResolveFilteredRequest(action="approve", q="Rev BulkApprove", dry_run=False),
+        db=SessionLocal(),
+    ))
+    assert res["dry_run"] is False
+    assert res["resolved"] >= 1
+    db.expire_all()
+    assert db.query(Startup).filter(Startup.id == rid).first().funding_stage == "Seed"
+    assert db.query(DuplicateReview).filter(DuplicateReview.id == rev.id).first().status == "approved"
+
+
+def test_bulk_resolve_filtered_reject_suppresses(make, db):
+    rid, _ = make("Rev BulkReject", website="pytest-rev-bulkrej.com", city="Munich",
+                  funding_stage="Pre-Seed")
+    make("Rev BulkReject", website="pytest-rev-bulkrej.com", city="Munich",
+         funding_stage="Seed")
+    rev = _pending_field_update(db, rid)
+    assert rev is not None
+
+    asyncio.run(R.bulk_resolve_filtered(
+        R.BulkResolveFilteredRequest(action="reject", q="Rev BulkReject", dry_run=False),
+        db=SessionLocal(),
+    ))
+    db.expire_all()
+    assert db.query(Startup).filter(Startup.id == rid).first().funding_stage == "Pre-Seed"
+    assert db.query(DuplicateReview).filter(DuplicateReview.id == rev.id).first().status == "rejected"
+    sup = db.query(SuppressedMatch).filter(
+        SuppressedMatch.kind == "rejected_value", SuppressedMatch.master_id == rid,
+        SuppressedMatch.field == "funding_stage").first()
+    assert sup is not None
+
+
+def test_bulk_resolve_filtered_rejects_invalid_action():
+    import pytest
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException):
+        asyncio.run(R.bulk_resolve_filtered(
+            R.BulkResolveFilteredRequest(action="delete", dry_run=True),
+            db=SessionLocal(),
+        ))
+
+
 def test_approve_duplicate_merges_rows(make, db):
     r1, _ = make("Dup Keeper", city="Vienna", description="telemedicine for rural clinics")
     r2, s2 = make("Dup Keeper", city="Vienna", description="remote doctor visits for rural areas")

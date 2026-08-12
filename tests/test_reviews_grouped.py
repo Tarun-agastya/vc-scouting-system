@@ -213,3 +213,79 @@ def test_resolve_with_no_selection_rejects_all_and_applies_nothing(make, db, mon
     db.expire_all()
     assert db.query(Startup).filter(Startup.id == rid).first().city == "Munich"  # untouched
     assert not _pending_field_updates(db, rid)  # still closed, all rejected
+
+
+# ── Z-4: grouped bulk-resolve (majority vote, whole-group-or-nothing) ──────
+
+def test_grouped_bulk_resolve_dry_run_counts_without_writing(make, db):
+    rid, _ = make("Grp BulkTie", website="pytest-grp-bulktie.com", city="Munich")
+    make("Grp BulkTie", website="pytest-grp-bulktie.com", city="Hamburg")
+    make("Grp BulkTie", website="pytest-grp-bulktie.com", city="Berlin")
+    assert len(_pending_field_updates(db, rid)) == 2  # a real 1-1 tie
+
+    res = asyncio.run(R.bulk_resolve_grouped(
+        R.GroupedBulkResolveRequest(q="Grp BulkTie", dry_run=True), db=SessionLocal(),
+    ))
+    assert res["dry_run"] is True
+    assert res["groups_matched"] >= 1
+    assert res["groups_skipped_tie"] >= 1
+    db.expire_all()
+    assert db.query(Startup).filter(Startup.id == rid).first().city == "Munich"  # untouched
+    assert len(_pending_field_updates(db, rid)) == 2  # untouched
+
+
+def test_grouped_bulk_resolve_applies_clear_majority_winner(make, db, monkeypatch):
+    monkeypatch.setattr(R, "_reindex", lambda db, master: None)
+    rid, _ = make("Grp BulkMajority", website="pytest-grp-bulkmaj.com", city="Munich")
+    make("Grp BulkMajority", website="pytest-grp-bulkmaj.com", city="Hamburg")
+    make("Grp BulkMajority", website="pytest-grp-bulkmaj.com", city="Berlin")
+    # Directly add a SECOND independent Hamburg proposal -- a plain repeated
+    # make() call would get deduped into the existing row by _uncovered_fields
+    # (that's its own, separately-tested behaviour); this simulates two
+    # genuinely different ingestion runs that happened to agree, same
+    # technique test_grouped_candidates_are_deduped_by_exact_value uses above.
+    from datetime import datetime
+    db.add(DuplicateReview(
+        review_type="field_update", master_id=rid, master_name="PYTEST Grp BulkMajority",
+        proposed_changes={"city": {"old": "Munich", "new": "Hamburg",
+                                   "incoming_source": "test", "incoming_extracted_at": "2026-01-01"}},
+        risk_level="high", status="pending", created_at=datetime.utcnow(),
+    ))
+    db.commit()
+    # Hamburg: 2 votes (rows), Berlin: 1 vote -- a clear majority, not a tie.
+
+    res = asyncio.run(R.bulk_resolve_grouped(
+        R.GroupedBulkResolveRequest(q="Grp BulkMajority", dry_run=False), db=SessionLocal(),
+    ))
+    assert res["groups_resolved"] >= 1
+    db.expire_all()
+    assert db.query(Startup).filter(Startup.id == rid).first().city == "Hamburg"
+    assert not _pending_field_updates(db, rid)  # group fully closed, no tie
+
+
+def test_grouped_bulk_resolve_never_partially_resolves_a_group(make, db, monkeypatch):
+    """The critical safety case: one field (funding_stage) is a true tie,
+    a SIBLING field (city) on the SAME group would otherwise have a clear
+    single-candidate winner. The whole group — including the resolvable
+    city field — must stay completely untouched, because the review that
+    proposes city=Hamburg is the SAME review that proposes the tied
+    funding_stage, and approving it would destroy that tie's evidence."""
+    monkeypatch.setattr(R, "_reindex", lambda db, master: None)
+    rid, _ = make("Grp BulkPartial", website="pytest-grp-bulkpartial.com",
+                  city="Munich", funding_stage="Pre-Seed")
+    make("Grp BulkPartial", website="pytest-grp-bulkpartial.com",
+         city="Hamburg", funding_stage="Seed")
+    make("Grp BulkPartial", website="pytest-grp-bulkpartial.com",
+         funding_stage="Series A")  # ties funding_stage 1-1, proposes no city
+    before = len(_pending_field_updates(db, rid))
+    assert before >= 2
+
+    res = asyncio.run(R.bulk_resolve_grouped(
+        R.GroupedBulkResolveRequest(q="Grp BulkPartial", dry_run=False), db=SessionLocal(),
+    ))
+    assert res["groups_skipped_tie"] >= 1
+    db.expire_all()
+    m = db.query(Startup).filter(Startup.id == rid).first()
+    assert m.city == "Munich", "city must NOT be auto-applied even though it alone had no tie"
+    assert m.funding_stage == "Pre-Seed"
+    assert len(_pending_field_updates(db, rid)) == before  # nothing closed at all
