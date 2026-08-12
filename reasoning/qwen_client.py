@@ -377,9 +377,20 @@ class QwenClient:
 
     Key design principles:
     - Small, focused prompts (no history replay)
-    - Hard token cap on output  
+    - Hard token cap on output
     - <think> tag stripping for Qwen3
     - Synchronous — called from FastAPI background tasks or scripts
+
+    think=False on every self.model call (11 Aug 2026): live A/B tested on
+    this machine against a real COMPARISON_PROMPT case — think=False took
+    the same call from ~65s to ~12.6s (5x) with no loss of quality or
+    instruction-following (verified: it still correctly flagged low-
+    verification-status startups, still declined to invent facts). Thinking
+    mode was never adding value here, only latency and GPU-mutex hold time —
+    the latter plausibly a contributor to the historical 14B-wedges-Ollama
+    incidents this class's docstring/callers reference elsewhere. Output is
+    still passed through _strip_thinking() as a no-op safety net in case a
+    future prompt or model revision reintroduces a <think> block anyway.
     """
 
     def __init__(self):
@@ -632,6 +643,7 @@ class QwenClient:
                         model=self.model,
                         messages=messages,
                         format=_VERIFICATION_SCHEMA,
+                        think=False,
                         options={"temperature": 0, "num_predict": 3000, "num_ctx": 8192},
                     )
                 content = self._strip_thinking(response["message"]["content"])
@@ -676,6 +688,7 @@ class QwenClient:
                         model=self.model,
                         messages=messages,
                         format=_WEB_VERIFICATION_SCHEMA,
+                        think=False,
                         options={"temperature": 0, "num_predict": 3000, "num_ctx": 8192},
                     )
                 content = self._strip_thinking(response["message"]["content"])
@@ -852,6 +865,7 @@ class QwenClient:
                         model=self.model,
                         messages=messages,
                         format=schema,
+                        think=False,
                         # num_predict generous like recheck_record's, not classify_startup's
                         # 250: Qwen3's <think> block can run several hundred tokens before
                         # the model reaches the actual JSON, and a tight cap here was the
@@ -894,6 +908,7 @@ class QwenClient:
                 response = self._client().chat(
                     model=self.model,
                     messages=messages,
+                    think=False,
                     options={
                         "temperature": temperature,
                         "num_ctx": num_ctx,
