@@ -69,6 +69,14 @@ _CHECK_FIELDS = [
     "founded_year", "employee_count", "contact_info", "website",
 ]
 
+# Free-text fields resolved deterministically via field_policy.better_freetext
+# (Phase Z, 12 Aug 2026) rather than staged for a human — see that module's
+# docstring for why: they were never competing facts, only different levels
+# of detail, and length-based informativeness gets both directions right
+# (an upgrade AND a downgrade) without a review click. Same set storage.py's
+# _diff_fields carves out for the same reason.
+_TEXT_FIELDS = {"short_description", "description"}
+
 # Maps a web-verify finding's "field" (matched loosely against what the model
 # returns) to the real Startup attribute name, so a staged field_update uses
 # a name _apply_field_updates() (api/routes/reviews.py) actually recognizes.
@@ -194,6 +202,8 @@ def build_proposal(record, verdict: dict) -> dict:
 
     Returns {field: {old, new, source_url}}, empty if nothing survives.
     """
+    from processing.field_policy import better_freetext
+
     findings = [
         f for f in (verdict.get("findings") or [])
         if f.get("verdict") == "contradicted" and f.get("field")
@@ -205,8 +215,18 @@ def build_proposal(record, verdict: dict) -> dict:
             continue
         old_val = getattr(record, attr, None)
         new_val = f.get("correct_value")
-        if not new_val or str(new_val).strip() == str(old_val or "").strip():
+        if not new_val:
             continue
+
+        if attr in _TEXT_FIELDS:
+            winner = better_freetext(old_val, new_val)
+            old_s = "" if old_val is None else str(old_val).strip()
+            if winner is None or winner == old_s:
+                continue  # no meaningful change, or old is already the richer value
+            new_val = winner
+        elif str(new_val).strip() == str(old_val or "").strip():
+            continue
+
         if attr == "website" and not _is_official_website(new_val):
             logger.warning(
                 f"[WebVerifier] Rejected non-official website proposal for "
@@ -215,27 +235,6 @@ def build_proposal(record, verdict: dict) -> dict:
             continue
         proposed[attr] = {"old": old_val, "new": new_val, "source_url": f.get("source_url")}
     return proposed
-
-
-def _is_empty(val) -> bool:
-    """Same emptiness test as regional/enrich.py::apply_proposals' `current
-    in (None, "", 0)` guard, restated here since this module doesn't import
-    from regional (that isolation boundary is deliberate — see regional/
-    enrich.py's module docstring)."""
-    return val is None or val == "" or val == 0
-
-
-def _split_proposal(proposed: dict) -> tuple:
-    """
-    Split a {field: {old, new, source_url}} proposal into (fills, conflicts):
-    fills are fields whose old value was empty — nothing to adjudicate, just
-    a gap to close. conflicts are fields with a real, non-empty old value
-    being contradicted — the only ones still worth a human's attention.
-    """
-    fills, conflicts = {}, {}
-    for attr, p in proposed.items():
-        (fills if _is_empty(p.get("old")) else conflicts)[attr] = p
-    return fills, conflicts
 
 
 def apply_verdict(db, record, results: list, verdict: dict, run_id=None) -> str:
@@ -261,11 +260,13 @@ def apply_verdict(db, record, results: list, verdict: dict, run_id=None) -> str:
     column since Phase S-3b; nothing had ever actually populated it.
 
     Returns the outcome key: "unchanged" | "verified" | "auto_filled" | "staged".
-    "auto_filled" means every proposed field was an empty-field fill and
+    "auto_filled" means every proposed field was an empty-field fill (or a
+    text-field informativeness upgrade — see this module's docstring) and
     nothing needed a review; "staged" means at least one real conflict is
     now pending review (fills, if any, were still applied alongside it).
     """
-    from processing.storage import _create_review
+    from processing.storage import _create_review, _has_conflicting_pending_fill
+    from processing.field_policy import split_proposal
 
     identity_ok = verdict.get("identity_match", True)
     findings = [
@@ -305,10 +306,26 @@ def apply_verdict(db, record, results: list, verdict: dict, run_id=None) -> str:
         proposed[attr]["incoming_source"] = "web_verification"
         proposed[attr]["incoming_extracted_at"] = datetime.utcnow().isoformat()
 
-    fills, conflicts = _split_proposal(proposed)
+    # Text fields already went through field_policy.better_freetext inside
+    # build_proposal, so a surviving text proposal IS the deterministic
+    # winner — apply it unconditionally, same as storage._diff_fields does.
+    # No multi-candidate guard needed here: the informativeness comparison
+    # is always "record's current value vs. this one finding", not "which
+    # of several empty-field candidates wins" — see field_policy.py.
+    text_winners = {a: p for a, p in proposed.items() if a in _TEXT_FIELDS}
+    non_text = {a: p for a, p in proposed.items() if a not in _TEXT_FIELDS}
+
+    fills, conflicts = split_proposal(non_text)
 
     applied = {}
-    for attr, p in fills.items():
+    for attr, p in {**text_winners, **fills}.items():
+        # Multi-candidate safety guard (Phase Z, 12 Aug) for non-text fills —
+        # see processing.storage._has_conflicting_pending_fill's docstring
+        # for the incident (130 fields clobbered across 92 startups) this
+        # prevents. Text winners bypass it per the comment above.
+        if attr not in text_winners and _has_conflicting_pending_fill(db, record.id, attr, p["new"]):
+            conflicts[attr] = p
+            continue
         setattr(record, attr, p["new"])
         applied[attr] = {"value": p["new"], "source_url": p["source_url"],
                          "applied_at": p["incoming_extracted_at"]}

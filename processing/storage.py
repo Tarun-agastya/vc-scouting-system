@@ -139,7 +139,35 @@ def upsert_startup(
         if report.outcome == "exact_same_record":
             master = db.query(Startup).filter(Startup.id == report.master_id).first()
             if master is not None:
-                proposed, risk = _diff_fields(master, startup, source, now.isoformat(), db)
+                proposed, auto_apply, risk = _diff_fields(master, startup, source, now.isoformat(), db)
+
+                # Phase Z-3 (12 Aug): an empty-old field has nothing to
+                # adjudicate — apply it directly instead of staging it,
+                # UNLESS another pending review already proposes a
+                # DIFFERENT value for the same (master, field), which makes
+                # it a real ambiguity for a human, not an uncontested fill.
+                # See _has_conflicting_pending_fill's docstring for exactly
+                # the incident (130 fields silently clobbered across 92
+                # startups) this guard exists to prevent from recurring.
+                from processing.field_policy import split_proposal
+                fills, conflicts = split_proposal(proposed)
+                for attr, p in fills.items():
+                    if _has_conflicting_pending_fill(db, master.id, attr, p["new"]):
+                        conflicts[attr] = p
+                    else:
+                        auto_apply[attr] = p["new"]
+                proposed = conflicts
+
+                for attr, val in auto_apply.items():
+                    ok, cleaned = _sanitize_for_column(attr, val)
+                    if ok:
+                        setattr(master, attr, cleaned)
+                    else:
+                        logger.warning(
+                            f"[Storage] Skipping auto-apply of '{attr}' for "
+                            f"'{master.name}': value doesn't fit the column ({val!r})"
+                        )
+
                 _append_source_history(master, source_entry, flag_modified)
                 _rescore(master, source_url, db, flag_modified)
                 _backfill_source_excerpt(master, startup, flag_modified)
@@ -503,12 +531,33 @@ def _text_changed(old: str, new: str) -> bool:
 def _diff_fields(master, incoming: dict, source: str, extracted_at_iso: str, db) -> tuple:
     """
     Compute the meaningful diff between an existing master and an incoming
-    extraction. Returns (proposed_changes, risk_level).
+    extraction. Returns (proposed_changes, auto_apply, risk_level).
       proposed_changes: {field: {old, new, incoming_source, incoming_extracted_at}}
-      risk_level: "high" if any populated field would change, else "low".
+                         — non-text fields with a real, non-trivial difference.
+                         Still goes to a human via _create_review.
+      auto_apply:        {field: value} — free-text fields resolved
+                         deterministically by field_policy.better_freetext
+                         (Phase Z, 12 Aug 2026). Never staged; the caller
+                         writes these straight to the master.
+      risk_level: "high" if any PROPOSED (non-text) field would overwrite a
+                  populated value, else "low".
     Suppressed (previously human-rejected) values are dropped.
+
+    WHY TEXT FIELDS LEFT THE STAGING PATH (12 Aug, owner): description/
+    short_description were 63% of all new review-queue rows (996 of 1,591
+    field proposals in one measured week), because every re-crawl reworded
+    the LLM's prose just enough to clear the old similarity gate. Sampling
+    those "conflicts" showed they were never competing facts, only
+    different levels of DETAIL — and the newer wording was as often a
+    downgrade as an upgrade (see field_policy.py's docstring for the two
+    measured cases that shaped the rule). A human adjudicating "which
+    wording is better" adds nothing a length-based rule can't — so this
+    now resolves deterministically and never reaches the Review Inbox.
     """
+    from processing.field_policy import better_freetext, norm_value
+
     proposed = {}
+    auto_apply = {}
     high_risk = False
 
     for attr, key in _DIFF_FIELDS.items():
@@ -518,9 +567,18 @@ def _diff_fields(master, incoming: dict, source: str, extracted_at_iso: str, db)
         old_val = getattr(master, attr, None)
 
         if attr in _TEXT_FIELDS:
-            changed = _text_changed(_norm(old_val), str(new_val))
-        else:
-            changed = _norm(old_val) != _norm(new_val)
+            winner = better_freetext(old_val, new_val)
+            old_s = "" if old_val is None else str(old_val).strip()
+            if winner is None or winner == old_s:
+                continue  # no meaningful change, or old is already the richer value
+            auto_apply[attr] = winner
+            continue
+
+        # norm_value (Phase Z-2) folds diacritics/casing and a small explicit
+        # DE/EN synonym map (Germany/Deutschland, Munich/München, ...) so a
+        # pure locale variant is never mistaken for new information — it was
+        # re-staging on every single re-crawl before this.
+        changed = norm_value(old_val) != norm_value(new_val)
         if not changed:
             continue
         if _is_value_suppressed(db, master.id, attr, str(new_val)):
@@ -552,7 +610,7 @@ def _diff_fields(master, incoming: dict, source: str, extracted_at_iso: str, db)
             "incoming_source": source, "incoming_extracted_at": extracted_at_iso,
         }
 
-    return proposed, ("high" if high_risk else "low")
+    return proposed, auto_apply, ("high" if high_risk else "low")
 
 
 # ── Suppression (human-reject memory) ─────────────────────────────────────────
@@ -605,6 +663,45 @@ def _has_equivalent_pending_review(db, *, review_type, master_id, incoming_name)
     )
 
 
+def _has_conflicting_pending_fill(db, master_id, field, new_val) -> bool:
+    """
+    True if a PENDING field_update review already proposes a DIFFERENT value
+    for this (master, field) than `new_val`.
+
+    Multi-candidate safety guard (Phase Z, 12 Aug 2026). The 12 Aug review-
+    queue cleanup script auto-applied "empty old field" fills by trusting
+    each review's own frozen `old` snapshot in isolation — where several
+    pending reviews existed for the same (master, field) with DIFFERENT
+    proposed values (the same true "field is empty" fact rediscovered by
+    repeated ingestion runs, each with its own answer), it silently
+    overwrote the field on every pass, last one processed winning by
+    accident of query order. 130 fields across 92 startups were affected
+    (see scripts/revert_multi_candidate_clobbers.py for the full post-
+    mortem and remedy).
+
+    When this returns True, the caller must NOT auto-apply — leave the
+    field in `proposed_changes` so GET /reviews/grouped (which already
+    dedupes multiple pending proposals for one (master, field) into a
+    candidate list) surfaces every option for a human to pick between.
+    """
+    from processing.field_policy import norm_value
+    from database.models import DuplicateReview
+
+    pending = (
+        db.query(DuplicateReview)
+        .filter(DuplicateReview.master_id == master_id,
+               DuplicateReview.review_type == "field_update",
+               DuplicateReview.status == "pending")
+        .all()
+    )
+    target = norm_value(new_val)
+    for r in pending:
+        existing = ((r.proposed_changes or {}).get(field) or {}).get("new")
+        if existing is not None and norm_value(existing) != target:
+            return True
+    return False
+
+
 def _uncovered_fields(db, master_id, proposed_changes: dict) -> dict:
     """
     Phase Y-3 (5 Aug, review-inbox-flooding audit). Per-field coverage check
@@ -636,6 +733,7 @@ def _uncovered_fields(db, master_id, proposed_changes: dict) -> dict:
     and gets staged, same as before).
     """
     from database.models import DuplicateReview
+    from processing.field_policy import norm_value
 
     if not proposed_changes:
         return {}
@@ -665,7 +763,10 @@ def _uncovered_fields(db, master_id, proposed_changes: dict) -> dict:
             elif field in ("founders", "tags"):
                 same = existing_new == new_val
             else:
-                same = _norm(existing_new) == _norm(new_val)
+                # Phase Z-2 (12 Aug): diacritic/locale-fold so "München" vs
+                # "Munich" (already staged by different runs) is recognised
+                # as the same fact, not two competing pending proposals.
+                same = norm_value(existing_new) == norm_value(new_val)
             if same:
                 covered = True
                 break

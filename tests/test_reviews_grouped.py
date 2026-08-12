@@ -25,21 +25,25 @@ def _pending_field_updates(db, master_id):
 # ── Y-3: per-field coverage stops the growth ──────────────────────────────
 
 def test_reworded_proposal_does_not_create_a_new_row(make, db):
-    """The Blickfeld/Bliro shape: a reworded description of the same fact
-    (>=90% rapidfuzz token_sort_ratio — the exact bar _diff_fields already
-    uses, e.g. "builds" vs "develops") must not stage a second review once
-    one is already pending."""
+    """The Blickfeld/Bliro shape, updated for Phase Z (12 Aug): description
+    itself no longer stages ANY review (it's resolved deterministically by
+    field_policy.better_freetext — see tests/test_field_policy.py and
+    tests/test_web_verifier.py for that), and a genuinely EMPTY field now
+    auto-applies rather than stages (Z-3). This test exercises the same Y-3
+    per-field coverage logic on a real, still-staged CONFLICT instead: a
+    populated field, contradicted the same way by two separate runs, must
+    not stage a second row for the second run."""
     rid, _ = make("Grp Reword", website="pytest-grp-reword.com", city="Munich",
-                  description="A short bio.")
+                  funding_stage="Pre-Seed")
     make("Grp Reword", website="pytest-grp-reword.com", city="Munich",
-         description="Blickfeld builds solid-state LiDAR sensors for industrial automation.")
+         funding_stage="Seed")
     first_count = len(_pending_field_updates(db, rid))
     assert first_count >= 1
 
-    # Same fact, reworded again (92.9% similar to the pending proposal) —
-    # must NOT add a second row for `description`.
+    # Same contradicting value, a later independent run — must NOT add a
+    # second row for `funding_stage`.
     make("Grp Reword", website="pytest-grp-reword.com", city="Munich",
-         description="Blickfeld develops solid-state LiDAR sensors for industrial automation.")
+         funding_stage="Seed")
     assert len(_pending_field_updates(db, rid)) == first_count
 
 
@@ -61,19 +65,20 @@ def test_materially_different_value_still_creates_a_row(make, db):
 
 
 def test_partial_field_set_only_new_field_survives(make, db):
-    """Run A proposes {description, city}; run B proposes {description}
-    alone with near-identical wording — must add nothing (old whole-dict
-    equality would have staged a second row here since the field sets
-    differ, even though the substance doesn't)."""
+    """Run A proposes {city, funding_stage} (both real conflicts — populated
+    old values); run B proposes {funding_stage} alone with the SAME value,
+    no city this time — must add nothing (old whole-dict equality would
+    have staged a second row here since the field sets differ, even though
+    the substance doesn't)."""
     rid, _ = make("Grp Partial", website="pytest-grp-partial.com", city="Munich",
-                  description="A short bio.")
+                  funding_stage="Pre-Seed")
     make("Grp Partial", website="pytest-grp-partial.com", city="Hamburg",
-         description="Munich widget factory producing high quality widgets since 1990.")
+         funding_stage="Seed")
     count_after_first = len(_pending_field_updates(db, rid))
+    assert count_after_first >= 1
 
-    # 92.9% similar to the pending description proposal; no city this time.
-    make("Grp Partial", website="pytest-grp-partial.com",
-         description="Munich widget factory producing top quality widgets since 1990.")
+    # Same funding_stage value already pending; no city this time.
+    make("Grp Partial", website="pytest-grp-partial.com", funding_stage="Seed")
     assert len(_pending_field_updates(db, rid)) == count_after_first
 
 

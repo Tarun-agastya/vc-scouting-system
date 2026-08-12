@@ -9,38 +9,11 @@ real, non-empty old value contradicted by a new one).
 Integration tests against the real Postgres DB (PYTEST-prefixed rows, see
 conftest.py) since apply_verdict mutates and commits a real Startup row.
 """
-from processing.web_verifier import _is_empty, _split_proposal, apply_verdict
+from processing.web_verifier import apply_verdict
 
-
-# ── _is_empty / _split_proposal: pure logic ─────────────────────────────────
-
-def test_is_empty_recognizes_none_blank_and_zero():
-    assert _is_empty(None) is True
-    assert _is_empty("") is True
-    assert _is_empty(0) is True
-
-
-def test_is_empty_does_not_flag_real_values():
-    assert _is_empty("Munich") is False
-    assert _is_empty("0 employees") is False
-    assert _is_empty(2020) is False
-
-
-def test_split_proposal_separates_fills_from_conflicts():
-    proposed = {
-        "city": {"old": None, "new": "Munich", "source_url": "https://a.de"},
-        "country": {"old": "", "new": "Germany", "source_url": "https://a.de"},
-        "funding_stage": {"old": "Seed", "new": "Series A", "source_url": "https://a.de"},
-    }
-    fills, conflicts = _split_proposal(proposed)
-    assert set(fills) == {"city", "country"}
-    assert set(conflicts) == {"funding_stage"}
-
-
-def test_split_proposal_all_fills_no_conflicts():
-    proposed = {"city": {"old": None, "new": "Munich", "source_url": "https://a.de"}}
-    fills, conflicts = _split_proposal(proposed)
-    assert fills and not conflicts
+# _is_empty / split_proposal moved to processing/field_policy.py (Phase Z,
+# 12 Aug 2026) so ingest and web-verify can't drift on this logic again —
+# see tests/test_field_policy.py for their unit coverage.
 
 
 # ── apply_verdict: real Startup row, real DuplicateReview table ────────────
@@ -131,5 +104,48 @@ def test_no_findings_at_all_is_unaffected_by_this_change(make, db):
                             verdict={"identity_match": True, "summary": "all good", "findings": []})
 
     assert outcome == "verified"
+    reviews = db.query(DuplicateReview).filter(DuplicateReview.master_id == rid).all()
+    assert reviews == []
+
+
+def test_richer_description_auto_applies_even_over_a_populated_value(make, db):
+    """Phase Z-1 (12 Aug): description/short_description never reach the
+    Review Inbox anymore, even when they'd overwrite something already
+    there -- better_freetext decides, deterministically, no human needed."""
+    from database.models import Startup, DuplicateReview
+
+    rid, _ = make("Richer", description="Organische Solarfolien.")
+    record = db.query(Startup).filter(Startup.id == rid).first()
+
+    richer = ("Entwickelt und produziert leichte, flexible und transparente "
+             "organische Photovoltaik-Filme, die in verschiedene Baustoffe "
+             "integriert werden können.")
+    outcome = apply_verdict(db, record, results=[], verdict=_verdict(
+        ("description", richer)))
+
+    assert outcome == "auto_filled"
+    db.refresh(record)
+    assert record.description == richer
+    reviews = db.query(DuplicateReview).filter(DuplicateReview.master_id == rid).all()
+    assert reviews == [], "a description upgrade must never be staged"
+
+
+def test_vaguer_description_is_rejected_not_applied(make, db):
+    """The other direction of the same rule: a vaguer finding must not
+    downgrade a real description just because web verification found it."""
+    from database.models import Startup, DuplicateReview
+
+    detailed = ("Knowmanity solves the problem of knowledge loss by using an "
+               "AI-driven interview process to convert expert knowledge into "
+               "a living digital twin queried via chat with source refs.")
+    rid, _ = make("Vaguer", description=detailed)
+    record = db.query(Startup).filter(Startup.id == rid).first()
+
+    outcome = apply_verdict(db, record, results=[], verdict=_verdict(
+        ("description", "Preserves valuable corporate knowledge.")))
+
+    assert outcome == "verified"  # no findings survived build_proposal's filter
+    db.refresh(record)
+    assert record.description == detailed
     reviews = db.query(DuplicateReview).filter(DuplicateReview.master_id == rid).all()
     assert reviews == []

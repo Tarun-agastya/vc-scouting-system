@@ -20,17 +20,57 @@ def test_identical_reextract_is_no_op(make):
     assert status2 == "no_op" and rid2 == rid
 
 
-def test_blank_fill_stages_low_risk(make, db):
+def test_blank_fill_auto_applies_directly(make, db):
+    """
+    Phase Z-3 (12 Aug 2026): an empty-old field has nothing to adjudicate,
+    so it's written straight to the master instead of staged — this is the
+    fix for the review-queue flood (previously EVERY blank fill, however
+    uncontested, became a "low risk" review a human had to click through).
+    """
     rid, _ = make("Stage Blank", website="pytest-stage-blank.com", city="Munich",
                   description="widget maker")
     rid2, status2 = make("Stage Blank", website="pytest-stage-blank.com", city="Munich",
                          description="widget maker", funding_stage="Seed")
-    assert status2 == "staged_update" and rid2 == rid
+    assert rid2 == rid
+    assert status2 == "no_op"  # nothing staged for a human
+    assert _get(db, rid).funding_stage == "Seed"  # but the master WAS updated
     rev = db.query(DuplicateReview).filter(DuplicateReview.master_id == rid,
                                            DuplicateReview.review_type == "field_update").first()
-    assert rev and rev.risk_level == "low" and "funding_stage" in (rev.proposed_changes or {})
-    # master itself is NOT modified
-    assert _get(db, rid).funding_stage is None
+    assert rev is None
+
+
+def test_conflicting_pending_fill_blocks_auto_apply(make, db):
+    """
+    Multi-candidate safety guard (Phase Z, 12 Aug) — see
+    processing.storage._has_conflicting_pending_fill's docstring for the
+    incident (130 fields silently clobbered across 92 startups) this exists
+    to prevent. If a pending review already proposes a DIFFERENT value for
+    an empty field, a second proposal must be staged, not silently applied
+    over whatever the first one eventually resolves to.
+    """
+    rid, _ = make("Stage Multicand", website="pytest-stage-multicand.com",
+                  city="Munich", description="widget maker")
+
+    # Simulate a pending review from an earlier run already proposing a
+    # different value for this still-empty field.
+    db.add(DuplicateReview(
+        review_type="field_update", master_id=rid, master_name="PYTEST Stage Multicand",
+        incoming_name="PYTEST Stage Multicand",
+        proposed_changes={"funding_stage": {"old": None, "new": "Pre-Seed"}},
+        risk_level="low", status="pending", source="pytest",
+    ))
+    db.commit()
+
+    rid2, status2 = make("Stage Multicand", website="pytest-stage-multicand.com",
+                         city="Munich", description="widget maker", funding_stage="Seed")
+    assert rid2 == rid
+    assert status2 == "staged_update"
+    assert _get(db, rid).funding_stage is None  # NOT auto-applied
+
+    reviews = db.query(DuplicateReview).filter(DuplicateReview.master_id == rid).all()
+    new_candidates = {r.proposed_changes.get("funding_stage", {}).get("new")
+                      for r in reviews if "funding_stage" in (r.proposed_changes or {})}
+    assert new_candidates == {"Pre-Seed", "Seed"}  # both candidates preserved, neither silently wins
 
 
 def test_conflict_stages_high_risk_master_untouched(make, db):
