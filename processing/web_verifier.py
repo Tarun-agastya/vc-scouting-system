@@ -10,11 +10,22 @@ an automated path to real verification: live web search stands in for the
 missing source_excerpt as the evidence base.
 
 Same "evidence-gathering machine, never a guessing machine" contract as the
-rest of this pipeline (S-3b): a finding is never applied directly to a
-master. Every contradiction becomes a staged field_update review — exactly
+rest of this pipeline (S-3b) for anything that CONFLICTS with an existing
+value: never applied directly, always a staged field_update review — exactly
 the shape a human produces doing this by hand (the 23 Jul manual pass on 9
 records is the reference implementation this automates) — with
 incoming_source="web_verification" and a source_url cited per finding.
+
+EMPTY-FIELD FILLS ARE DIFFERENT (12 Aug 2026, owner): a field that was blank
+before verification has nothing to conflict with — there's no existing
+human judgment call being second-guessed, just a gap being filled with a
+sourced fact. Those are applied directly to the record rather than staged,
+mirroring the precedent already established in regional/enrich.py's
+apply_proposals ("fill empties, never silently overwrite"). Only genuine
+conflicts (a real, non-empty old value contradicted by a new one) still go
+to the Review Inbox — see _split_proposal / apply_verdict below. This was
+driven by the review queue being flooded with proposals that were actually
+uncontested fills, not real disagreements to adjudicate.
 
 Called exclusively through processing.scout_controller.run_web_verify(),
 which wraps the whole batch in the GPU mutex via ScoutController._execute()
@@ -206,14 +217,38 @@ def build_proposal(record, verdict: dict) -> dict:
     return proposed
 
 
+def _is_empty(val) -> bool:
+    """Same emptiness test as regional/enrich.py::apply_proposals' `current
+    in (None, "", 0)` guard, restated here since this module doesn't import
+    from regional (that isolation boundary is deliberate — see regional/
+    enrich.py's module docstring)."""
+    return val is None or val == "" or val == 0
+
+
+def _split_proposal(proposed: dict) -> tuple:
+    """
+    Split a {field: {old, new, source_url}} proposal into (fills, conflicts):
+    fills are fields whose old value was empty — nothing to adjudicate, just
+    a gap to close. conflicts are fields with a real, non-empty old value
+    being contradicted — the only ones still worth a human's attention.
+    """
+    fills, conflicts = {}, {}
+    for attr, p in proposed.items():
+        (fills if _is_empty(p.get("old")) else conflicts)[attr] = p
+    return fills, conflicts
+
+
 def apply_verdict(db, record, results: list, verdict: dict, run_id=None) -> str:
     """
-    Apply one already-computed web-verify verdict to a record: stage a
-    field_update review on a real contradiction, mark 'verified' on a clean
-    check, or leave 'flagged'/'identity_unconfirmed' if the search results
-    couldn't even confirm this is the right company. Never applies a
-    correction directly — always stages for human approval, same
-    S-3b stewardship contract as every other pipeline path.
+    Apply one already-computed web-verify verdict to a record:
+      - a field that was EMPTY and the search found a value for -> applied
+        directly (see this module's docstring, 12 Aug 2026) — nothing to
+        adjudicate, no review row.
+      - a field with a real, non-empty value being CONTRADICTED -> staged
+        as a field_update review, same S-3b stewardship contract as every
+        other pipeline path (never applied directly).
+      - a clean check, or identity unconfirmed -> 'verified' / 'flagged' as
+        before.
 
     Factored out of web_verify_pending's loop body (27 Jul) so a verdict
     already computed elsewhere — e.g. an ad-hoc verification pass run
@@ -225,7 +260,10 @@ def apply_verdict(db, record, results: list, verdict: dict, run_id=None) -> str:
     None here before 29 Jul despite DuplicateReview.run_id existing as a
     column since Phase S-3b; nothing had ever actually populated it.
 
-    Returns the outcome key: "unchanged" | "verified" | "staged".
+    Returns the outcome key: "unchanged" | "verified" | "auto_filled" | "staged".
+    "auto_filled" means every proposed field was an empty-field fill and
+    nothing needed a review; "staged" means at least one real conflict is
+    now pending review (fills, if any, were still applied alongside it).
     """
     from processing.storage import _create_review
 
@@ -267,14 +305,22 @@ def apply_verdict(db, record, results: list, verdict: dict, run_id=None) -> str:
         proposed[attr]["incoming_source"] = "web_verification"
         proposed[attr]["incoming_extracted_at"] = datetime.utcnow().isoformat()
 
-    if proposed:
+    fills, conflicts = _split_proposal(proposed)
+
+    applied = {}
+    for attr, p in fills.items():
+        setattr(record, attr, p["new"])
+        applied[attr] = {"value": p["new"], "source_url": p["source_url"],
+                         "applied_at": p["incoming_extracted_at"]}
+
+    if conflicts:
         _create_review(
             db,
             review_type="field_update",
             master=record,
             incoming_row=None,
             incoming_data={"name": record.name},
-            proposed_changes=proposed,
+            proposed_changes=conflicts,
             evidence={"web_verdict": verdict, "search_results": results},
             risk_level="high",
             confidence=None,
@@ -284,11 +330,25 @@ def apply_verdict(db, record, results: list, verdict: dict, run_id=None) -> str:
         record.verification_notes = verdict.get("summary") or ""
         record.verification_evidence = {
             "reason": "web_verification_flagged", "web_verdict": verdict,
-            "search_results": results,
+            "search_results": results, "auto_filled": applied,
         }
         record.verified_at = datetime.utcnow()
         db.commit()
         return "staged"
+
+    if applied:
+        record.verification_status = "verified"
+        record.verification_notes = (
+            f"Auto-filled from web search (no existing value to conflict with): "
+            f"{', '.join(applied)}."
+        )
+        record.verification_evidence = {
+            "reason": "web_verified", "web_verdict": verdict,
+            "search_results": results, "auto_filled": applied,
+        }
+        record.verified_at = datetime.utcnow()
+        db.commit()
+        return "auto_filled"
 
     record.verification_status = "verified"
     record.verification_notes = verdict.get("summary") or "Confirmed via web search."
@@ -323,7 +383,7 @@ async def web_verify_pending(limit: int = 15, run_id=None, progress=None) -> dic
     from database.models import Startup
 
     db = SessionLocal()
-    counts = {"verified": 0, "staged": 0, "unchanged": 0, "errors": 0}
+    counts = {"verified": 0, "auto_filled": 0, "staged": 0, "unchanged": 0, "errors": 0}
     try:
         # The reason filter (only records Phase A actually parked here, not a
         # human-flagged H-3 verdict that happens to also lack an excerpt) MUST
@@ -362,7 +422,7 @@ async def _process_candidates(db, candidates: list, run_id, progress) -> dict:
     rows they select — that difference is the whole point, and it stays in
     the callers.
     """
-    counts = {"verified": 0, "staged": 0, "unchanged": 0, "errors": 0}
+    counts = {"verified": 0, "auto_filled": 0, "staged": 0, "unchanged": 0, "errors": 0}
     if progress is not None:
         progress.total = len(candidates)
 
@@ -494,7 +554,7 @@ async def web_verify_ids(ids: list, run_id=None, progress=None) -> dict:
     from database.models import Startup
 
     db = SessionLocal()
-    counts = {"verified": 0, "staged": 0, "unchanged": 0, "errors": 0}
+    counts = {"verified": 0, "auto_filled": 0, "staged": 0, "unchanged": 0, "errors": 0}
     try:
         records = db.query(Startup).filter(Startup.id.in_(ids)).all()
         if progress is not None:

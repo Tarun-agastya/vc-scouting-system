@@ -378,7 +378,7 @@ export default {
                     ? `${fmt.num(m.startups_extracted ?? 0)} found · ${fmt.num(m.startups_inserted ?? 0)} new${burstBadge}`
                     : r.kind === "newsletter" ? `${fmt.num(m.startups_stored ?? 0)} stored`
                     : r.kind === "recheck" ? `${fmt.num(m.verified ?? 0)} verified · ${fmt.num(m.flagged ?? 0)} flagged`
-                    : r.kind === "web_verify" ? `${fmt.num(m.verified ?? 0)} verified · ${fmt.num(m.staged ?? 0)} staged · ${fmt.num(m.unchanged ?? 0)} unchanged`
+                    : r.kind === "web_verify" ? `${fmt.num(m.verified ?? 0)} verified · ${fmt.num(m.auto_filled ?? 0)} auto-filled · ${fmt.num(m.staged ?? 0)} staged · ${fmt.num(m.unchanged ?? 0)} unchanged`
                     : r.kind === "reclassify" ? `${fmt.num(m.classified ?? 0)} classified · ${fmt.num(m.errors ?? 0)} errors`
                     : "—";
                   return `<tr>
