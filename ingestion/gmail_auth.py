@@ -1,78 +1,92 @@
 """
-Shared Gmail OAuth2 authentication (Phase PM, 4 Aug 2026).
+Shared Gmail IMAP/SMTP authentication via App Password (Phase PM, 12 Aug 2026).
 
-Factored out of newsletter_ingestor.py so it and press_monitor/emailer.py
-share ONE token/consent flow instead of two independent ones that could
-drift out of sync or fight over the same credentials/token.json. SCOPES
-covers both read (newsletter ingestion) and send (press-monitor digest) —
-completing the interactive consent once (a browser window, one click)
-grants both.
+Switched from OAuth (see git history, commit 72713ae) after the OAuth
+client's Testing publishing status turned out to force a full interactive
+browser re-consent every 7 days regardless of activity — workable for a
+human-driven tool, unworkable for an unattended 8am launchd job. Moving to
+Google's verified/Production OAuth tier would need a paid CASA security
+assessment for gmail.readonly (a Restricted scope, not merely Sensitive) —
+disproportionate for a single dummy account used by one automation. App
+Passwords sidestep Google's OAuth consent machinery entirely: no
+Testing/Production split, no scheduled expiry, no browser click, ever, until
+the password is manually revoked.
 
-Switched to (from SMTP + an app password) after the app-password path
-proved unreliable for the press-monitor's Gmail account even with valid,
-freshly-generated credentials — Google's risk-scoring on programmatic
-basic-auth sign-in is independent of whether anything is actually
-misconfigured, and the OAuth flow this module uses is what Google itself
-recommends over app passwords.
+(The ORIGINAL app-password attempt that motivated the OAuth switch was
+misdiagnosed at the time as "Google's risk-scoring on programmatic
+basic-auth" — git history for commit 72713ae shows the real cause was a
+one-letter typo in the configured sending address, nothing wrong with app
+passwords themselves. Confirmed via `git show 72713ae` before reverting to
+this approach a second time.)
+
+SETUP (manual, one-time, per credentials/README or the owner's own notes):
+  1. Enable 2-Step Verification on the Gmail account, if not already on.
+  2. Generate an App Password at myaccount.google.com/apppasswords.
+  3. Set GMAIL_ADDRESS and GMAIL_APP_PASSWORD in .env.
+
+Both ingestion/newsletter_ingestor.py (IMAP, read) and
+press_monitor/emailer.py (SMTP, send) import from here rather than opening
+their own connections, so the credential check and error message live in
+exactly one place.
 """
+from __future__ import annotations
+
+import imaplib
 import logging
-import os
+import smtplib
 
 logger = logging.getLogger(__name__)
 
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.send",
-]
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TOKEN_PATH = os.path.join(_PROJECT_ROOT, "credentials", "token.json")
-
-
-def get_gmail_service():
-    """
-    Returns an authenticated Gmail API service client.
-
-    Runs the interactive OAuth consent flow (opens a local server + browser
-    window) on first use, or after a token that can no longer be silently
-    refreshed — same behaviour newsletter_ingestor.py always had, now
-    shared. Never call this from unattended/headless code expecting it to
-    succeed without a human available to click through the browser consent
-    at least once.
-    """
+def _require_credentials():
     from config import settings
-    from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from google.auth.transport.requests import Request
-    from googleapiclient.discovery import build
 
-    creds = None
-    if os.path.exists(TOKEN_PATH):
-        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+    if not settings.gmail_address or not settings.gmail_app_password:
+        raise RuntimeError(
+            "GMAIL_ADDRESS / GMAIL_APP_PASSWORD not configured. Enable "
+            "2-Step Verification on the Gmail account, generate an App "
+            "Password at myaccount.google.com/apppasswords, and set both "
+            "in .env — see ingestion/gmail_auth.py's module docstring."
+        )
+    return settings
 
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except Exception as refresh_err:
-                logger.error(
-                    "[Gmail] Token refresh failed — deleting expired token. "
-                    f"Details: {refresh_err}"
-                )
-                if os.path.exists(TOKEN_PATH):
-                    os.remove(TOKEN_PATH)
-                raise RuntimeError(
-                    "Gmail OAuth token expired and could not be refreshed. "
-                    "Delete credentials/token.json and restart to re-authenticate."
-                ) from refresh_err
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                settings.gmail_credentials_path, SCOPES
-            )
-            creds = flow.run_local_server(port=0)
 
-        os.makedirs(os.path.join(_PROJECT_ROOT, "credentials"), exist_ok=True)
-        with open(TOKEN_PATH, "w") as token_file:
-            token_file.write(creds.to_json())
+def get_imap_connection() -> imaplib.IMAP4_SSL:
+    """
+    Authenticated IMAP connection. Caller selects the mailbox (newsletter
+    ingestion always wants "INBOX" — Gmail's category tabs, Promotions/
+    Social/Updates included, are labels within the Inbox, not separate
+    folders, so this alone matches the old Gmail-API search's full-mailbox
+    scope) and is responsible for closing it (`conn.logout()`).
+    """
+    settings = _require_credentials()
+    try:
+        conn = imaplib.IMAP4_SSL(settings.gmail_imap_host, settings.gmail_imap_port)
+        conn.login(settings.gmail_address, settings.gmail_app_password)
+    except imaplib.IMAP4.error as exc:
+        raise RuntimeError(
+            f"Gmail IMAP login failed for {settings.gmail_address!r}: {exc}. "
+            "Check GMAIL_ADDRESS is spelled exactly right (a typo here caused "
+            "the original 2026 misdiagnosis — see this module's docstring) "
+            "and that GMAIL_APP_PASSWORD is a current App Password, not the "
+            "account's login password."
+        ) from exc
+    return conn
 
-    return build("gmail", "v1", credentials=creds)
+
+def get_smtp_connection() -> smtplib.SMTP_SSL:
+    """Authenticated SMTP connection, ready to send. Caller closes it
+    (`conn.quit()`)."""
+    settings = _require_credentials()
+    try:
+        conn = smtplib.SMTP_SSL(settings.gmail_smtp_host, settings.gmail_smtp_port)
+        conn.login(settings.gmail_address, settings.gmail_app_password)
+    except smtplib.SMTPAuthenticationError as exc:
+        raise RuntimeError(
+            f"Gmail SMTP login failed for {settings.gmail_address!r}: {exc}. "
+            "Check GMAIL_ADDRESS is spelled exactly right (a typo here caused "
+            "the original 2026 misdiagnosis — see this module's docstring) "
+            "and that GMAIL_APP_PASSWORD is a current App Password, not the "
+            "account's login password."
+        ) from exc
+    return conn

@@ -136,17 +136,25 @@ To trigger a manual run any time:
 curl -X POST http://localhost:8000/ingestion/newsletters
 ```
 
-### OAuth re-authentication
-The token at `credentials/token.json` expires every 7 days for Google Cloud apps in "Testing" mode.
+### Gmail authentication (App Password, since 12 Aug 2026)
+No OAuth, no browser consent flow, no 7-day expiry — see
+`ingestion/gmail_auth.py`'s module docstring for why this replaced the
+earlier OAuth setup. Both newsletter reading (IMAP) and the press-monitor
+digest (SMTP) authenticate with `GMAIL_ADDRESS` + `GMAIL_APP_PASSWORD` in
+`.env`.
 
-To re-authenticate:
-```bash
-rm credentials/token.json
-# Then trigger newsletter ingestion — a browser window will open for consent:
-curl -X POST http://localhost:8000/ingestion/newsletters
-```
+If either digest or newsletter ingestion starts failing with an auth error,
+check in this order:
+1. `GMAIL_ADDRESS` is spelled exactly right (a one-letter typo here caused a
+   real, hours-long misdiagnosis once — see the docstring).
+2. The App Password hasn't been revoked — regenerate at
+   myaccount.google.com/apppasswords (requires 2-Step Verification to
+   already be enabled on the account) and update `.env`.
+3. `GMAIL_APP_PASSWORD` is the 16-character App Password, not the account's
+   actual login password.
 
-To avoid the 7-day expiry, promote the Google Cloud app from "Testing" to "Production" in the Google Cloud Console.
+No human click is required for routine operation — this was the whole point
+of moving off OAuth.
 
 ## Dynamic sources
 
@@ -247,5 +255,6 @@ All settings are in `config/__init__.py` (pydantic-settings). Override any via `
 OLLAMA_EXTRACT_MODEL=qwen2.5:7b-instruct   # extraction model
 OLLAMA_REASON_MODEL=qwen3:14b              # reasoning / agent model
 MAX_QWEN_WORKERS=1                         # keep at 1 on Mac Mini
-GMAIL_CREDENTIALS_PATH=./credentials/gmail_credentials.json
+GMAIL_ADDRESS=greentechhubx@gmail.com
+GMAIL_APP_PASSWORD=...                     # 16-char App Password, not the login password
 ```

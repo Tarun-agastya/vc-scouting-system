@@ -144,34 +144,29 @@ def test_article_region_includes_headline_above_match(tmp_path):
     assert region.y0 < 70
 
 
-def test_emailer_sends_via_gmail_api(monkeypatch, tmp_path):
+def test_emailer_sends_via_smtp_app_password(monkeypatch, tmp_path):
     """
-    emailer.send_digest() now goes through the Gmail API (ingestion/
-    gmail_auth.get_gmail_service), not SMTP — confirm it builds a message
-    and calls .send() rather than exercising real OAuth/network.
+    emailer.send_digest() goes through SMTP with a Gmail App Password
+    (ingestion/gmail_auth.get_smtp_connection, Phase PM, 12 Aug 2026 — see
+    that module's docstring for why OAuth was abandoned) — confirm it builds
+    a MIME message and calls sendmail()/quit() rather than exercising a real
+    network connection.
     """
     from press_monitor import emailer, scanner
 
     sent = {}
 
-    class _FakeMessages:
-        def send(self, userId, body):
-            sent["userId"] = userId
-            sent["body"] = body
-            class _Exec:
-                def execute(self_inner):
-                    return {"id": "fake-message-id"}
-            return _Exec()
+    class _FakeSMTP:
+        def sendmail(self, from_addr, to_addrs, msg_string):
+            sent["from_addr"] = from_addr
+            sent["to_addrs"] = to_addrs
+            sent["msg_string"] = msg_string
 
-    class _FakeUsers:
-        def messages(self):
-            return _FakeMessages()
+        def quit(self):
+            sent["quit_called"] = True
 
-    class _FakeService:
-        def users(self):
-            return _FakeUsers()
-
-    monkeypatch.setattr("ingestion.gmail_auth.get_gmail_service", lambda: _FakeService())
+    monkeypatch.setattr("config.settings.gmail_address", "greentechhubx@gmail.com")
+    monkeypatch.setattr("ingestion.gmail_auth.get_smtp_connection", lambda: _FakeSMTP())
 
     shot = tmp_path / "page_001.png"
     shot.write_bytes(b"\x89PNG\r\n\x1a\n")  # minimal PNG-ish bytes, content unused by the fake
@@ -180,8 +175,18 @@ def test_emailer_sends_via_gmail_api(monkeypatch, tmp_path):
 
     emailer.send_digest(matches=[match], edition_label="Test 04.08.2026", recipients=["a@b.com"])
 
-    assert sent["userId"] == "me"
-    assert "raw" in sent["body"]
+    assert sent["from_addr"] == "greentechhubx@gmail.com"
+    assert sent["to_addrs"] == ["a@b.com"]
+    assert sent["quit_called"] is True
+
+    import email as email_lib
+    from email.header import decode_header, make_header
+    parsed = email_lib.message_from_string(sent["msg_string"])
+    subject = str(make_header(decode_header(parsed["Subject"])))
+    assert "Test 04.08.2026" in subject
+    body_text = next(p.get_payload(decode=True).decode("utf-8")
+                     for p in parsed.walk() if p.get_content_type() == "text/plain")
+    assert "Kutter" in body_text
 
 
 def test_summarizer_falls_back_cleanly_on_llm_failure(monkeypatch):

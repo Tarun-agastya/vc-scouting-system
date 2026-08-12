@@ -23,19 +23,41 @@ class Settings(BaseSettings):
     # Discord
     discord_bot_token: Optional[str] = None
 
-    # Gmail
+    # Gmail (IMAP/SMTP via App Password — Phase PM, 12 Aug 2026)
+    #
+    # Switched from OAuth (see git history, commit 72713ae) after the OAuth
+    # client's Testing publishing status turned out to force a full
+    # interactive browser re-consent every 7 days regardless of activity —
+    # workable for a human-driven tool, not for an unattended 8am launchd
+    # job. Moving to Google's verified/Production OAuth tier would need a
+    # paid CASA security assessment for gmail.readonly (a Restricted scope,
+    # not just Sensitive) — disproportionate for a single dummy account.
+    # App Passwords sidestep Google's OAuth consent machinery entirely: no
+    # Testing/Production split, no scheduled expiry, no browser click, ever,
+    # until the password is manually revoked.
+    #
+    # (The ORIGINAL app-password attempt that motivated the OAuth switch was
+    # misdiagnosed at the time as "Google's risk-scoring" — git history for
+    # commit 72713ae shows the real cause was a one-letter typo in the
+    # configured address, nothing wrong with app passwords themselves.)
+    #
+    # Requires 2-Step Verification enabled on the account, then an App
+    # Password generated at myaccount.google.com/apppasswords. Still used by
+    # gmail_credentials_path? No — that file/path is now unused; kept only
+    # so an old .env pointing at it doesn't hard-fail on a missing setting.
     gmail_credentials_path: str = "./credentials/gmail_credentials.json"
+    gmail_address: Optional[str] = None       # the account's own address
+    gmail_app_password: Optional[str] = None  # 16-char App Password, NOT the login password
+    gmail_imap_host: str = "imap.gmail.com"
+    gmail_imap_port: int = 993
+    gmail_smtp_host: str = "smtp.gmail.com"
+    gmail_smtp_port: int = 465  # SMTP over SSL
 
     # Press monitor (Phase PM, 4 Aug 2026) — daily Allgäuer/Memminger Zeitung
     # e-paper scan for GreenTech Hub / portfolio / partner mentions.
     # epaper_* are a real subscriber login (Corinna's), never committed.
-    # Sending reuses gmail_credentials_path's OAuth token — see
-    # ingestion/gmail_auth.py — which now carries both gmail.readonly (for
-    # the newsletter reader) and gmail.send (for this) scopes from a single
-    # consent grant. (Originally SMTP + an app password; that path proved
-    # unreliable for this account even with valid credentials — Google's
-    # risk-scoring on programmatic basic-auth is independent of anything
-    # actually misconfigured.)
+    # Sending reuses the gmail_address/gmail_app_password above — see
+    # ingestion/gmail_auth.py.
     epaper_email: Optional[str] = None
     epaper_password: Optional[str] = None
     epaper_region: str = "ME"       # Memmingen — the Memminger Zeitung edition

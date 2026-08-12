@@ -1,8 +1,10 @@
+import email
+import imaplib
 import json
 import os
-import base64
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+from email.header import decode_header, make_header
 from typing import List, Optional
 from bs4 import BeautifulSoup
 from config.source_loader import get_newsletter_search_terms, get_newsletter_senders
@@ -13,43 +15,27 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _STATE_PATH  = os.path.join(_PROJECT_ROOT, "credentials", "newsletter_state.json")
 
 
-def _build_search_query(days: int = 14) -> str:
-    """
-    Build the Gmail search query. This is a dedicated scouting inbox, so by
-    default every email in the window is fetched and relevance is filtered
-    by content downstream (candidate_filter.is_relevant, per chunk) — not by
-    guessing what words a newsletter's subject line contains.
+def _decode_header_value(raw: Optional[str]) -> str:
+    """RFC 2047 header decoding — raw IMAP fetch keeps Subject/From as
+    MIME encoded-words (e.g. '=?UTF-8?B?...?=') for anything non-ASCII,
+    unlike the old Gmail API which returned already-decoded strings. Subject
+    lines like "🟣 Milliardenrechnung von AWS" (see run_ingestion's
+    docstring) need this or candidate_filter/extraction never see them."""
+    if not raw:
+        return ""
+    try:
+        return str(make_header(decode_header(raw)))
+    except Exception:
+        return raw
 
-    days controls the window: 14 for the routine scheduled top-up, a much
-    larger value (see run_ingestion's `days` param) for an explicit backfill
-    sweep of older mail the rolling window never reaches on its own — a real
-    gap confirmed live 24 Jul: a 61-message mailbox had only its most recent
-    15 messages inside the 14-day window, permanently missing the other 46
-    (32 of which sit in the Promotions category) on every routine run.
 
-    No date/category restriction is applied beyond `newer_than:{days}d` —
-    Gmail's default search scope already covers every category tab
-    (Primary/Promotions/Social/Updates), confirmed live: a plain
-    `newer_than:14d` query returned the exact same message set as the union
-    of per-category searches. The earlier suspicion that Promotions mail was
-    being excluded by the query itself was wrong; the real cause was the
-    14-day window never reaching older mail at all.
-
-    A subject:(...) keyword restriction used to be applied unconditionally
-    and silently dropped ~85% of real newsletters — subject lines like
-    "Kann das fliegen?" or "\U0001f7e3 Milliardenrechnung von AWS" don't
-    contain literal words like "startup" or "funding".
-
-    newsletter_search_terms (config/sources.yaml) is kept as an OPTIONAL
-    narrowing filter, only applied when the list is non-empty. Re-read fresh
-    on every call (Phase S: dynamic sources).
-    """
-    terms = get_newsletter_search_terms()
-    date_clause = f"newer_than:{days}d"
-    if terms:
-        subject_clause = " OR ".join(terms)
-        return f"subject:({subject_clause}) {date_clause}"
-    return date_clause
+def _imap_since_date(days: int) -> str:
+    """'SINCE "dd-Mon-YYYY"' criterion, IMAP's own date syntax (day
+    granularity, not Gmail's relative newer_than:Nd — close enough for a
+    rolling window; a message landing exactly on the boundary is picked up
+    by whichever run runs next, and re-processing is a no-op either way
+    since already-processed UIDs are always skipped)."""
+    return (datetime.utcnow() - timedelta(days=days)).strftime("%d-%b-%Y")
 
 
 class NewsletterIngestor:
@@ -64,42 +50,68 @@ class NewsletterIngestor:
     A startup seen in a newsletter and on an accelerator site resolves to
     one deduplicated row via the same stable UUID.
 
-    Incremental fetch: processed Gmail message IDs are tracked in
+    Incremental fetch: processed IMAP UIDs are tracked in
     credentials/newsletter_state.json so each scheduler run only handles
-    new mail.
+    new mail. Message-ID (the email header, globally stable) is used for the
+    source_url/provenance shown downstream, since raw IMAP UIDs are only
+    guaranteed stable within one UIDVALIDITY session — see _load_state.
     """
 
     def __init__(self):
-        self._service = None
+        self._conn = None
 
     # ── Authentication ────────────────────────────────────────────────────────
 
     def _authenticate(self):
         """
-        OAuth2 authentication with Gmail API — shared with
-        press_monitor/emailer.py via ingestion/gmail_auth.py (Phase PM,
-        4 Aug 2026) so both features use ONE token/consent flow rather than
-        two independent ones that could drift or fight over the same
-        credentials/token.json.
+        IMAP login via App Password — shared with press_monitor/emailer.py's
+        SMTP login via ingestion/gmail_auth.py (Phase PM, 12 Aug 2026) so
+        both features read the same GMAIL_ADDRESS/GMAIL_APP_PASSWORD rather
+        than each carrying its own credential path.
         """
-        from ingestion.gmail_auth import get_gmail_service
-        self._service = get_gmail_service()
-        logger.info("[Gmail] Authenticated successfully")
+        from ingestion.gmail_auth import get_imap_connection
+        self._conn = get_imap_connection()
+        self._conn.select("INBOX")
+        logger.info("[Gmail] Authenticated successfully (IMAP)")
 
     # ── Incremental-fetch state ───────────────────────────────────────────────
 
     def _load_state(self) -> dict:
-        """Load processed-message-ID set from disk."""
+        """
+        Load processed-UID set from disk, keyed to the mailbox's current
+        UIDVALIDITY. IMAP UIDs are only meaningful within one UIDVALIDITY
+        generation — if Gmail ever rebuilds the mailbox and bumps it, old
+        UIDs could silently refer to different messages. Detected here by
+        comparing against the connected mailbox's live UIDVALIDITY (set by
+        _authenticate's SELECT) and the stale state is discarded rather than
+        trusted — reprocessing a message once is a harmless no-op thanks to
+        upsert_startup's dedup, silently mismatching UIDs is not.
+        """
+        current_uidvalidity = None
+        if self._conn is not None:
+            status, data = self._conn.response("UIDVALIDITY")
+            if data and data[0]:
+                current_uidvalidity = data[0].decode() if isinstance(data[0], bytes) else str(data[0])
+
         if os.path.exists(_STATE_PATH):
             try:
                 with open(_STATE_PATH) as f:
-                    return json.load(f)
+                    state = json.load(f)
+                if current_uidvalidity and state.get("uidvalidity") not in (None, current_uidvalidity):
+                    logger.warning(
+                        f"[Gmail] UIDVALIDITY changed ({state.get('uidvalidity')} -> "
+                        f"{current_uidvalidity}) — old processed-UID list is no longer "
+                        "trustworthy, starting fresh (re-processed messages are a no-op)"
+                    )
+                    return {"processed_ids": [], "uidvalidity": current_uidvalidity}
+                state.setdefault("uidvalidity", current_uidvalidity)
+                return state
             except Exception:
                 pass
-        return {"processed_ids": []}
+        return {"processed_ids": [], "uidvalidity": current_uidvalidity}
 
     def _save_state(self, state: dict) -> None:
-        """Persist processed-message-ID set to disk."""
+        """Persist processed-UID set to disk."""
         os.makedirs(os.path.dirname(_STATE_PATH), exist_ok=True)
         with open(_STATE_PATH, "w") as f:
             json.dump(state, f)
@@ -111,49 +123,57 @@ class NewsletterIngestor:
         Fetch and process Gmail newsletters. Returns total startups stored.
         Already-processed messages are skipped via the state file.
 
-        days: the search window (see _build_search_query). Default 14 for
-          the routine scheduled top-up. Pass a much larger value (e.g. 3650)
-          for a one-time backfill sweep of older mail the rolling window
-          never reaches — safe to re-run any time since already-processed
-          messages are always skipped regardless of window size.
+        days: the search window. Default 14 for the routine scheduled
+          top-up. Pass a much larger value (e.g. 3650) for a one-time
+          backfill sweep of older mail the rolling window never reaches —
+          safe to re-run any time since already-processed messages are
+          always skipped regardless of window size.
 
         max_messages: caps how many NEW messages get PROCESSED this run —
-          it does NOT cap how many are listed (see _list_all_message_ids;
-          listing paginates through the full match set). This matters for
-          a backfill: without pagination, a >50-message window would
-          silently see only its 50 most-recent matches and permanently miss
-          the rest, exactly the bug that caused this fix (confirmed live:
-          a 61-message mailbox has more matches than the old maxResults=50
-          listing cap allowed, so anything past page one was invisible on
-          every single run, forever).
+          it does NOT cap how many are listed. IMAP SEARCH returns every
+          matching UID in one round-trip (no Gmail-API-style page cap to
+          worry about), so unlike the old version this needs no pagination
+          loop to avoid silently losing anything past a first page.
+
+        newsletter_search_terms (config/sources.yaml), when non-empty, is
+        applied as a client-side subject-substring filter AFTER the date
+        search rather than folded into the IMAP SEARCH itself — IMAP's OR
+        syntax is a binary tree that gets unwieldy past a couple of terms,
+        and this mailbox is small enough that fetching-then-filtering costs
+        nothing noticeable. Empty (the routine default) means everything in
+        the window is fetched and relevance is filtered by content
+        downstream (candidate_filter.is_relevant, per chunk) — not by
+        guessing what words a newsletter's subject line contains, which
+        used to silently drop ~85% of real newsletters (subject lines like
+        "Kann das fliegen?" don't contain literal words like "startup").
         """
-        if not self._service:
+        if not self._conn:
             self._authenticate()
 
         state = self._load_state()
         processed_ids: set = set(state.get("processed_ids", []))
 
-        all_ids = self._list_all_message_ids(_build_search_query(days))
-        logger.info(f"[Gmail] {len(all_ids)} messages match the {days}-day window")
+        all_uids = self._list_all_uids(days)
+        logger.info(f"[Gmail] {len(all_uids)} messages match the {days}-day window")
 
         new_processed: list = []
         total_startups = 0
 
-        for msg_id in all_ids:
-            if msg_id in processed_ids:
-                logger.debug(f"[Gmail] Skipping already-processed message {msg_id}")
+        for uid in all_uids:
+            if uid in processed_ids:
+                logger.debug(f"[Gmail] Skipping already-processed message {uid}")
                 continue
             if len(new_processed) >= max_messages:
                 logger.info(
                     f"[Gmail] Reached max_messages={max_messages} for this run — "
-                    f"{len(all_ids) - len(processed_ids) - len(new_processed)} more "
+                    f"{len(all_uids) - len(processed_ids) - len(new_processed)} more "
                     "new message(s) remain for the next run"
                 )
                 break
 
-            count = self._process_message(msg_id)
+            count = self._process_message(uid)
             total_startups += count
-            new_processed.append(msg_id)
+            new_processed.append(uid)
 
         if new_processed:
             # Retain only the last 2000 IDs so the state file stays small but
@@ -164,56 +184,46 @@ class NewsletterIngestor:
             state["processed_ids"] = retained_ids[-2000:]
             self._save_state(state)
 
+        self._conn.logout()
+        self._conn = None
+
         logger.info(
             f"[Gmail] Done — {len(new_processed)} new emails processed, "
-            f"{len(all_ids) - len(new_processed)} already seen or beyond this run's cap, "
+            f"{len(all_uids) - len(new_processed)} already seen or beyond this run's cap, "
             f"{total_startups} startups stored"
         )
         return total_startups
 
-    def _list_all_message_ids(self, query: str, *, page_size: int = 100, hard_cap: int = 5000) -> list:
-        """
-        List every message ID matching `query`, following Gmail's
-        nextPageToken across as many pages as it takes — the previous
-        version passed maxResults straight through with no pagination, so
-        any window with more than maxResults (default 50) matches silently
-        lost everything past the first page. hard_cap is just a sanity
-        backstop against a runaway loop; a real mailbox won't get close.
-        """
-        ids: list = []
-        page_token = None
-        while True:
-            resp = (
-                self._service.users()
-                .messages()
-                .list(userId="me", q=query, maxResults=page_size, pageToken=page_token)
-                .execute()
-            )
-            ids.extend(m["id"] for m in resp.get("messages", []))
-            page_token = resp.get("nextPageToken")
-            if not page_token or len(ids) >= hard_cap:
-                break
-        return ids
+    def _list_all_uids(self, days: int) -> List[str]:
+        """List every message UID in the last `days`, newest search
+        semantics matching IMAP's own SINCE criterion (see
+        _imap_since_date). Subject-term narrowing, when configured, is
+        applied client-side after fetch — see run_ingestion's docstring."""
+        typ, data = self._conn.search(None, f'(SINCE "{_imap_since_date(days)}")')
+        if typ != "OK" or not data or not data[0]:
+            return []
+        return [uid.decode() if isinstance(uid, bytes) else uid for uid in data[0].split()]
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    def _process_message(self, message_id: str) -> int:
-        """Fetch and process one Gmail message. Returns startups stored."""
+    def _process_message(self, uid: str) -> int:
+        """Fetch and process one Gmail message by IMAP UID. Returns startups stored."""
+        message_id = uid  # overwritten below once the real Message-ID header is known
         try:
-            message = (
-                self._service.users()
-                .messages()
-                .get(userId="me", id=message_id, format="full")
-                .execute()
-            )
+            typ, data = self._conn.uid("fetch", uid, "(RFC822)")
+            if typ != "OK" or not data or not data[0]:
+                logger.warning(f"[Gmail] UID fetch returned nothing for {uid}")
+                return 0
+            raw = data[0][1]
+            message = email.message_from_bytes(raw)
 
-            headers = {
-                h["name"]: h["value"]
-                for h in message.get("payload", {}).get("headers", [])
-            }
-            sender  = headers.get("From", "")
-            subject = headers.get("Subject", "")
-            date_str = headers.get("Date", "")
+            sender   = _decode_header_value(message.get("From", ""))
+            subject  = _decode_header_value(message.get("Subject", ""))
+            date_str = message.get("Date", "")
+            # Message-ID is the globally-stable identifier for source_url/
+            # provenance — the IMAP UID (this method's `uid` param) only
+            # drives the local skip-check/state file, see _load_state.
+            message_id = (message.get("Message-ID") or f"uid-{uid}").strip("<>")
 
             trusted_senders = get_newsletter_senders()
             if trusted_senders and not self._is_trusted_sender(sender, trusted_senders):
@@ -237,7 +247,7 @@ class NewsletterIngestor:
             return count
 
         except Exception as exc:
-            logger.error(f"[Gmail] Failed to process message {message_id}: {exc}")
+            logger.error(f"[Gmail] Failed to process message uid={uid}: {exc}")
             return 0
 
     def _is_trusted_sender(self, sender: str, trusted_senders: List[str]) -> bool:
@@ -255,28 +265,40 @@ class NewsletterIngestor:
         match = re.match(r'^"?([^"<]+?)"?\s*<', sender)
         return match.group(1).strip() if match else sender
 
-    def _extract_text(self, message: dict) -> str:
-        """Extract clean plain text from a Gmail message payload."""
+    def _extract_text(self, message: "email.message.Message") -> str:
+        """
+        Extract clean plain text from a parsed RFC822 message. Same
+        preference order as the old Gmail-API version: prefer text/plain,
+        fall back to text/html stripped via BeautifulSoup, recursing into
+        multipart parts in order and returning the first non-empty result.
+        """
 
-        def _decode_part(payload: dict) -> str:
-            mime = payload.get("mimeType", "")
-            body_data = payload.get("body", {}).get("data", "")
+        def _decode_part(part: "email.message.Message") -> str:
+            if part.is_multipart():
+                for sub in part.get_payload():
+                    text = _decode_part(sub)
+                    if text:
+                        return text
+                return ""
 
-            if mime == "text/plain" and body_data:
-                return base64.urlsafe_b64decode(body_data).decode("utf-8", errors="ignore")
+            payload = part.get_payload(decode=True)
+            if not payload:
+                return ""
+            charset = part.get_content_charset() or "utf-8"
+            try:
+                decoded = payload.decode(charset, errors="ignore")
+            except (LookupError, UnicodeDecodeError):
+                decoded = payload.decode("utf-8", errors="ignore")
 
-            if mime == "text/html" and body_data:
-                html = base64.urlsafe_b64decode(body_data).decode("utf-8", errors="ignore")
-                soup = BeautifulSoup(html, "html.parser")
+            ctype = part.get_content_type()
+            if ctype == "text/plain":
+                return decoded
+            if ctype == "text/html":
+                soup = BeautifulSoup(decoded, "html.parser")
                 return soup.get_text(separator="\n", strip=True)
-
-            for part in payload.get("parts", []):
-                text = _decode_part(part)
-                if text:
-                    return text
             return ""
 
-        return _decode_part(message.get("payload", {}))
+        return _decode_part(message)
 
     def _extract_and_store(
         self,

@@ -22,9 +22,9 @@ a short German-language summary + a screenshot of the matched page to
    when a match is likely a false positive (e.g. "Reisacher" the company
    vs. a person named Reisacher — confirmed live, it correctly told them apart).
 4. **Email** (`emailer.py`) — one digest email per day with a match, sent
-   via the Gmail API using the same OAuth token as the newsletter reader
-   (`ingestion/gmail_auth.py` — one consent grants both `gmail.readonly`
-   and `gmail.send`), sent only if at least one match was found.
+   via SMTP with the same Gmail App Password the newsletter reader uses over
+   IMAP (`ingestion/gmail_auth.py`), sent only if at least one match was
+   found.
 5. The downloaded PDF and rendered page screenshots are deleted after the
    email is sent (or if nothing matched) — no local copy of the full
    copyrighted edition is retained.
@@ -39,18 +39,23 @@ epaper_password=...                         # already set
 press_monitor_recipients=corinna.tappe@gt-hub.de,stefan.lenz@gt-hub.de  # already set
 ```
 
-Sending is fully set up: `credentials/token.json` holds an OAuth token for
-`greentechhubx@gmail.com` (note: double "h" — a single-letter typo in this
-address is what caused the original SMTP app-password attempts to fail;
-nothing was actually wrong with any of the three app passwords generated
-along the way) covering both `gmail.readonly` (newsletter reading) and
-`gmail.send` (this feature) from one consent grant. A real test digest was
-sent successfully to both recipients on 4 Aug 2026.
+Sending and newsletter reading both authenticate as `greentechhubx@gmail.com`
+(note: double "h") via `GMAIL_ADDRESS` + `GMAIL_APP_PASSWORD` in `.env` — a
+16-character App Password generated at myaccount.google.com/apppasswords,
+not the account's login password. See `ingestion/gmail_auth.py`'s module
+docstring for the full history: this account briefly ran on OAuth (4-12 Aug
+2026) after a typo in the address caused the *original* app-password attempt
+to be misdiagnosed as unreliable, but OAuth's Testing-mode 7-day token
+expiry required a human browser click too often for an unattended 8am job,
+and the alternative (Google's verified-production tier) needs a paid CASA
+security assessment for `gmail.readonly` — disproportionate for a single
+dummy account. Back on App Password + IMAP/SMTP since 12 Aug 2026, this time
+with the address double-checked.
 
-If `credentials/token.json` is ever deleted or its refresh token stops
-working, re-running anything that calls `ingestion.gmail_auth.get_gmail_service()`
-(the scheduled job, `run_daily.py`, or the newsletter reader) will reopen
-the browser consent flow — needs a human present to click "Allow" once.
+If GMAIL_ADDRESS/GMAIL_APP_PASSWORD are ever missing or wrong,
+`ingestion.gmail_auth.get_imap_connection()`/`get_smtp_connection()` raise a
+RuntimeError naming exactly what to check — no browser consent flow, no
+human click required for routine operation.
 
 ## Running it
 
