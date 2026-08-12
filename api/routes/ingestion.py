@@ -39,11 +39,18 @@ class TargetedRequest(BaseModel):
 
 @router.post("/rss")
 async def ingest_rss_feeds(request: RSSIngestionRequest):
-    """Trigger RSS ingestion through the controller (queues on the GPU mutex)."""
+    """
+    Trigger RSS ingestion through the controller (queues on the GPU mutex).
+
+    Chained (Phase AR-1, 12 Aug 2026): whatever this run extracts is
+    followed immediately by a local-only recheck (H-3, no search call, no
+    external quota) — same-day verification instead of waiting for the
+    03:00 nightly job.
+    """
     import asyncio
     from processing.scout_controller import scout_controller
 
-    asyncio.create_task(scout_controller.run_rss(max_entries=request.max_entries))
+    asyncio.create_task(scout_controller.run_rss_then_recheck(max_entries=request.max_entries))
     return {"status": "started", "message": "RSS ingestion queued via controller"}
 
 
@@ -100,7 +107,8 @@ async def ingest_newsletters(days: int = 14, max_messages: int = 50):
     import asyncio
     from processing.scout_controller import scout_controller
 
-    asyncio.create_task(scout_controller.run_newsletters(max_messages=max_messages, days=days))
+    # Chained (Phase AR-1, 12 Aug 2026) — same reasoning as /ingestion/rss above.
+    asyncio.create_task(scout_controller.run_newsletters_then_recheck(max_messages=max_messages, days=days))
     window = "routine 14-day" if days <= 14 else f"backfill, {days}-day"
     return {"status": "started", "message": f"Gmail newsletter ingestion queued ({window} window)"}
 

@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
             if not _gmail_credentials_present():
                 logger.debug("[Gmail] Credentials not found — skipping scheduled top-up")
                 return
-            await scout_controller.run_newsletters(max_messages=50)
+            await scout_controller.run_newsletters_then_recheck(max_messages=50)
 
         async def _scheduled_llm_explain():
             """

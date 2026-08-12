@@ -513,6 +513,52 @@ class ScoutController:
                             batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
         return await self._execute(rec, lambda: self._work_newsletters(max_messages, days))
 
+    async def run_rss_then_recheck(
+        self, max_entries: int = 50, *,
+        batch_id: Optional[str] = None, batch_index: Optional[int] = None, batch_total: Optional[int] = None,
+    ) -> RunRecord:
+        """
+        Phase AR-1 (12 Aug 2026, owner): RSS ingestion, then immediately
+        chain a LOCAL-ONLY recheck (H-3) — no search call, no external
+        quota, so a startup never sits "unverified" purely because nobody
+        remembered to press Recheck. A nightly scheduled recheck already
+        exists (api/main.py, 03:00, limit=80) and keeps draining the whole
+        backlog either way; this just gets same-day coverage instead of
+        waiting up to 24h.
+
+        Deliberately does NOT also chain web-verify here — that costs a
+        real outbound search call per record (Tavily/SearXNG quota) and
+        stays a manual/nightly-batched decision, same as before.
+        recheck_pending() orders oldest-unverified-first, not "only this
+        run's records" — that's intentional: it means every chained call
+        also chips away at the pre-existing backlog, not just today's
+        finds.
+
+        Same "chain lives at this level, not inside the work function"
+        rule as run_web_source_then_verify below — _execute() holds
+        gpu_mutex for the whole run and asyncio.Lock isn't reentrant.
+        """
+        rec = await self.run_rss(max_entries=max_entries, batch_id=batch_id,
+                                 batch_index=batch_index, batch_total=batch_total)
+        found = (rec.metrics or {}).get("startups_extracted", 0)
+        if rec.status == "completed" and found:
+            logger.info(f"[Controller] RSS: {found} startup(s) extracted — chaining local recheck")
+            await self.run_recheck(limit=20, batch_id=batch_id)
+        return rec
+
+    async def run_newsletters_then_recheck(
+        self, max_messages: int = 50, days: int = 14, *,
+        batch_id: Optional[str] = None, batch_index: Optional[int] = None, batch_total: Optional[int] = None,
+    ) -> RunRecord:
+        """Same shape as run_rss_then_recheck — see its docstring."""
+        rec = await self.run_newsletters(max_messages=max_messages, days=days, batch_id=batch_id,
+                                         batch_index=batch_index, batch_total=batch_total)
+        stored = (rec.metrics or {}).get("startups_stored", 0)
+        if rec.status == "completed" and stored:
+            logger.info(f"[Controller] Newsletters: {stored} startup(s) stored — chaining local recheck")
+            await self.run_recheck(limit=20, batch_id=batch_id)
+        return rec
+
     async def run_recheck(
         self, limit: int = 20, *,
         batch_id: Optional[str] = None, batch_index: Optional[int] = None, batch_total: Optional[int] = None,
@@ -572,6 +618,16 @@ class ScoutController:
         so an unchanged source costs zero outbound search calls. Returns the
         SCRAPE's RunRecord (the verify leg is its own separate record in
         history) so existing callers see no change in return shape.
+
+        Also chains a small LOCAL-ONLY recheck (H-3, Phase AR-1, 12 Aug
+        2026) when the scrape inserted or updated anything — same
+        same-day-not-next-night reasoning as run_rss_then_recheck's
+        docstring. limit=10 here, deliberately smaller than that method's
+        20: this runs once PER SOURCE (up to ~19 times in one accelerator/
+        university sweep), so a larger limit would multiply into a much
+        bigger addition to total sweep time than a once-per-batch chain
+        does. The nightly scheduled recheck (limit=80) still covers the
+        rest of whatever this modest per-source chain doesn't reach.
         """
         rec = await self.run_web_source(
             url, source_type, label, force_render=force_render,
@@ -581,6 +637,11 @@ class ScoutController:
         if rec.status == "completed" and stubs:
             logger.info(f"[Controller] {label or url}: {stubs} name-only stub(s) — chaining web verification")
             await self.run_web_verify_stubs(batch_id=batch_id)
+
+        touched = (rec.metrics or {}).get("startups_inserted", 0) + (rec.metrics or {}).get("updates_staged", 0)
+        if rec.status == "completed" and touched:
+            logger.info(f"[Controller] {label or url}: {touched} record(s) touched — chaining local recheck")
+            await self.run_recheck(limit=10, batch_id=batch_id)
         return rec
 
     async def run_recheck_selected(self, ids: list) -> RunRecord:
@@ -650,7 +711,7 @@ class ScoutController:
         total = 1 + len(accel) + len(uni) + 1  # rss + accelerators + universities + newsletters
         i = 1
 
-        await self.run_rss(batch_id=bid, batch_index=i, batch_total=total)
+        await self.run_rss_then_recheck(batch_id=bid, batch_index=i, batch_total=total)
         i += 1
         for s in accel:
             await self.run_web_source_then_verify(
@@ -666,7 +727,7 @@ class ScoutController:
                 batch_id=bid, batch_index=i, batch_total=total,
             )
             i += 1
-        await self.run_newsletters(batch_id=bid, batch_index=i, batch_total=total)
+        await self.run_newsletters_then_recheck(batch_id=bid, batch_index=i, batch_total=total)
 
     # ── Targeted command surface (the agent's lever) ─────────────────────────────
 
