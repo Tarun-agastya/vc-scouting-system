@@ -37,6 +37,9 @@ class RSSParser:
             except Exception as exc:
                 logger.error(f"[RSS] Failed for {url}: {exc}")
 
+        logger.info(f"[RSS] Total startups extracted: {len(all_startups)}")
+        return all_startups
+
     # ── Date Helper ───────────────────────────────────────────────────────────
 
     def _get_published_date(self, entry) -> Optional[str]:
@@ -54,9 +57,6 @@ class RSSParser:
             except Exception:
                 pass
         return None
-
-        logger.info(f"[RSS] Total startups extracted: {len(all_startups)}")
-        return all_startups
 
     # ── Private Helpers ───────────────────────────────────────────────────────
 

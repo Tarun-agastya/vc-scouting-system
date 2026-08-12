@@ -376,6 +376,7 @@ export default {
                     : "";
                   const summary = r.kind === "web"
                     ? `${fmt.num(m.startups_extracted ?? 0)} found · ${fmt.num(m.startups_inserted ?? 0)} new${burstBadge}`
+                    : r.kind === "rss" ? `${fmt.num(m.startups_extracted ?? 0)} found`
                     : r.kind === "newsletter" ? `${fmt.num(m.startups_stored ?? 0)} stored`
                     : r.kind === "recheck" ? `${fmt.num(m.verified ?? 0)} verified · ${fmt.num(m.flagged ?? 0)} flagged`
                     : r.kind === "web_verify" ? `${fmt.num(m.verified ?? 0)} verified · ${fmt.num(m.auto_filled ?? 0)} auto-filled · ${fmt.num(m.staged ?? 0)} staged · ${fmt.num(m.unchanged ?? 0)} unchanged`

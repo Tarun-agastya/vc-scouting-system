@@ -360,10 +360,18 @@ class ScoutController:
     async def _work_rss(self, max_entries: int) -> dict:
         from ingestion.rss_parser import rss_parser
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
+        startups = await loop.run_in_executor(
             None, lambda: rss_parser.ingest_feeds(max_entries=max_entries)
         )
-        return {}
+        # ingest_feeds() previously had no `return` statement at all (dead
+        # code after an unrelated method, found live 12 Aug — the dashboard
+        # showed a flat 0/"—" for every RSS run, live AND after completion,
+        # since this always got back None and reported {} unconditionally).
+        # _store_startup discards upsert_startup's status, so this can only
+        # report the raw extracted count, not a new/updated/duplicate
+        # breakdown the way _work_web's PipelineMetrics does — a real gap,
+        # left for later rather than a disproportionate refactor right now.
+        return {"startups_extracted": len(startups or [])}
 
     async def _work_web(self, url: str, source_type: str, rec: RunRecord,
                         force_render: bool = False) -> dict:
