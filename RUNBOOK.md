@@ -1,260 +1,357 @@
 # VC Scouting System — Operations Runbook
 
-## Required Ollama environment
+**Last verified working: 13 Aug 2026.** Machine: Mac mini (M4, 24 GB), `~/vc-scouting-system/vc-scouting-system`.
 
-Set these before starting the API server or any ingestion script. Add them to your shell profile or `.env`:
+This is the single source of truth for running, checking, and repairing the system. It is written to be usable by someone who did not build it.
+
+---
+
+## 1. The 60-second health check
+
+Run these three. If all three look right, the system is fine — everything else in this document is for when they don't.
 
 ```bash
-export OLLAMA_KEEP_ALIVE=5m          # Unload idle models after 5 min (frees memory)
-export OLLAMA_MAX_LOADED_MODELS=2    # Allow the 7B extract + 14B reason models in memory at once
-export OLLAMA_NUM_PARALLEL=1         # One request at a time per model (prevents GPU oversubscription)
+cd ~/vc-scouting-system/vc-scouting-system
+
+curl -s http://localhost:8000/health          # → {"status":"ok","startups_in_db":2144}
+docker ps --format "table {{.Names}}\t{{.Status}}"   # → 3 containers, all (healthy)
+launchctl list | grep -E "vcscouting|gthub"   # → com.vcscouting.api has a real PID
 ```
 
-## Models
+**What "right" looks like:**
 
-| Purpose | Model | Pull command |
+| Check | Healthy output | Meaning |
 |---|---|---|
-| **Extraction (hot path)** | `qwen2.5:7b-instruct` | `ollama pull qwen2.5:7b-instruct` |
-| **Reasoning / agent** | `qwen3:14b` | (already installed) |
-| **Embeddings** | `nomic-embed-text` | (already installed) |
+| `/health` | `{"status":"ok","startups_in_db":<number>}` | API + Qdrant both alive. The number only ever grows. |
+| `docker ps` | `vc_postgres`, `vc_qdrant`, `vc_searxng` — all `(healthy)` | Databases + search fallback up. |
+| `launchctl list` | `com.vcscouting.api` shows a **number** in column 1 | API service running. `-` means dead. |
 
-All inference is **local only** — never configure a cloud provider.
+For `com.vcscouting.dockerstack` and `com.gthub.pressmonitor`, a `-` in column 1 is **normal** — they are one-shot jobs, not services. They only hold a PID while actually running. Column 2 is their last exit code; `0` = last run succeeded.
 
-## Starting the system
+---
 
-**On the Mac mini, this is now automatic** — see "Unattended operation" below. The steps here are for manual/dev use or debugging.
+## 2. What runs by itself
+
+Nothing here needs a human. This is the full unattended schedule.
+
+| When | Job | What it does | Where it's defined |
+|---|---|---|---|
+| **Mon + Thu 05:00** | Full sweep | RSS → accelerators → universities → newsletters. The main data intake. | `api/main.py` scheduler |
+| **Daily 08:00** | Press monitor | Downloads the Memminger Zeitung e-paper, scans for watched keywords, emails a digest. | `com.gthub.pressmonitor` (separate launchd job) |
+| **Daily 13:00** | Gmail top-up | Incremental newsletter check so mail arriving between sweeps isn't delayed. | `api/main.py` scheduler |
+| **Nightly 02:00** | LLM explain | Local 14B model writes a plain-language explanation for pending reviews. Guidance only — never decides. | `api/main.py` scheduler |
+| **Nightly 03:00** | Verification recheck | Re-verifies up to 80 unverified records against their own stored source text. Local only, no web calls. | `api/main.py` scheduler |
+| **Nightly 04:00** | Web verify | Enriches up to 20 name-only stubs using a web search. **The only job that leaves the machine.** | `api/main.py` scheduler |
+| **Nightly 04:30** | Reclassify | Safety net for records whose inline classification failed. | `api/main.py` scheduler |
+
+All of the API-scheduler jobs queue on a single **GPU mutex**, so they never fight each other for Ollama. The press monitor is a separate process and shares only Ollama and the Gmail credential.
+
+**Over a month with nobody watching, expect:** ~8 full sweeps, ~30 press digests, ~30 Gmail top-ups, and the nightly maintenance jobs every night. The startup count grows; the review queue grows (see §5).
+
+---
+
+## 3. How you'd know something broke — and the honest gap
+
+**There is no alerting.** Nothing emails you if the API dies. Be aware of this before relying on silence as good news.
+
+The closest thing to a daily heartbeat is the **press-monitor digest email** (~08:05 daily). But it is an imperfect signal:
+
+> ⚠️ **The digest is only sent on days when keywords actually match.** A no-match day sends nothing at all. So a missing digest means *either* "nothing in the paper today" *or* "the system is broken" — you cannot tell which from your inbox.
+
+If you want certainty while away, run the §1 health check remotely, or ask someone in the office to. Two or three missed digest days in a row is worth checking.
+
+---
+
+## 4. Troubleshooting by symptom
+
+Ordered by how likely you are to hit it. Every fix here is safe to run.
+
+### 4.1 API not responding / dashboard won't load
 
 ```bash
-# 1. Start infrastructure
+launchctl list | grep vcscouting          # is it running?
+tail -50 logs/api.error.log               # why did it stop?
+launchctl kickstart -k gui/$(id -u)/com.vcscouting.api   # restart it
+```
+
+The service has `KeepAlive`, so it restarts itself every 10s on crash. If it's flapping, it's almost always because Postgres or Qdrant isn't up yet — fix §4.2 first, and the API recovers on its own.
+
+### 4.2 Containers down / "connection refused" to Postgres or Qdrant
+
+```bash
+docker ps -a                              # look for "Exited"
+docker compose up -d                      # bring everything back
+docker compose restart qdrant             # or just one
+cat logs/docker_stack.log                 # did the login-time job run?
+```
+
+Docker Desktop's own restart-on-reboot proved unreliable in a real reboot test, which is why `com.vcscouting.dockerstack` exists — it waits for the Docker daemon at login and runs `docker compose up -d`. If containers are down after a reboot, that job is the first thing to check.
+
+### 4.3 Press monitor digest stopped arriving
+
+Two independent credentials can break it. Check the log first — it names which:
+
+```bash
+tail -40 logs/pressmonitor.log            # per-day outcome, one line each
+tail -60 logs/pressmonitor.error.log      # the actual error
+python3 -m press_monitor.run_daily        # run it by hand, right now
+```
+
+| Log says | Cause | Fix |
+|---|---|---|
+| e-paper login failed | Subscription login changed/lapsed | Update `EPAPER_EMAIL` / `EPAPER_PASSWORD` in `.env` |
+| SMTP / auth error | Gmail App Password revoked | Regenerate at `myaccount.google.com/apppasswords`, update `GMAIL_APP_PASSWORD` in `.env` |
+| `not_published` | Sunday / holiday — no edition exists | Nothing to fix |
+| `no_matches` | Paper had no watched keywords | Nothing to fix |
+| `MuPDF error: cannot find XObject` | Known, harmless — see §7 | Nothing to fix |
+
+Running it by hand **sends a real email to the real recipients**. That's usually what you want when testing, but don't run it repeatedly.
+
+### 4.4 Gmail newsletter ingestion failing
+
+Authentication is an **App Password over IMAP/SMTP** — not OAuth. There is no token to expire, no browser consent, no Testing/Production mode. It works until the password is manually revoked or 2-Step Verification is turned off on the account.
+
+Check in this order:
+
+1. `GMAIL_ADDRESS` spelled exactly right in `.env` — a one-letter typo here once caused an hours-long misdiagnosis.
+2. App Password not revoked — regenerate and update `.env`.
+3. `GMAIL_APP_PASSWORD` is the 16-character App Password, **not** the account login password.
+
+```bash
+curl -X POST http://localhost:8000/ingestion/newsletters   # trigger a run
+grep -i "\[Gmail\]" logs/api.error.log | tail -20          # see what happened
+```
+
+### 4.5 Ollama timeouts / extraction returning nothing
+
+```bash
+ollama ps                                 # what's loaded right now
+ollama list                               # what's installed
+curl http://localhost:11434/api/tags      # is Ollama even up?
+```
+
+Ollama.app auto-starts at login. If it's down, open the app. The two models that must exist:
+
+- `qwen2.5:7b-instruct` — extraction (hot path)
+- `qwen3:14b` — reasoning
+- `nomic-embed-text` — embeddings
+
+If extraction returns empty arrays, confirm `qwen2.5:7b-instruct` is present and `OLLAMA_EXTRACT_MODEL` points at it.
+
+### 4.6 A run seems stuck
+
+```bash
+curl -s http://localhost:8000/ingestion/status | python3 -m json.tool | head -40
+curl -X POST http://localhost:8000/ingestion/stop         # cancel current run
+```
+
+`gpu_locked: true` with no `current_run` progressing for a long time means a job is wedged. Stopping is best-effort — an Ollama call already in flight will finish first. Restarting the API (§4.1) always clears it.
+
+### 4.7 Everything looks broken and you want a clean slate
+
+Safe, in this order:
+
+```bash
+cd ~/vc-scouting-system/vc-scouting-system
 docker compose up -d
-
-# 2. Verify containers
-docker ps   # vc_postgres and vc_qdrant should both be (healthy)
-
-# 3. Set Ollama env (see above)
-
-# 4. Start the API server
-uvicorn api.main:app --host 0.0.0.0 --port 8000
+launchctl kickstart -k gui/$(id -u)/com.vcscouting.api
+sleep 15 && curl -s http://localhost:8000/health
 ```
 
-## Manual ingestion
+This touches **no data**. Postgres and Qdrant keep their volumes.
+
+---
+
+## 5. The Review Inbox (the one thing that needs a human)
+
+The pipeline never silently overwrites existing startup data. Every field change and possible duplicate is **staged** for review at `http://<mac-ip>:8000/dashboard` → Review Inbox.
+
+**Currently ~872 pending.** This grows while you're away — that is expected and harmless. Nothing degrades if you ignore it for a month; the queue is a backlog, not an error state.
+
+Markers: 🔴 conflict (would change a populated field) · 🟡 new info (fills a blank) · ⚠️ anomaly. Shortcuts: `j`/`k` navigate, `a` approve, `r` reject. Reject is remembered, so the same thing is not re-flagged next sweep.
+
+**Bulk tools** (all default to a preview/dry-run and show real counts before writing):
 
 ```bash
-# RSS feeds only (fast, ~1 min)
-python scripts/run_ingestion.py rss
+python3 scripts/drain_review_backlog.py              # preview
+python3 scripts/drain_review_backlog.py --apply      # execute
 
-# All accelerator portfolio pages
-python scripts/run_ingestion.py accelerators
-
-# University spinoff pages
-python scripts/run_ingestion.py universities
-
-# Full run (all sources)
-python scripts/run_ingestion.py all
+python3 scripts/clear_stale_dedup_reviews.py         # preview
+python3 scripts/clear_stale_dedup_reviews.py --apply # execute
 ```
 
-## Ingestion controller & API (Phase 3)
+> 🔒 **Safety rule, non-negotiable.** When several pending reviews propose *different* values for the same field on the same record, nothing auto-applies — it goes to a human. This exists because a cleanup script once clobbered 130 fields across 92 startups by trusting stale snapshots. Every bulk path now groups by (record, field) first and refuses ties. Do not write a script that bypasses this.
 
-All server-side ingestion runs through `processing/scout_controller.py`, which
-holds a single **GPU mutex** (`asyncio.Lock`). Only one heavy LLM job touches
-Ollama at a time — scheduled jobs, API-triggered runs, and (Phase 4) the agent's
-14B reasoning all queue on the same lock, so the Mac is never oversubscribed.
+---
 
-Before any run the controller pre-flights Ollama + Qdrant; if either is down the
-run is **skipped and logged**, never crashed. Every run is tracked in an
-in-memory history (last 50) queryable via the status endpoint.
+## 6. Command reference
+
+### Services
 
 ```bash
-# Trigger ingestion (all queue on the GPU mutex, return immediately)
+docker compose up -d                          # start Postgres + Qdrant + SearXNG
+docker compose restart qdrant                 # restart one service
+docker ps                                     # status
+launchctl kickstart -k gui/$(id -u)/com.vcscouting.api   # restart API
+launchctl list | grep -E "vcscouting|gthub"   # service status
+```
+
+### Ingestion (via API — preferred; queues on the GPU mutex)
+
+```bash
 curl -X POST http://localhost:8000/ingestion/rss
+curl -X POST http://localhost:8000/ingestion/newsletters
 curl -X POST http://localhost:8000/ingestion/scrape-accelerators
 curl -X POST http://localhost:8000/ingestion/scrape-universities
-curl -X POST http://localhost:8000/ingestion/newsletters
-curl -X POST http://localhost:8000/ingestion/run-all      # RSS → accel → uni → newsletters
+curl -X POST http://localhost:8000/ingestion/run-all          # full sweep
+curl -X POST http://localhost:8000/ingestion/stop             # cancel
+curl -s http://localhost:8000/ingestion/status                # live progress
 
-# Targeted run (the agent's lever) — returns a run_id to poll
+# one specific source
 curl -X POST http://localhost:8000/ingestion/targeted \
-     -H 'Content-Type: application/json' \
-     -d '{"source_id":"munich_startup"}'        # or {"kind":"rss"} / {"url":"https://..."}
-
-# Controller status: current run, last run, recent history, GPU lock state
-curl http://localhost:8000/ingestion/status
-
-# Poll a specific targeted run until status == completed | failed | skipped
-curl "http://localhost:8000/ingestion/status?run_id=<run_id>"
+  -H 'Content-Type: application/json' -d '{"source_id":"munich_startup"}'
 ```
 
-Scheduled jobs (set in `api/main.py`): RSS every 6 h, Gmail every 8 h (offset
-+30 min). Both call the controller, so they serialize against each other and
-against any API-triggered run.
-
-> The manual CLI (`scripts/run_ingestion.py`) calls the scraper directly and is
-> intended for use when the API server is **not** running. Do not run it
-> alongside the server — the in-process mutex cannot guard a separate process.
-
-## Validation harness
+### Ingestion (CLI — only when the API is **not** running)
 
 ```bash
-# Capture an extraction run for quality review
-python scripts/run_validation.py capture --source-url https://www.htgf.de/en/portfolio/
-
-# Export to CSV for manual review
-python scripts/run_validation.py export --run-id <UUID from capture>
-
-# Compute precision/recall metrics (after filling verdict column in CSV)
-python scripts/run_validation.py metrics --run-id <UUID>
+python3 scripts/run_ingestion.py rss|accelerators|universities|all
 ```
 
-Validation outputs land in `validation/{run_id}/`.
+> ⚠️ Never run the CLI while the API server is up. The GPU mutex is in-process and cannot guard a second process — you'd have two jobs fighting over Ollama.
 
-## Gmail newsletter setup
+### Verification
 
-The dedicated scouting Gmail account is **greentechhubx@gmail.com**. Newsletters already subscribed there are automatically processed on the 8-hour schedule.
-
-### Subscribing to new newsletters
-Subscribe greentechhubx@gmail.com to VC/startup newsletters (e.g. Sifted, EU-Startups, Dealroom, TechCrunch, etc.). The ingestor will extract startups from each email using the same pipeline as web sources.
-
-### Trusted-sender allowlist
-Edit `config/sources.yaml` → `newsletter_senders` (no restart needed — re-read fresh on every run; see "Dynamic sources" below):
-```yaml
-newsletter_senders:
-  - sifted.eu
-  - eu-startups.com
-  - dealroom.co
-```
-Leave the list empty (the default) to process **all** emails matching the search terms — relevance is still filtered by content downstream, which is the current setup since greentechhubx@gmail.com is a dedicated scouting inbox.
-
-### Incremental fetch state
-Processed message IDs are tracked in `credentials/newsletter_state.json`. This prevents re-processing the same 50 emails on every scheduler tick. The file is auto-created on the first run. Delete it to force a full re-scan.
-
-### Schedule
-- **Full sweep** (RSS + accelerators + universities + newsletters): **Monday and Thursday at 05:00**.
-- **Gmail top-up** (incremental, cheap): **daily at 13:00**, so newsletters arriving between sweeps don't wait days.
-
-To trigger a manual run any time:
 ```bash
-curl -X POST http://localhost:8000/ingestion/newsletters
+curl -X POST "http://localhost:8000/verification/recheck?limit=20"     # local only
+curl -X POST "http://localhost:8000/verification/web-verify?limit=10"  # uses web search
+curl -s http://localhost:8000/verification/status
 ```
 
-### Gmail authentication (App Password, since 12 Aug 2026)
-No OAuth, no browser consent flow, no 7-day expiry — see
-`ingestion/gmail_auth.py`'s module docstring for why this replaced the
-earlier OAuth setup. Both newsletter reading (IMAP) and the press-monitor
-digest (SMTP) authenticate with `GMAIL_ADDRESS` + `GMAIL_APP_PASSWORD` in
-`.env`.
+### Press monitor
 
-If either digest or newsletter ingestion starts failing with an auth error,
-check in this order:
-1. `GMAIL_ADDRESS` is spelled exactly right (a one-letter typo here caused a
-   real, hours-long misdiagnosis once — see the docstring).
-2. The App Password hasn't been revoked — regenerate at
-   myaccount.google.com/apppasswords (requires 2-Step Verification to
-   already be enabled on the account) and update `.env`.
-3. `GMAIL_APP_PASSWORD` is the 16-character App Password, not the account's
-   actual login password.
+```bash
+python3 -m press_monitor.run_daily            # run now (sends a real email)
+tail -40 logs/pressmonitor.log
+```
 
-No human click is required for routine operation — this was the whole point
-of moving off OAuth.
+### Maintenance (all dry-run by default)
 
-## Dynamic sources
+```bash
+python3 scripts/drain_review_backlog.py [--apply]        # drain field-update backlog
+python3 scripts/clear_stale_dedup_reviews.py [--apply]   # re-check duplicate backlog
+python3 scripts/dedup_sweep.py [--apply]                 # merge duplicate records
+python3 scripts/llm_explain.py --limit 30                # explain pending reviews
+python3 scripts/apply_empty_field_reviews.py [--apply]   # fill uncontested blanks
+```
 
-All RSS feeds, web sources, newsletter senders, and Gmail search terms live in `config/sources.yaml` — not in Python code. It's re-read fresh on every ingestion run, so edits take effect on the next run with no restart, no deploy.
+### Tests
 
-- Edit the file directly, or use the API:
-  ```bash
-  curl http://localhost:8000/sources                    # list everything
-  curl -X POST http://localhost:8000/sources/web -d '{...}'   # add a web source
-  curl -X POST http://localhost:8000/sources/rss -d '{...}'   # add an RSS feed
-  curl -X DELETE http://localhost:8000/sources/web/<source_id>
-  ```
-- A malformed entry is skipped and logged — it never crashes a run. A totally broken file falls back to the last version that worked.
-- New entries added via the API/dashboard get an auto "Added via dashboard on \<date\>" comment; human-written comments in the file always survive edits.
+```bash
+python3 -m pytest                    # full suite — 344 tests, ~17s
+python3 -m pytest -k dedup           # by keyword
+python3 -m pytest tests/test_reviews.py
+```
 
-## Unattended operation (Mac mini, runs for weeks with nobody there)
+Run the suite after **any** change to matching, storage, scoring, or config loaders. It runs against live Postgres/Qdrant/Ollama; test data is namespaced `PYTEST` and purged automatically — real records are never touched.
 
-The system is designed to survive reboots, crashes, and long absences with zero manual intervention. Two things make this work, both installed as `launchd` agents (templates version-controlled in `launchd/` — reinstall with the commands below if the machine is ever rebuilt):
+### Sources (no restart needed — `config/sources.yaml` is re-read every run)
 
-| Agent | What it does |
+```bash
+curl -s http://localhost:8000/sources
+curl -X DELETE http://localhost:8000/sources/web/<source_id>
+```
+
+Or use the dashboard's Sources page. A malformed entry is skipped and logged, never crashes a run.
+
+---
+
+## 7. Known issues that are *not* bugs
+
+Don't spend time on these:
+
+- **`MuPDF error: cannot find XObject resource 'img48'`** in the press-monitor log. One page of some e-paper editions has a corrupt image reference in the publisher's own PDF. Investigated 13 Aug: unfixable from our side (two PyMuPDF repair strategies failed; the page renders but yields no text). Costs at most one unscanned page out of ~40. The digest still sends.
+- **Review queue growing.** Expected. See §5.
+- **`com.vcscouting.dockerstack` / `com.gthub.pressmonitor` showing `-`** in `launchctl list`. Normal for one-shot jobs.
+- **Log files at ~55 MB each** (`logs/api.log`, `logs/api.error.log`). No rotation is configured, but growth is ~55 MB/month against 764 GB free. Harmless. Truncate any time with `: > logs/api.log` if you want them tidy.
+- **Unused Ollama models** (`qwen3.5:9b`, `gemma4:12b`, `qwen3:8b`, ~19 GB) left over from model A/B testing. Safe to remove with `ollama rm <name>` — the system does not use them.
+
+---
+
+## 8. Configuration & secrets
+
+All settings live in `config/__init__.py` (pydantic-settings), overridden by `.env`.
+
+**`.env` is gitignored and contains real secrets. Never commit it, never paste its contents anywhere.** Keys used:
+
+| Variable | Purpose |
 |---|---|
-| `com.vcscouting.dockerstack` | Runs once at every login: waits (up to 3 min) for the Docker daemon to be ready, then `docker compose up -d`. **This exists because Docker Desktop's own container restart-on-reboot was found to be unreliable** in a real reboot test — containers were left in an "Exited (255)" state after a full macOS restart and did not resume on their own even with `restart: unless-stopped`. Logs to `logs/docker_stack.log`. |
-| `com.vcscouting.api` | Runs the FastAPI server + scheduler **and serves the team dashboard** (see below) from the same process. `RunAtLoad` + `KeepAlive` — if it ever crashes (e.g. because Postgres wasn't ready yet at boot), it retries every 10s until it succeeds. Logs to `logs/api.log` (uvicorn access logs) and `logs/api.error.log` (application logs — Python's `logging` module writes to stderr by default). |
-| Ollama.app | Already auto-starts at login as a standard macOS app — no custom agent needed. |
+| `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD` | Newsletter reading (IMAP) + digest sending (SMTP) |
+| `EPAPER_EMAIL` / `EPAPER_PASSWORD` | Memminger Zeitung subscriber login |
+| `PRESS_MONITOR_RECIPIENTS` | Comma-separated digest recipients |
+| `TAVILY_API_KEY` | Primary web-search backend |
+| `DATABASE_URL` | Postgres connection |
+| `OLLAMA_EXTRACT_MODEL` / `OLLAMA_REASON_MODEL` | Model selection |
 
-There used to be a third agent (`com.vcscouting.dashboard`, a Streamlit app on port 8501) — it's retired. The dashboard is now a static HTML/CSS/JS app (`ui/static/`) served by the API itself via FastAPI's `StaticFiles`, so it needs no separate service, no separate port, and no separate deploy step: it's live the moment `com.vcscouting.api` is up.
+**Web search has a three-step fallback**, so an exhausted quota does not stop the pipeline:
+`Tavily` (paid, 1000 free/month) → `SearXNG` (self-hosted, no quota, no key) → `DuckDuckGo` (scrape, fragile).
 
-## Team dashboard (Phase UI)
+Recommended Ollama environment (shell profile or `.env`):
 
-Custom-built (no Streamlit, no build step — plain HTML/CSS/JS so there's nothing to compile and nothing to break unattended) branded dashboard with 5 pages: **Overview** (KPIs, charts, activity), **Browse & Search** (keyword + semantic search, filters, edit, delete, CSV export), **Review Inbox** (the data-stewardship staging queue — see below), **Ingestion** (trigger any job, watch it run live with ticking counters), **Sources** (add/remove RSS feeds and web sources — no code, no YAML editing).
-
-- **URL:** `http://<mac-mini-LAN-IP>:8000/dashboard` (find the IP with `ipconfig getifaddr en0`; `http://<IP>:8000/` also redirects there). Office Wi-Fi only — stays fully local, same-origin to the API (no CORS, no separate base-URL config).
-- **⌘K** opens a command palette to jump to any page or run a quick action (full sweep, theme toggle) without the mouse.
-- **Light/dark theme**, persisted per-browser, defaults to the OS preference.
-- **Review Inbox:** the pipeline never changes existing startup data on its own. Every field change and every possible-duplicate is **staged** for a human. Markers: 🔴 conflict (a populated field would change) · 🟡 new info (fills a blank) · ⚠️ anomaly (e.g. a shared domain like linkedin.com with nothing else matching). *Approve* applies the change to the master (or merges a duplicate); *Reject* discards it **and remembers the decision** so the same thing isn't re-flagged on the next sweep. Keyboard shortcuts: `j`/`k` navigate, `a` approve, `r` reject. A nightly job (02:00) has the local 14B model write a plain-language explanation of the evidence for each item — guidance only, never a decision.
-- **Ingestion page:** trigger a full sweep, RSS, newsletters, accelerators, universities, or one specific source. While a run is active, counters (pages crawled, chunks, startups found) tick live — polled every 2s from `/ingestion/status`, which now exposes the in-flight `PipelineMetrics` object, not just the final result.
-- **Sources page:** the "Add source" form writes straight into `config/sources.yaml` via the existing `/sources` API — the next scheduled run (or a manual "Run now" from the same page) picks it up with no restart.
-- **Development:** no build step — edit files under `ui/static/` and reload the browser. `ui/static/js/api.js` calls the API same-origin (empty base URL) since it's always served by the same FastAPI process — there's no separate host to configure.
-
-Also required for full unattended survival (system settings, not code):
-- **No sleep**: `sudo pmset -c sleep 0 displaysleep 0 disksleep 0`
-- **Docker Desktop → Settings → General → "Start Docker Desktop when you log in"**
-- **Automatic login** (System Settings → Users & Groups → Login Options) — without this, a `launchd` **Agent** (as opposed to a Daemon) never runs at all, since it only starts within a logged-in GUI session. A reboot with no auto-login sits at the lock screen forever.
-
-### Reinstalling the launchd agents (e.g. after a fresh macOS install)
 ```bash
+export OLLAMA_KEEP_ALIVE=5m          # unload idle models
+export OLLAMA_MAX_LOADED_MODELS=2    # 7B extract + 14B reason together
+export OLLAMA_NUM_PARALLEL=1         # one request at a time — prevents GPU oversubscription
+```
+
+---
+
+## 9. Hard rules
+
+Things that will break the system or corrupt data if ignored.
+
+- ❌ **All inference stays local.** Never configure a cloud LLM provider. The only sanctioned outbound calls are web *search* (§8) and the e-paper/Gmail logins.
+- ❌ **Never run the ingestion CLI while the API is running** (§6).
+- ❌ **Never auto-apply a field value when multiple pending reviews disagree** (§5).
+- ❌ **Never commit `.env` or anything in `credentials/`.**
+- ❌ **Don't re-run `scripts/migrate_reviews.py`** unless you mean it. It drops and recreates the review table. It now refuses when rows exist, but don't test that.
+- ✅ **Do a reboot rehearsal before a long absence:** `sudo shutdown -r now`, wait, log in, then run §1 with nobody touching a terminal. This exact test is what caught the Docker restart problem.
+
+Also required for unattended survival (macOS settings, not code):
+
+- No sleep: `sudo pmset -c sleep 0 displaysleep 0 disksleep 0`
+- Docker Desktop → Settings → General → "Start Docker Desktop when you log in"
+- **Automatic login** enabled — a launchd *Agent* never runs without a logged-in GUI session. A reboot without auto-login sits at the lock screen and nothing starts.
+
+---
+
+## 10. Dashboard
+
+`http://<mac-ip>:8000/dashboard` — currently `http://172.16.14.226:8000/dashboard` (verify with `ipconfig getifaddr en0`; the IP can change after a reboot). Office LAN only.
+
+Five pages: **Overview** (KPIs, charts) · **Browse & Search** (keyword + semantic, edit, delete, CSV export) · **Review Inbox** (§5) · **Ingestion** (trigger any job, live counters) · **Sources** (add/remove without editing YAML). Plus a **Regional** register page for the local SME/membership dataset.
+
+⌘K opens a command palette. Light/dark follows the OS.
+
+---
+
+## 11. Escalation
+
+If the system is down and §4 didn't fix it:
+
+1. Capture the evidence before changing anything further:
+   ```bash
+   tail -200 logs/api.error.log > /tmp/api_err.txt
+   docker ps -a > /tmp/docker.txt
+   launchctl list | grep -E "vcscouting|gthub" > /tmp/launchd.txt
+   ```
+2. The data is safe. Postgres and Qdrant use named Docker volumes that survive container removal, restarts, and reboots.
+3. Worst case, the whole stack can be rebuilt from the repo: `docker compose up -d`, `python3 scripts/setup_db.py`, reinstall the launchd agents from `launchd/*.plist`.
+
+```bash
+# reinstalling launchd agents after a rebuild
 cp launchd/*.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.vcscouting.dockerstack.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.vcscouting.api.plist
-```
-
-### Verifying it's actually working
-```bash
-launchctl list | grep vcscouting     # both should show a PID, not "-"
-docker ps                            # vc_postgres and vc_qdrant both (healthy)
-curl http://localhost:8000/health
-```
-
-### Full reboot rehearsal (do this before any long absence)
-```bash
-sudo shutdown -r now
-```
-Wait for the Mac to come back, log in with nobody touching a terminal, then run the verification commands above. This exact test caught the Docker container issue described above — don't skip it.
-
-## Automated tests
-
-An integration test suite lives in `tests/` (pytest). It runs against the **live** Postgres + Qdrant + Ollama so it exercises the real wiring, not mocks. All test data is namespaced with a `PYTEST` prefix and purged before and after every test — the real startups are never touched.
-
-```bash
-# from the project root, with Docker + Ollama running:
-python3 -m pytest            # run everything (~5s, ~34 tests)
-python3 -m pytest -v         # verbose, one line per test
-python3 -m pytest tests/test_storage_staging.py   # one module
-python3 -m pytest -k dedup   # tests matching a keyword
-```
-
-Coverage: identity functions (`test_deduplicator`), the matcher's classification incl. the shared-domain blocklist (`test_matcher`), the staging outcomes new/no_op/staged_update/duplicate/anomaly (`test_storage_staging`), review approve/reject + suppression (`test_reviews`), search/filter/edit/delete (`test_scout_api`), the dynamic source registry (`test_sources`), the tuning loader + hot-reload + safe-fallback (`test_tuning`), and the scorer tiers (`test_scorer`).
-
-**Run the suite after any change to matching, storage, scoring, or the config loaders.** Requires the services up (`docker ps`, `ollama` reachable); if Ollama is down the embedding-dependent tests will error rather than fail silently.
-
-## Troubleshooting
-
-| Symptom | Check | Fix |
-|---|---|---|
-| `vc_qdrant` unhealthy | `docker inspect vc_qdrant` | Healthcheck uses bash `/dev/tcp`; if still failing restart: `docker compose restart qdrant` |
-| Containers "Exited" after a reboot, don't come back | `docker ps -a` | Confirm `com.vcscouting.dockerstack` ran: `cat logs/docker_stack.log`. Manually recover with `docker compose up -d`. |
-| API not responding after a reboot | `launchctl list \| grep vcscouting` | If PID is `-`, check `logs/api.error.log` — usually means Postgres/Qdrant weren't ready; it retries automatically every 10s once they are. |
-| Ollama timeouts | `ollama ps` | Only one model should be loaded for extraction; GPU oversubscription means 2 are fighting. Set `OLLAMA_NUM_PARALLEL=1`. |
-| Extraction returns empty arrays | Run validation harness | Check `qwen2.5:7b-instruct` is pulled and `OLLAMA_EXTRACT_MODEL` points to it |
-| Gmail ingestion finds 0 emails | Check search terms | `newsletter_search_terms` in `config/sources.yaml` controls the subject-line filter (`newer_than:14d` is fixed) |
-| PG connection refused | `docker ps` | `docker compose up -d postgres` |
-
-## Configuration
-
-All settings are in `config/__init__.py` (pydantic-settings). Override any via `.env`:
-
-```bash
-OLLAMA_EXTRACT_MODEL=qwen2.5:7b-instruct   # extraction model
-OLLAMA_REASON_MODEL=qwen3:14b              # reasoning / agent model
-MAX_QWEN_WORKERS=1                         # keep at 1 on Mac Mini
-GMAIL_ADDRESS=greentechhubx@gmail.com
-GMAIL_APP_PASSWORD=...                     # 16-char App Password, not the login password
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gthub.pressmonitor.plist
 ```
