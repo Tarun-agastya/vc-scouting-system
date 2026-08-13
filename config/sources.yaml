@@ -264,6 +264,26 @@ web_sources:
     crawl_frequency: weekly
     priority: HIGH
     render_mode: always   # JS SPA — static fetch sees 41 chars (probe 23 Jul)
+# Added via dashboard on 2026-08-05
+  - source_id: startsucht
+    source_name: StartSucht
+    source_type: university_hub
+    location: ''
+    primary_url: https://startupsucht.com/
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+    render_mode: auto
+# Added via dashboard on 2026-08-11
+  - source_id: deutsche_startups
+    source_name: Deutsche Startups
+    source_type: startup_network
+    location: ''
+    primary_url: https://www.deutsche-startups.de/
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: HIGH
+    render_mode: auto
 newsletter_senders: []
 
 

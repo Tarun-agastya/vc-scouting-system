@@ -284,7 +284,7 @@ A plain-English printout: how to tell it's running, and the *one* command to res
 |---|---|
 | Data core (provenance, versioning, delete, search API) — Phases A–D | ~1.5 weeks |
 | Team UI + unattended operation — Phase G | ~3–4 days |
-| **Deliverable the boss wants (running DB + editable team access, unattended)** | **~2–2.5 weeks** |
+| **Deliverable (running DB + editable team access, unattended)** | **~2–2.5 weeks** |
 | Autonomous agent (later) — Phase E | ~3 days |
 | E2E + runbook — Phase F | ~1 day |
 
