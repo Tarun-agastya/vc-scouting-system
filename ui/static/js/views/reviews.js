@@ -314,6 +314,7 @@ export default {
     function currentFilters() {
       return {
         status: state.status || undefined,
+        review_type: state.type || undefined,
         risk_level: state.risk || undefined,
         evidence_level: state.evidenceLevel || undefined,
         q: state.q || undefined,
@@ -666,7 +667,7 @@ export default {
       detailEl.querySelector("#delete-incoming-btn")?.addEventListener("click", () =>
         act("delete", entry.id, "incoming", rv.incoming_name || rv.incoming?.name));
       detailEl.querySelector("#undo-merge-btn")?.addEventListener("click", () =>
-        act("undo-merge", entry.id, null, rv.incoming_name));
+        act("undo-merge", entry.id, null, rv.incoming_name || rv.incoming?.name));
     }
 
     async function act(kind, reviewId, target, recordName) {

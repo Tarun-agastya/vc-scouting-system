@@ -90,7 +90,7 @@ def _layer1_reground(record) -> dict:
     grounded = _ground_startup(dict(snapshot), record.source_excerpt, cfg)
 
     changes = {}
-    for field in ("founded_year", "funding_stage", "employee_count"):
+    for field in ("founded_year", "funding_stage", "funding_amount", "employee_count"):
         if grounded.get(field) != snapshot[field]:
             changes[field] = grounded[field]
     if grounded.get("founders") != snapshot["founders"]:
@@ -136,13 +136,19 @@ async def _recheck_one(db, record) -> str:
     loop = asyncio.get_event_loop()
 
     layer1_changes = _layer1_reground(record)
-    for field, value in layer1_changes.items():
-        if field == "founders":
-            raw = dict(record.raw_data or {})
-            raw["founders"] = value
-            record.raw_data = raw
-        else:
-            setattr(record, field, value)
+    if layer1_changes:
+        raw = dict(record.raw_data or {})
+        for field, value in layer1_changes.items():
+            if field in ("founders", "funding_amount"):
+                # Not a Startup column — lives only in raw_data (same as the
+                # extraction pipeline stores it), so a plain setattr() here
+                # would silently create an unmapped, never-persisted
+                # attribute and the grounding gate's nulling would appear to
+                # work but never actually reach the database.
+                raw[field] = value
+            else:
+                setattr(record, field, value)
+        record.raw_data = raw
 
     verdict = await loop.run_in_executor(None, _layer2_deep_recheck, record)
 
@@ -165,6 +171,11 @@ async def _recheck_one(db, record) -> str:
         if field in unsupported and getattr(record, field, None) is not None:
             setattr(record, field, None)
             layer2_nulled.append(field)
+    if "funding_amount" in unsupported and (record.raw_data or {}).get("funding_amount") is not None:
+        raw = dict(record.raw_data or {})
+        raw["funding_amount"] = None
+        record.raw_data = raw
+        layer2_nulled.append("funding_amount")
 
     record.verification_status = "flagged" if is_flagged else "verified"
     record.verification_notes = verdict.get("summary") or ""

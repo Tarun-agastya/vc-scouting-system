@@ -150,49 +150,64 @@ class NewsletterIngestor:
         if not self._conn:
             self._authenticate()
 
-        state = self._load_state()
-        processed_ids: set = set(state.get("processed_ids", []))
+        try:
+            state = self._load_state()
+            processed_ids: set = set(state.get("processed_ids", []))
 
-        all_uids = self._list_all_uids(days)
-        logger.info(f"[Gmail] {len(all_uids)} messages match the {days}-day window")
+            all_uids = self._list_all_uids(days)
+            logger.info(f"[Gmail] {len(all_uids)} messages match the {days}-day window")
 
-        new_processed: list = []
-        total_startups = 0
+            new_processed: list = []
+            total_startups = 0
 
-        for uid in all_uids:
-            if uid in processed_ids:
-                logger.debug(f"[Gmail] Skipping already-processed message {uid}")
-                continue
-            if len(new_processed) >= max_messages:
-                logger.info(
-                    f"[Gmail] Reached max_messages={max_messages} for this run — "
-                    f"{len(all_uids) - len(processed_ids) - len(new_processed)} more "
-                    "new message(s) remain for the next run"
-                )
-                break
+            for uid in all_uids:
+                if uid in processed_ids:
+                    logger.debug(f"[Gmail] Skipping already-processed message {uid}")
+                    continue
+                if len(new_processed) >= max_messages:
+                    logger.info(
+                        f"[Gmail] Reached max_messages={max_messages} for this run — "
+                        f"{len(all_uids) - len(processed_ids) - len(new_processed)} more "
+                        "new message(s) remain for the next run"
+                    )
+                    break
 
-            count = self._process_message(uid)
-            total_startups += count
-            new_processed.append(uid)
+                count = self._process_message(uid)
+                total_startups += count
+                new_processed.append(uid)
 
-        if new_processed:
-            # Retain only the last 2000 IDs so the state file stays small but
-            # still comfortably covers a full-mailbox backfill (500 was sized
-            # for the old 14-day-only window; a backfill can legitimately
-            # process far more than 500 messages in its lifetime).
-            retained_ids = list(processed_ids) + new_processed
-            state["processed_ids"] = retained_ids[-2000:]
-            self._save_state(state)
+            if new_processed:
+                # Retain only the last 2000 IDs so the state file stays small but
+                # still comfortably covers a full-mailbox backfill (500 was sized
+                # for the old 14-day-only window; a backfill can legitimately
+                # process far more than 500 messages in its lifetime).
+                retained_ids = list(processed_ids) + new_processed
+                state["processed_ids"] = retained_ids[-2000:]
+                self._save_state(state)
 
-        self._conn.logout()
-        self._conn = None
-
-        logger.info(
-            f"[Gmail] Done — {len(new_processed)} new emails processed, "
-            f"{len(all_uids) - len(new_processed)} already seen or beyond this run's cap, "
-            f"{total_startups} startups stored"
-        )
-        return total_startups
+            logger.info(
+                f"[Gmail] Done — {len(new_processed)} new emails processed, "
+                f"{len(all_uids) - len(new_processed)} already seen or beyond this run's cap, "
+                f"{total_startups} startups stored"
+            )
+            return total_startups
+        finally:
+            # Always drop the connection, success or failure — this is a
+            # module-level singleton reused across scheduled runs (daily
+            # Gmail top-up). A logout()/search() raising mid-run used to
+            # leave self._conn set to a dead connection object forever
+            # (truthy, so `if not self._conn` above would never
+            # re-authenticate), silently breaking every future run until
+            # the API process was restarted. Swallow a failing logout()
+            # itself (the connection may already be gone) — the reset to
+            # None is what actually matters.
+            try:
+                if self._conn:
+                    self._conn.logout()
+            except Exception as exc:
+                logger.debug(f"[Gmail] logout() failed (connection likely already dead): {exc}")
+            finally:
+                self._conn = None
 
     def _list_all_uids(self, days: int) -> List[str]:
         """List every message UID in the last `days`, newest search

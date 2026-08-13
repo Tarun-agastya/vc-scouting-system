@@ -56,3 +56,56 @@ def test_ingest_feeds_survives_one_feed_failing():
             feed_urls=["https://bad.example.com/feed", "https://example.com/feed"], max_entries=5)
 
     assert result == [{"name": "PYTEST Survivor"}]
+
+
+def test_store_startup_gives_upsert_the_article_url_and_feed_as_origin():
+    """Regression for a feed-URL/source-label swap found live 13 Aug 2026:
+    _store_startup used to pass the RSS feed URL as `source` (so every
+    RSS-derived record's source_entry["source"] was a raw feed URL instead
+    of a clean label) and the specific article link as `source_url` for
+    registry name-resolution -- which can never match a feed's registered
+    URL, so _resolve_source_name() silently returned None for every single
+    RSS record. Correct contract (mirrors newsletter_ingestor's
+    source="newsletter" and web_scraper's Phase R-4 origin_url pattern):
+    source="rss" (clean label), source_url=the article (accurate citation),
+    origin_url=the feed (so registry name-lookup matches the feed entry)."""
+    parser = RSSParser()
+
+    with patch("processing.storage.upsert_startup", return_value=("fake-id", "inserted")) as mock_upsert:
+        parser._store_startup(
+            {"name": "PYTEST Startup"},
+            "https://example.com/articles/pytest-startup-raises",
+            "https://example.com/feed",
+            "2026-08-13T00:00:00",
+        )
+
+    mock_upsert.assert_called_once_with(
+        {"name": "PYTEST Startup"},
+        "rss",
+        "https://example.com/articles/pytest-startup-raises",
+        "2026-08-13T00:00:00",
+        origin_url="https://example.com/feed",
+    )
+
+
+def test_process_entry_passes_feed_url_as_origin_not_as_source_url():
+    """End-to-end wiring check: the feed URL must reach _store_startup as
+    feed_url (-> origin_url), never as source_url, so a multi-article feed's
+    records each cite their own article rather than all pointing at the
+    feed itself."""
+    parser = RSSParser()
+    fake_entry = type(
+        "FakeEntry", (),
+        {"link": "https://example.com/articles/real-one", "title": "T", "summary": "S" * 100},
+    )()
+
+    calls = []
+
+    def fake_store(startup, source_url, feed_url, published_date=None):
+        calls.append((source_url, feed_url))
+
+    with patch("ingestion.pipeline.pipeline.run", return_value=[{"name": "PYTEST Wired"}]), \
+         patch.object(parser, "_store_startup", side_effect=fake_store):
+        parser._process_entry(fake_entry, "https://example.com/feed")
+
+    assert calls == [("https://example.com/articles/real-one", "https://example.com/feed")]

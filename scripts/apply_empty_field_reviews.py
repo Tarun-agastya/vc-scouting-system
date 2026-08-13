@@ -28,6 +28,17 @@ touches possible_duplicate/anomaly reviews either, only field_update.
 Dry run by default. Re-embedding ~850 records is real Ollama+Qdrant work
 (seconds each) — expect a multi-minute run with --apply, not instant.
 
+MULTI-CANDIDATE SAFETY GUARD (added 13 Aug 2026, after this script was found
+still processing reviews independently rather than grouped by (master,
+field) — precisely the 12 Aug clobber bug's own root cause, see
+scripts/revert_multi_candidate_clobbers.py's post-mortem and
+processing.storage._has_conflicting_pending_fill's docstring). Before
+applying any fill, each field is checked against every OTHER pending
+field_update review for the same master: if a different value is already
+proposed there, this field is moved into `conflicts` (left pending for a
+human, or for scripts/drain_review_backlog.py's proper majority-vote
+resolution) instead of being applied blind.
+
 Usage:
     python3 scripts/apply_empty_field_reviews.py
     python3 scripts/apply_empty_field_reviews.py --apply
@@ -42,7 +53,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.connection import SessionLocal        # noqa: E402
 from database.models import DuplicateReview, Startup  # noqa: E402
-from processing.web_verifier import _split_proposal  # noqa: E402
+from processing.field_policy import split_proposal as _split_proposal  # noqa: E402
 
 print = functools.partial(print, flush=True)  # noqa: A001 — long run, log file must show live progress
 
@@ -54,6 +65,7 @@ def main() -> int:
 
     from sqlalchemy.orm.attributes import flag_modified
     from api.routes.reviews import _apply_field_updates, _reindex
+    from processing.storage import _has_conflicting_pending_fill
 
     db = SessionLocal()
     try:
@@ -64,7 +76,7 @@ def main() -> int:
         print(f"pending field_update reviews: {len(reviews)}")
 
         closed = shrunk = untouched = missing_master = 0
-        total_fields_applied = 0
+        total_fields_applied = total_fields_deferred_conflict = 0
 
         for i, r in enumerate(reviews, 1):
             fills, conflicts = _split_proposal(r.proposed_changes or {})
@@ -75,6 +87,23 @@ def main() -> int:
             master = db.query(Startup).filter(Startup.id == r.master_id).first()
             if not master:
                 missing_master += 1
+                continue
+
+            # Multi-candidate safety guard — see module docstring. A field
+            # with a competing pending proposal elsewhere is NOT a safe
+            # uncontested fill; move it into conflicts instead of applying.
+            safe_fills, deferred = {}, {}
+            for field, change in fills.items():
+                if _has_conflicting_pending_fill(db, r.master_id, field, change.get("new")):
+                    deferred[field] = change
+                else:
+                    safe_fills[field] = change
+            fills = safe_fills
+            conflicts = {**conflicts, **deferred}
+            total_fields_deferred_conflict += len(deferred)
+
+            if not fills:
+                untouched += 1
                 continue
 
             total_fields_applied += len(fills)
@@ -114,6 +143,8 @@ def main() -> int:
         if missing_master:
             print(f"  skipped (master no longer exists) {missing_master}")
         print(f"  total individual fields applied  {total_fields_applied}")
+        if total_fields_deferred_conflict:
+            print(f"  fields deferred (multi-candidate conflict) {total_fields_deferred_conflict}")
 
         if args.apply:
             remaining = (db.query(DuplicateReview)

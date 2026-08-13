@@ -34,10 +34,10 @@ class SelectedIdsRequest(BaseModel):
 def _classify_source(raw) -> str:
     """
     Coarse web/rss/newsletter/manual/unknown bucketing for this report
-    only — Startup.source itself is left untouched. RSS currently stores
-    the feed URL as `source` rather than a clean "rss" label (a pre-existing
-    quirk, out of scope for this phase), so a bare URL is classified as
-    "rss"; everything else maps by its known source_type label.
+    only — Startup.source itself is left untouched. RSS stores a clean
+    "rss" label since the feed-URL/source-label swap was fixed; the
+    http(s)-prefix check is kept for any pre-fix legacy rows already in
+    the DB that still have a bare feed URL in `source`.
     """
     if not raw:
         return "unknown"

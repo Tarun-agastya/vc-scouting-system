@@ -845,6 +845,34 @@ async def bulk_resolve_filtered(request: BulkResolveFilteredRequest, db: Session
     resolved, failed = [], []
     for r in matched:
         try:
+            if request.action == "approve" and r.review_type == "field_update":
+                # Multi-candidate safety guard (Phase Z, 12 Aug 2026 incident —
+                # see _has_conflicting_pending_fill's docstring). A filter can
+                # sweep in several pending reviews that each propose a
+                # DIFFERENT value for the same (master, field); applying them
+                # one at a time via _do_approve trusts each review's own
+                # frozen snapshot and lets the last one processed silently
+                # win, exactly like the incident this guard exists to
+                # prevent. Refuse and leave pending rather than guess — the
+                # dashboard's grouped bulk-resolve (majority vote, whole-
+                # group-or-nothing) or a human is what should decide.
+                from processing.storage import _has_conflicting_pending_fill
+                conflicting_field = next(
+                    (field for field, change in (r.proposed_changes or {}).items()
+                     if _has_conflicting_pending_fill(db, r.master_id, field, change.get("new"))),
+                    None,
+                )
+                if conflicting_field:
+                    failed.append({
+                        "id": str(r.id),
+                        "error": (
+                            f"Skipped — another pending review proposes a different "
+                            f"value for '{conflicting_field}'; resolve via grouped "
+                            f"bulk-resolve or manually"
+                        ),
+                    })
+                    continue
+
             do(db, r)
             resolved.append(str(r.id))
         except HTTPException as exc:

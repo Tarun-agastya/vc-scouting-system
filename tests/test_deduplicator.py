@@ -17,6 +17,17 @@ def test_extract_domain_variants():
     assert extract_domain("") == ""
 
 
+def test_extract_domain_does_not_corrupt_domains_starting_with_w():
+    """Regression found live 13 Aug 2026: netloc.lstrip("www.") strips a
+    CHARACTER SET ('w' and '.'), not the literal prefix "www." -- so any
+    domain starting with 'w' (real example in this dataset: wingcopter.com)
+    had its leading characters silently eaten, corrupting the dedup
+    fingerprint for every such startup."""
+    assert extract_domain("https://wingcopter.com") == "wingcopter.com"
+    assert extract_domain("https://www.wingcopter.com") == "wingcopter.com"
+    assert extract_domain("https://webflow.io") == "webflow.io"
+
+
 def test_fingerprint_stable_and_domain_sensitive():
     a = generate_fingerprint("DeepDrive GmbH", "deepdrive.eu")
     b = generate_fingerprint("DeepDrive", "https://www.deepdrive.eu")

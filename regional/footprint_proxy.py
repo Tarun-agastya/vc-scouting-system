@@ -130,17 +130,27 @@ def _fetch_buildings_near(points: List[Tuple[float, float]],
     query = f"[out:json][timeout:180];({clauses});out geom;"
     body = urllib.parse.urlencode({"data": query}).encode()
 
+    payload = None
     for mirror in OVERPASS_MIRRORS:
         try:
             req = urllib.request.Request(mirror, data=body,
                                          headers={"User-Agent": _USER_AGENT})
             with urllib.request.urlopen(req, timeout=240) as r:
-                payload = json.load(r)
-            if payload.get("elements") is not None:
-                break
+                got = json.load(r)
         except Exception as exc:
             logger.warning(f"[FootprintProxy] mirror {mirror} failed: {exc}")
-    else:
+            continue
+        # An EMPTY result is treated as a failure, not as "no buildings near
+        # any of these points" — same flaky-mirror trap as regional/discovery
+        # .py::from_osm (observed 7 Aug: a mirror returned HTTP 200 with zero
+        # elements while others were timing out, indistinguishable from a
+        # genuine empty answer). Try the next mirror instead of accepting it.
+        if got.get("elements"):
+            payload = got
+            break
+        logger.warning(f"[FootprintProxy] mirror {mirror} returned no elements "
+                       f"— treating as a failure and trying the next mirror")
+    if payload is None:
         return {}
 
     out: Dict[int, BuildingCandidate] = {}

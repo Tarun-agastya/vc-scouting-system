@@ -735,8 +735,19 @@ async def list_startups(
 
 @router.post("/sector-report")
 async def sector_report(sector: str, db: Session = Depends(get_db)):
-    """Generate a sector intelligence report from stored startups."""
+    """
+    Generate a sector intelligence report from stored startups.
+
+    generate_sector_report() makes a blocking Ollama call over up to 30
+    startups' worth of context — dispatched via run_in_executor so it never
+    freezes FastAPI's event loop, and under scout_controller's gpu_mutex so
+    it never races a concurrent ingestion run for the same local Ollama
+    backend (same fix already applied to /scout/search; this route made the
+    identical blocking, unguarded call directly).
+    """
+    import asyncio
     from reasoning.analyzer import generate_sector_report
+    from processing.scout_controller import scout_controller
 
     startups = (
         db.query(Startup)
@@ -762,13 +773,27 @@ async def sector_report(sector: str, db: Session = Depends(get_db)):
         for s in startups
     ]
 
-    report = generate_sector_report(sector, startup_dicts)
+    loop = asyncio.get_event_loop()
+    async with scout_controller.gpu_mutex:
+        report = await loop.run_in_executor(None, generate_sector_report, sector, startup_dicts)
     return {"sector": sector, "startups_analyzed": len(startups), "report": report}
 
 
 # ── Background Task ───────────────────────────────────────────────────────────
 
-def _run_ai_analysis(startup_id: str):
-    """Background task: enrich a startup with AI analysis."""
+async def _run_ai_analysis(startup_id: str):
+    """
+    Background task: enrich a startup with AI analysis. Run via
+    BackgroundTasks after /add-startup responds. Async (Starlette awaits an
+    async background task directly in the event loop rather than threading
+    it) specifically so it can hold scout_controller.gpu_mutex — the
+    blocking Ollama call itself still goes through run_in_executor so it
+    never blocks the loop while the mutex is held.
+    """
+    import asyncio
     from reasoning.analyzer import enrich_startup_in_db
-    enrich_startup_in_db(startup_id)
+    from processing.scout_controller import scout_controller
+
+    loop = asyncio.get_event_loop()
+    async with scout_controller.gpu_mutex:
+        await loop.run_in_executor(None, enrich_startup_in_db, startup_id)

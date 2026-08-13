@@ -60,7 +60,7 @@ class RSSParser:
 
     # ── Private Helpers ───────────────────────────────────────────────────────
 
-    def _process_entry(self, entry, source_url: str) -> List[dict]:
+    def _process_entry(self, entry, feed_url: str) -> List[dict]:
         """Build full text for one feed entry and extract startups."""
         content_parts = []
 
@@ -86,9 +86,13 @@ class RSSParser:
             return []
 
         published_date = self._get_published_date(entry)
-        return self._extract_startups(full_text, source_url, link, published_date)
+        # source_url = the specific article (accurate citation); feed_url is
+        # passed separately as origin_url so registry name-resolution matches
+        # the *feed* entry, not the one-off article permalink (Phase R-4
+        # pattern — see upsert_startup's origin_url docstring).
+        return self._extract_startups(full_text, link or feed_url, feed_url, published_date)
 
-    def _extract_startups(self, text: str, source: str, source_url: str, published_date: Optional[str] = None) -> List[dict]:
+    def _extract_startups(self, text: str, source_url: str, feed_url: str, published_date: Optional[str] = None) -> List[dict]:
         """
         Run the chunked extraction pipeline on article text.
 
@@ -98,11 +102,11 @@ class RSSParser:
         from ingestion.pipeline import pipeline
 
         try:
-            startups = pipeline.run(text, source_url, source, published_date)
+            startups = pipeline.run(text, source_url, "rss", published_date)
             stored = 0
             for startup in startups:
                 if startup.get("name") and len(startup["name"]) > 1:
-                    self._store_startup(startup, source, source_url, published_date)
+                    self._store_startup(startup, source_url, feed_url, published_date)
                     stored += 1
             if stored:
                 logger.info(f"[RSS] Stored {stored} startups from {source_url}")
@@ -111,11 +115,11 @@ class RSSParser:
             logger.debug(f"[RSS] Extraction failed: {exc}")
             return []
 
-    def _store_startup(self, startup: dict, source: str, source_url: str, published_date: Optional[str] = None):
+    def _store_startup(self, startup: dict, source_url: str, feed_url: str, published_date: Optional[str] = None):
         """Write to PostgreSQL first, then sync to Qdrant via the central storage layer."""
         from processing.storage import upsert_startup
         try:
-            record_id, _ = upsert_startup(startup, source, source_url, published_date)
+            record_id, _ = upsert_startup(startup, "rss", source_url, published_date, origin_url=feed_url)
             if not record_id:
                 logger.debug(f"[RSS] Skipped (no name): {startup}")
         except Exception as exc:

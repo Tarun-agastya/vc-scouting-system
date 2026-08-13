@@ -19,6 +19,7 @@ has to notice. Neither is severe, and duplicates are visible in the dashboard.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Iterable, List, Optional, Tuple
 
 from rapidfuzz import fuzz
@@ -64,6 +65,18 @@ def _norm_city(city) -> str:
     return " ".join(str(city or "").strip().lower().split())
 
 
+def _contains_as_phrase(shorter: str, longer: str) -> bool:
+    """Word-boundary containment, mirroring filters.py's _word_present (same
+    reasoning: 'kempten' must be found in 'kempten (allgäu)' but 'berg' must
+    NOT be found in 'bergatreute' or 'au' in 'aulendorf' — a naive substring
+    check matches all of these and would treat two different Bavarian towns
+    as the same place whenever one name happens to be a literal fragment of
+    the other)."""
+    if not shorter:
+        return False
+    return re.search(rf"\b{re.escape(shorter)}\b", longer) is not None
+
+
 def _same_place(a_city=None, b_city=None, a_coords=None, b_coords=None) -> Optional[bool]:
     """
     True / False / None (unknown). Location is only allowed to influence a
@@ -77,7 +90,7 @@ def _same_place(a_city=None, b_city=None, a_coords=None, b_coords=None) -> Optio
             return True
         # Fall through to coordinates rather than declaring different: the same
         # town is written "Kempten", "Kempten (Allgäu)" and "Kempten Allgaeu".
-        if ca in cb or cb in ca:
+        if _contains_as_phrase(ca, cb) or _contains_as_phrase(cb, ca):
             return True
 
     if a_coords and b_coords and all(v is not None for v in (*a_coords, *b_coords)):
