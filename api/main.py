@@ -38,8 +38,19 @@ async def lifespan(app: FastAPI):
         from processing.scout_controller import scout_controller
 
         def _gmail_credentials_present() -> bool:
-            import os
-            return os.path.exists("credentials/gmail_credentials.json")
+            # Fixed 13 Aug 2026: this used to check for the OLD OAuth
+            # client-secret file (credentials/gmail_credentials.json), which
+            # config/__init__.py's own gmail_credentials_path docstring
+            # already documents as unused since the App Password migration
+            # (Phase PM, 12 Aug). It only "worked" by coincidence — that
+            # leftover file still happened to exist on disk. Deleting it as
+            # apparent cleanup (a reasonable thing to do given it's
+            # documented as unused) would have silently disabled the daily
+            # Gmail top-up forever, even with valid App Password credentials
+            # in .env. Now checks the credentials that actually gate
+            # ingestion/gmail_auth.py's IMAP/SMTP login.
+            from config import settings
+            return bool(settings.gmail_address and settings.gmail_app_password)
 
         async def _scheduled_full_sweep():
             """
@@ -55,11 +66,11 @@ async def lifespan(app: FastAPI):
             Daily incremental Gmail check, independent of the twice-weekly full
             sweep, so newsletters arriving between sweeps don't wait days to be
             picked up. Cheap: only processes messages not already in the
-            incremental-fetch state file. Silently skips if OAuth credentials
-            are missing — not a blocker.
+            incremental-fetch state file. Silently skips if the App Password
+            credentials are missing — not a blocker.
             """
             if not _gmail_credentials_present():
-                logger.debug("[Gmail] Credentials not found — skipping scheduled top-up")
+                logger.debug("[Gmail] GMAIL_ADDRESS/GMAIL_APP_PASSWORD not configured — skipping scheduled top-up")
                 return
             await scout_controller.run_newsletters_then_recheck(max_messages=50)
 
