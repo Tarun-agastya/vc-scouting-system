@@ -65,11 +65,19 @@ logger = logging.getLogger(__name__)
 FUZZY_THRESHOLD = 88
 
 
-def _find_groups(rows):
+def _find_groups(rows, *, fingerprint_only: bool = False):
     """
     Group rows that represent the same real-world startup via union-find,
     so a fingerprint match and a fuzzy match that share a row end up in one
     combined group (e.g. A~B by fingerprint, B~C by fuzzy name -> {A,B,C}).
+
+    fingerprint_only=True skips step 2 entirely (see run()'s --fingerprint-only
+    flag docstring for why: fuzzy name matching found real false positives on
+    this exact database on 14 Aug 2026 -- 'Ryte' / 'RYTLE', 'Star Ventures' /
+    'STS Ventures', 'Nous' / 'NOVUS' -- distinct, real companies whose names
+    happen to score >= FUZZY_THRESHOLD. An exact fingerprint match (same
+    normalized name AND same domain) has no such failure mode: two different
+    companies cannot legitimately share both.
 
     Returns only groups with 2+ rows (singletons are not duplicates).
     """
@@ -100,15 +108,16 @@ def _find_groups(rows):
 
     # 2. Fuzzy name match — skip very short names to avoid false positives
     #    on generic words (mirrors fuzzy_match_existing's own guard).
-    normalized = [normalize_company_name(r.name) for r in rows]
-    for i in range(len(rows)):
-        if len(normalized[i]) < 4:
-            continue
-        for j in range(i + 1, len(rows)):
-            if find(i) == find(j) or len(normalized[j]) < 4:
+    if not fingerprint_only:
+        normalized = [normalize_company_name(r.name) for r in rows]
+        for i in range(len(rows)):
+            if len(normalized[i]) < 4:
                 continue
-            if fuzz.token_sort_ratio(normalized[i], normalized[j]) >= FUZZY_THRESHOLD:
-                union(i, j)
+            for j in range(i + 1, len(rows)):
+                if find(i) == find(j) or len(normalized[j]) < 4:
+                    continue
+                if fuzz.token_sort_ratio(normalized[i], normalized[j]) >= FUZZY_THRESHOLD:
+                    union(i, j)
 
     groups = defaultdict(list)
     for i, row in enumerate(rows):
@@ -265,7 +274,13 @@ def _resolve_reviews(group_ids: set, keeper_id: str, db, apply: bool) -> dict:
     return {"resolved": len(resolved_ids), "repointed": len(repointed_ids)}
 
 
-def run(apply: bool) -> None:
+def run(apply: bool, fingerprint_only: bool = False) -> None:
+    """
+    fingerprint_only restricts merges to exact-fingerprint groups (same
+    normalized name AND same domain) and skips the fuzzy-name pass entirely.
+    Exact fingerprint matches are safe by construction; fuzzy matches need a
+    human's eye (see --fingerprint-only's docstring above _find_groups).
+    """
     from database.connection import SessionLocal
     from database.models import Startup
 
@@ -274,7 +289,7 @@ def run(apply: bool) -> None:
         rows = db.query(Startup).all()
         logger.info(f"Scanning {len(rows)} startups for duplicates...\n")
 
-        groups = _find_groups(rows)
+        groups = _find_groups(rows, fingerprint_only=fingerprint_only)
 
         if not groups:
             logger.info("No duplicates found. Database is already clean.")
@@ -325,5 +340,11 @@ def run(apply: bool) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="One-time duplicate cleanup sweep")
     parser.add_argument("--apply", action="store_true", help="Execute the merge for real (default: dry run)")
+    parser.add_argument(
+        "--fingerprint-only", action="store_true",
+        help="Only merge exact-fingerprint groups (same normalized name AND domain) — "
+             "skips the fuzzy-name pass, which found real false positives (distinct "
+             "companies like 'Ryte'/'RYTLE') on 14 Aug 2026. Safe for unattended --apply.",
+    )
     args = parser.parse_args()
-    run(apply=args.apply)
+    run(apply=args.apply, fingerprint_only=args.fingerprint_only)
