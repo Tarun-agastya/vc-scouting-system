@@ -120,6 +120,26 @@ def test_headlines_are_detected():
         assert _is_headline_like(name), name
 
 
+def test_standalone_period_terminated_sentences_are_detected():
+    """Regression for a bug found live 14 Aug 2026: munich-startup.de's own
+    startup-signup form has a password-requirements checklist (one short
+    German sentence per card: "Enthält einen Großbuchstaben.") that scored as
+    a logo grid and got harvested as six fake "startup names," each spawning
+    a possible_duplicate review against an unrelated real company. The old
+    _SENTENCE_PUNCT regex only matched a period FOLLOWED BY more text
+    (mid-sentence), so a short sentence that IS the whole card text -- ending
+    the string with nothing after the period -- slipped through undetected."""
+    for name in ("Enthält einen Großbuchstaben.", "Enthält einen Kleinbuchstaben.",
+                 "Enthält eine Zahl.", "Enthält ein Sonderzeichen.",
+                 "Mindestens 8 Zeichen lang.", "Weniger als 70 Zeichen lang."):
+        assert _is_headline_like(name), name
+
+    # Single-token names ending in a period (abbreviation or domain, not a
+    # sentence) must NOT be caught by the new branch -- no space, no match.
+    for name in ("K.I.T.", "titanspear.ai"):
+        assert not _is_headline_like(name), name
+
+
 # ── Degenerate input must never raise ────────────────────────────────────────
 
 def test_empty_and_junk_html_are_safe():

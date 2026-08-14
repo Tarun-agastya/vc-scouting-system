@@ -385,7 +385,22 @@ def _is_headline_like(name: str) -> bool:
         return True
     if len(name.split()) > _MAX_NAME_WORDS:
         return True
-    return bool(_SENTENCE_PUNCT.search(name))
+    if _SENTENCE_PUNCT.search(name):
+        return True
+    # _SENTENCE_PUNCT's `\.\s` requires a period FOLLOWED BY more text, so a
+    # short standalone sentence that IS the whole card text -- nothing after
+    # the closing period -- never matched it. Found live 14 Aug 2026: a
+    # password-requirements checklist on munich-startup.de's own startup-
+    # signup form ("Enthält einen Großbuchstaben.", "Mindestens 8 Zeichen
+    # lang.", one hint per card) scored as a logo grid and got harvested as
+    # six "startup names," each spawning a possible_duplicate review against
+    # a real company whose name happened to share a token. Real proper-noun
+    # names don't end in a literal period; multi-word text that does is a
+    # complete declarative sentence. Single-token names that DO end in a
+    # period as part of an abbreviation or domain (K.I.T., titanspear.ai)
+    # are exempt via the space requirement -- they have no space to trigger
+    # this branch.
+    return " " in name and name.endswith(".")
 
 
 def _score_group(g: CardGroup, w: dict, min_items: int) -> None:
