@@ -289,6 +289,7 @@ def _insert_master(db, startup, name, website, fingerprint, stable_id,
                    source, source_url, source_entry, published_date, now):
     """Create + commit a new Startup master (with id-collision handling)."""
     from database.models import Startup
+    from processing.field_policy import safe_string_list
     contact_raw = startup.get("contact_info") or ""
     linkedin_val = contact_raw if "linkedin.com" in contact_raw else None
 
@@ -388,7 +389,7 @@ def _insert_master(db, startup, name, website, fingerprint, stable_id,
         funding_stage=startup.get("funding_stage"),
         founded_year=_safe_int(startup.get("founded_year")),
         employee_count=startup.get("employee_count"),
-        tags=startup.get("tags") or [],
+        tags=safe_string_list(startup.get("tags")),
         source=source,
         source_url=source_url,
         source_history=[source_entry],
@@ -609,7 +610,7 @@ def _diff_fields(master, incoming: dict, source: str, extracted_at_iso: str, db)
     wording is better" adds nothing a length-based rule can't — so this
     now resolves deterministically and never reaches the Review Inbox.
     """
-    from processing.field_policy import better_freetext, norm_value
+    from processing.field_policy import better_freetext, norm_value, safe_string_list
 
     proposed = {}
     auto_apply = {}
@@ -647,8 +648,8 @@ def _diff_fields(master, incoming: dict, source: str, extracted_at_iso: str, db)
             high_risk = True
 
     # founders / tags — additive enrichment (new names not already present)
-    inc_founders = [f for f in (incoming.get("founders") or []) if isinstance(f, str) and f.strip()]
-    cur_founders = list((master.raw_data or {}).get("founders") or [])
+    inc_founders = safe_string_list(incoming.get("founders"))
+    cur_founders = safe_string_list((master.raw_data or {}).get("founders"))
     new_founders = [f for f in inc_founders if f.strip().lower() not in {c.strip().lower() for c in cur_founders}]
     if new_founders:
         proposed["founders"] = {
@@ -656,8 +657,8 @@ def _diff_fields(master, incoming: dict, source: str, extracted_at_iso: str, db)
             "incoming_source": source, "incoming_extracted_at": extracted_at_iso,
         }
 
-    inc_tags = [t for t in (incoming.get("tags") or []) if isinstance(t, str) and t.strip()]
-    cur_tags = list(master.tags or [])
+    inc_tags = safe_string_list(incoming.get("tags"))
+    cur_tags = safe_string_list(master.tags)
     new_tags = [t for t in inc_tags if t.strip().lower() not in {c.strip().lower() for c in cur_tags}]
     if new_tags:
         proposed["tags"] = {
@@ -1053,8 +1054,9 @@ def _fill_empty_fields(existing, new_data: dict) -> None:
             existing.founded_year = cleaned
 
     if new_data.get("tags"):
-        current_tags = set(existing.tags or [])
-        new_tags = set(new_data["tags"])
+        from processing.field_policy import safe_string_list
+        current_tags = set(safe_string_list(existing.tags))
+        new_tags = set(safe_string_list(new_data["tags"]))
         if new_tags - current_tags:
             existing.tags = list(current_tags | new_tags)
 

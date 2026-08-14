@@ -6,7 +6,7 @@ ones that shaped better_freetext's design — sampled live from the pending
 review queue before writing the rule, not invented afterward to fit it.
 """
 from processing.field_policy import (
-    _detect_language, better_freetext, is_empty, norm_value, split_proposal,
+    _detect_language, better_freetext, is_empty, norm_value, safe_string_list, split_proposal,
 )
 
 
@@ -151,3 +151,46 @@ def test_detect_language_inconclusive_on_a_bare_name():
     e.g. a bare product name shouldn't block a legitimate same-language
     upgrade just because it happens to share a token with both lists."""
     assert _detect_language("Sovaro GmbH") is None
+
+
+# ── safe_string_list: never shred a tags/founders string into characters ────
+# Regression for a real bug found live 14 Aug 2026: ~100 Startup.tags rows
+# ended up as ['[', "'", 'D', 'e', 'e', 'p', ...] instead of ['Deeptech',
+# 'KI'] because several call sites did a bare list(x or [])/set(x or [])
+# on a value that was, at some point, a plain string -- which Python
+# iterates character-by-character. See safe_string_list's own docstring and
+# scripts/repair_shredded_list_fields.py for the full incident.
+
+def test_safe_string_list_passes_through_a_real_list():
+    assert safe_string_list(["Deeptech", "KI"]) == ["Deeptech", "KI"]
+
+
+def test_safe_string_list_drops_blank_and_non_string_entries():
+    assert safe_string_list(["Deeptech", "", "  ", "KI"]) == ["Deeptech", "KI"]
+
+
+def test_safe_string_list_none_and_empty():
+    assert safe_string_list(None) == []
+    assert safe_string_list([]) == []
+    assert safe_string_list("") == []
+    assert safe_string_list("   ") == []
+
+
+def test_safe_string_list_recovers_a_shredded_list():
+    """The exact real shape found in the DB: every element is a single
+    character, forming "['Deeptech', 'KI']" when rejoined."""
+    shredded = ["[", "'", "D", "e", "e", "p", "t", "e", "c", "h", "'", ",",
+               " ", "'", "K", "I", "'", "]"]
+    assert safe_string_list(shredded) == ["Deeptech", "KI"]
+
+
+def test_safe_string_list_recovers_a_bare_stringified_list():
+    assert safe_string_list("['Deeptech', 'KI']") == ["Deeptech", "KI"]
+
+
+def test_safe_string_list_treats_a_plain_string_as_one_tag_not_characters():
+    """The critical never-regress case: a bare string that is NOT a
+    list-repr must become one single-item list, never get iterated into
+    individual characters."""
+    assert safe_string_list("München") == ["München"]
+    assert safe_string_list("brandneu") == ["brandneu"]

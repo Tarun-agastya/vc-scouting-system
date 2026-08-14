@@ -111,15 +111,17 @@ def _apply_field_updates(db, master: Startup, proposed: dict) -> None:
     human from applying every OTHER, perfectly good field in the same
     review too.
     """
+    from processing.field_policy import safe_string_list
+
     for field, change in (proposed or {}).items():
         new_val = change.get("new")
         if field == "founders":
             raw = dict(master.raw_data or {})
-            raw["founders"] = new_val
+            raw["founders"] = safe_string_list(new_val)
             master.raw_data = raw
             flag_modified(master, "raw_data")
         elif field == "tags":
-            master.tags = new_val
+            master.tags = safe_string_list(new_val)
         else:
             ok, cleaned = _sanitize_for_column(field, new_val)
             if not ok:

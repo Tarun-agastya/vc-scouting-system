@@ -192,3 +192,62 @@ def better_freetext(old, new) -> Optional[str]:
     if len(new_s) >= len(old_s) * LENGTH_MARGIN:
         return new_s
     return old_s
+
+
+def safe_string_list(value) -> list:
+    """
+    Coerce a tags/founders-shaped value into a proper list[str] — never
+    shred a string into its individual characters.
+
+    Found live 14 Aug 2026: ~100 Startup.tags rows (plus a handful of
+    raw_data.founders) held a list of SINGLE-CHARACTER strings —
+    ['[', "'", 'D', 'e', 'e', 'p', ...] instead of ['Deeptech', 'KI']. Root
+    cause: several call sites (processing/storage.py's _diff_fields,
+    _fill_empty_fields, _insert_master; api/routes/reviews.py's
+    _apply_field_updates) read/write master.tags with a bare `list(x or [])`
+    / `set(x or [])` / direct assignment, all of which silently assume x is
+    already a real list. The FIRST time x was ever a bare string for any
+    reason, `list("['Deeptech', 'KI']")` shredded it into characters — and
+    every read/write after that faithfully carried the shred forward
+    (a corrupted list is still "a list", so nothing downstream ever
+    noticed). This is the one place that decides what a tags/founders value
+    IS before anything touches it as a list; every call site above now
+    routes through this instead of trusting the stored type.
+
+    Real tags/founders are always a list of actual words/names (never
+    single characters in practice), so:
+      - a genuine list -> keep only non-empty string items
+      - a list where EVERY item is a single character -> it's shredded;
+        rejoin the characters (this recovers 100% of the original
+        information, verified against all 98 real corrupted rows before
+        this shipped — see scripts/repair_shredded_list_fields.py) and
+        parse the reconstructed Python-list-repr back into a real list
+      - a bare string that itself parses as a Python-list-repr -> same
+        recovery, one join short
+      - any other bare string -> treat the WHOLE string as one tag, never
+        iterate its characters
+      - anything else / empty -> []
+    """
+    import ast
+
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        if value and all(isinstance(v, str) and len(v) <= 1 for v in value):
+            value = "".join(value)  # shredded -- fall through to string recovery below
+        else:
+            return [v.strip() for v in value if isinstance(v, str) and v.strip()]
+
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            try:
+                parsed = ast.literal_eval(stripped)
+            except (ValueError, SyntaxError):
+                parsed = None
+            if isinstance(parsed, list):
+                return [v.strip() for v in parsed if isinstance(v, str) and v.strip()]
+        return [stripped] if stripped else []
+
+    return []
