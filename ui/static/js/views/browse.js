@@ -10,7 +10,7 @@ import { api, fmt, esc } from "../api.js";
 import { toast, confirmAction, navigate, recordBatch } from "../router.js";
 
 const COLUMNS = [
-  ["name", "Name", false],
+  ["name", "Name", true],
   ["industry", "Industry", true],
   ["tech_cluster", "Cluster", true],
   ["city", "City", true],
@@ -109,7 +109,7 @@ export default {
       filters: { industry: "", country: "", city: "", tech_cluster: "", funding_stage: "", score_tier: "", employee_count: "", verification_status: "", source_url: "", interest_status: "", business_model: "", is_gmbh: "" },
       thesis: "",           // Phase V-3: selected thesis id — "" means normal sort/order browsing
       priorityFirst: false, // Phase P-1: sort=priority — startups matching a priority thesis (e.g. SÜDPACK) first
-      sort: "created_at", order: "desc",
+      sort: "name", order: "asc",
       limit: 50, offset: 0,
       expandedId: null,
       lastRows: [], lastTotal: 0,

@@ -81,6 +81,20 @@ def test_list_defaults_to_in_radius_and_nearest_first():
     assert ordered.index(f"{PREFIX} Near") < ordered.index(f"{PREFIX} Far")
 
 
+def test_name_sort_respects_order_asc_and_desc():
+    """Regression for a bug found live 14 Aug 2026: sort="name" ignored
+    direction entirely (always .order_by(RegionalCompany.name), no asc()/
+    desc() call at all) — the "order" param exists everywhere else in this
+    codebase's list endpoints but was simply never wired up here."""
+    asc = _run(R.list_regional(q=PREFIX, sort="name", order="asc", db=SessionLocal()))
+    ordered_asc = [c["name"] for c in asc["companies"]]
+    assert ordered_asc.index(f"{PREFIX} Far") < ordered_asc.index(f"{PREFIX} Near")
+
+    desc = _run(R.list_regional(q=PREFIX, sort="name", order="desc", db=SessionLocal()))
+    ordered_desc = [c["name"] for c in desc["companies"]]
+    assert ordered_desc.index(f"{PREFIX} Near") < ordered_desc.index(f"{PREFIX} Far")
+
+
 def test_out_of_radius_rows_are_kept_and_reachable():
     """They carry real contact history, so they are hidden by default but
     never deleted."""

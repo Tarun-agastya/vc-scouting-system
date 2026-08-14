@@ -150,6 +150,7 @@ async def list_regional(
     in_radius: bool = True,
     missing_employees: bool = False,
     sort: str = "distance",
+    order: str = "asc",  # only affects sort="name" — the other modes' direction is inherent to their meaning (nearest/biggest/best-tier first)
     limit: int = 100,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -170,7 +171,8 @@ async def list_regional(
     if sort == "employees":
         query = query.order_by(RegionalCompany.employees.desc().nullslast())
     elif sort == "name":
-        query = query.order_by(RegionalCompany.name)
+        name_col = RegionalCompany.name
+        query = query.order_by(name_col.desc() if order == "desc" else name_col.asc())
     elif sort == "tier":
         query = query.order_by(RegionalCompany.triage_tier.asc().nullslast(),
                                RegionalCompany.distance_km.asc().nullslast())

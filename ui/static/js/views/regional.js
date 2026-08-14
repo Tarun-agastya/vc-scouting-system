@@ -71,7 +71,8 @@ export default {
               <option value="distance">Nach Entfernung</option>
               <option value="employees">Nach Mitarbeitern</option>
               <option value="tier">Nach Stufe</option>
-              <option value="name">Nach Name</option>
+              <option value="name_asc">Nach Name (A→Z)</option>
+              <option value="name_desc">Nach Name (Z→A)</option>
             </select>
             <label class="row" style="gap:6px;font-size:12px">
               <input type="checkbox" id="rc-missing"> ohne Mitarbeiterzahl
@@ -184,8 +185,15 @@ export default {
 
     async function load() {
       let res;
+      // state.sort carries the dropdown's raw value ("name_asc"/"name_desc"
+      // for the alphabetical modes, a bare mode name otherwise) — split it
+      // here rather than in state, so the backend's plain sort/order params
+      // stay the single source of truth (see api/routes/regional.py).
+      const [sortKey, sortDir] = state.sort.startsWith("name_")
+        ? ["name", state.sort.slice("name_".length)]
+        : [state.sort, undefined];
       try {
-        res = await api.listRegional({ ...filters(), sort: state.sort,
+        res = await api.listRegional({ ...filters(), sort: sortKey, order: sortDir,
                                        limit: state.limit, offset: state.offset });
       } catch (err) {
         tableEl.innerHTML = `<tbody><tr><td class="empty">${esc(err.message)}</td></tr></tbody>`;
