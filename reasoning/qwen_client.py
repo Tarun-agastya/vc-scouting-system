@@ -304,6 +304,10 @@ def _is_implausible_startup_name(name: str, cfg: dict) -> bool:
     if regional_pattern and re.search(regional_pattern, stripped, re.IGNORECASE):
         return True
 
+    person_title_pattern = cfg.get("person_title_pattern")
+    if person_title_pattern and re.search(person_title_pattern, stripped, re.IGNORECASE):
+        return True
+
     return False
 
 

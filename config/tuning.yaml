@@ -260,6 +260,21 @@ institutional_junk:
     - "wolff und müller"
     - "leonhard weiß"
     - rentschler
+    # Confirmed live 14 Aug 2026 — large, established European corporates
+    # (not German this time) getting mentioned as an investor/partner/
+    # acquirer in a tech.eu / sifted.eu article and extracted as if THEY
+    # were the startup. Same "prompt alone isn't enough" failure mode as
+    # the German incumbents above, just from pan-European feeds instead of
+    # local hub sites.
+    - ferrari
+    - unipol
+    - generali
+    - "intesa sanpaolo"
+    - "chiesi farmaceutici"
+    - "cnh industrial"
+    - baramundi
+    - "freigeist capital"
+    - "atlantic labs"
   # Fabricated generic noun-phrase fragments ("a digital agency", "ein
   # Games Studio") rather than real proper names — confirmed live 3 Aug on
   # schwaben.digital's /presse page. Matched as a regex against the whole
@@ -294,6 +309,17 @@ institutional_junk:
   # Confirmed live 4 Aug: 12/12 matches in the DB were headline junk,
   # zero false positives.
   regional_collective_pattern: "\\b(m[üu]nchner|munich|schw[äa]bisch\\w*|bayerisch\\w*|deutsche?)\\b.*\\b(startups|gr[üu]nder\\w*)\\b"
+  # A German title/role word directly followed by what looks like a person's
+  # name — a byline or an org's leadership page bleeding a PERSON into the
+  # name field, not a company. Confirmed live 14 Aug 2026: "SCE-Chef Klaus
+  # Sailer" (an incubator's own director) and "Ministerpräsident Söder" (the
+  # Bavarian state premier, quoted/mentioned on a source page). Deliberately
+  # requires the TITLE to be immediately followed by 1-2 capitalized name-
+  # shaped words, not just the bare word anywhere in the name — "Chef" alone
+  # as a keyword would false-positive on real brand names like the DevOps
+  # tool "Chef" itself. Verified against every name already in the DB before
+  # shipping: 2/2 matches confirmed junk, zero false positives.
+  person_title_pattern: "^(?:\\S+-)?(chef|gesch[äa]ftsf[üu]hrer(?:in)?|vorstand(?:svorsitzende[rn]?)?|ministerpr[äa]sident(?:in)?|oberb[üu]rgermeister(?:in)?|b[üu]rgermeister(?:in)?|landr[äa]t(?:in)?)\\s+[A-ZÄÖÜ][\\w.-]+(?:\\s+[A-ZÄÖÜ][\\w.-]+)?$"
 
 # Phase P-1 (29 Jul): a soft, config-toggleable scouting bias for whichever
 # theses in config/theses.yaml are marked `priority: true` (e.g. SÜDPACK's
