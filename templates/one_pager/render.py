@@ -22,7 +22,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import html
+import mimetypes
 import os
 import sys
 from pathlib import Path
@@ -88,16 +90,34 @@ def _para(text: str) -> str:
     return html.escape(" ".join(str(text).split()))
 
 
-def _visual_box(slot: dict, default_label: str, base_dir: Path, grow: int) -> str:
+def _img_src(image: str, base_dir: Path, embed: bool) -> str:
+    """Resolve an image reference to something a browser can load.
+
+    With embed=True the bytes are inlined as a data: URI, which is what makes a
+    rendered page a single self-contained file — survives being emailed, moved,
+    or published somewhere that blocks external requests. Remote URLs are passed
+    through untouched.
+    """
+    raw = str(image)
+    if raw.startswith(("http://", "https://", "data:")):
+        return raw
+    resolved = (base_dir / raw).resolve()
+    if not embed:
+        return os.path.relpath(resolved, base_dir)
+    if not resolved.exists():
+        raise FileNotFoundError(f"image not found: {resolved}")
+    mime = mimetypes.guess_type(resolved.name)[0] or "image/jpeg"
+    return f"data:{mime};base64," + base64.b64encode(resolved.read_bytes()).decode("ascii")
+
+
+def _visual_box(slot: dict, default_label: str, base_dir: Path, grow: int, embed: bool) -> str:
     label = html.escape(str(slot.get("label") or default_label))
     image = slot.get("image")
     if image:
-        src = image if str(image).startswith(("http://", "https://", "data:")) else os.path.relpath(
-            (base_dir / str(image)).resolve(), base_dir
-        )
+        src = _img_src(image, base_dir, embed)
         return (
             f'<figure class="vbox vbox--img" style="flex:{grow}">'
-            f'<img src="{html.escape(str(src))}" alt="{label}">'
+            f'<img src="{html.escape(src)}" alt="{label}">'
             f"</figure>"
         )
     placeholder = html.escape(str(slot.get("placeholder") or ""))
@@ -109,7 +129,7 @@ def _visual_box(slot: dict, default_label: str, base_dir: Path, grow: int) -> st
     )
 
 
-def render(data: dict, base_dir: Path) -> str:
+def render(data: dict, base_dir: Path, *, embed: bool = False, draft_mark: bool = False) -> str:
     meta = data.get("meta") or {}
     page_label = html.escape(str(meta.get("page_label") or "Matchmaking-Startups"))
     page_number = html.escape(str(meta.get("page_number") or ""))
@@ -124,7 +144,7 @@ def render(data: dict, base_dir: Path) -> str:
 
     logo = data.get("logo")
     if logo:
-        logo_html = f'<div class="logo"><img src="{html.escape(str(logo))}" alt="{name}"></div>'
+        logo_html = f'<div class="logo"><img src="{html.escape(_img_src(logo, base_dir, embed))}" alt="{name}"></div>'
     else:
         logo_html = f'<div class="logo logo--text">{name}</div>'
 
@@ -138,12 +158,19 @@ def render(data: dict, base_dir: Path) -> str:
     visuals = data["visuals"]
     # 40/60 split: the "how it works" box usually carries a denser graphic.
     visual_html = "".join(
-        _visual_box(visuals.get(key) or {}, label, base_dir, grow)
+        _visual_box(visuals.get(key) or {}, label, base_dir, grow, embed)
         for (key, label), grow in zip(VISUALS, (40, 60))
     )
 
+    # Opt-in only. The watermark is our own bookkeeping, not part of the GT Hub
+    # format, so it must never appear on a page destined for the real deck. The
+    # audit trail lives in the YAML (`review.status` + `open_questions`), which
+    # is where it belongs — a stamp on the artwork is not the same as a record.
     status = ((data.get("review") or {}).get("status") or "").lower()
-    draft_ribbon = '<div class="draft">ENTWURF — nicht freigegeben</div>' if status != "approved" else ""
+    draft_ribbon = (
+        '<div class="draft">ENTWURF — nicht freigegeben</div>'
+        if (draft_mark and status != "approved") else ""
+    )
 
     return f"""<!doctype html>
 <html lang="de"><head><meta charset="utf-8">
@@ -225,6 +252,10 @@ def main() -> int:
     ap.add_argument("data", nargs="+", help="one or more YAML data files")
     ap.add_argument("--out-dir", default=None, help="where to write HTML (default: alongside the YAML)")
     ap.add_argument("--check", action="store_true", help="validate only, write nothing")
+    ap.add_argument("--embed", action="store_true",
+                    help="inline images as data: URIs so the HTML is a single self-contained file")
+    ap.add_argument("--draft-mark", action="store_true",
+                    help="stamp an ENTWURF watermark on pages whose review.status is not 'approved'")
     args = ap.parse_args()
 
     exit_code = 0
@@ -254,7 +285,13 @@ def main() -> int:
         out_dir = Path(args.out_dir).resolve() if args.out_dir else path.parent
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"{path.stem}_onepager.html"
-        out.write_text(render(data, path.parent), encoding="utf-8")
+        try:
+            page = render(data, path.parent, embed=args.embed, draft_mark=args.draft_mark)
+        except FileNotFoundError as exc:
+            print(f"  ✗ {path.name}: {exc}")
+            exit_code = 1
+            continue
+        out.write_text(page, encoding="utf-8")
 
         print(f"  ✓ {path.name} -> {out}  [{status}]")
         if open_q:

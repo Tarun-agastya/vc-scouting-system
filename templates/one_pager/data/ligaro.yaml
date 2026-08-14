@@ -12,6 +12,7 @@ location: Hannover
 founded: "2023 (Forschungsstart)"
 team_size: "6"
 website: www.ligaro.org
+logo: assets/ligaro/logo.jpg
 
 sections:
   loesung: >
@@ -51,10 +52,12 @@ sections:
 visuals:
   visual_solution:
     label: Visualisierung der Lösung
-    placeholder: "Deck S. 2 — verklebte Holzprobe (Produktbild) oder S. 9 Laborbilder"
+    # Verklebte Holzprobe: die Klebefuge ist sichtbar — zeigt das Produkt selbst.
+    image: assets/ligaro/bonded_wood.jpg
   visual_how_it_works:
     label: So funktioniert die Lösung
-    placeholder: "Deck S. 4 — Wettbewerbsvergleich (Recyclingfähigkeit / Toxizität / erneuerbare Rohstoffe / Wasserfestigkeit)"
+    # Chemische Entwicklung im Labor (Leibniz Universität Hannover).
+    image: assets/ligaro/lab_development.jpg
 
 sources:
   - "Deck S. 2 — Lösung: Spanplatten, biobasiert, isocyanat-/formaldehydfrei, 90 % CO₂, 2 Patente, preiskompetitiv"

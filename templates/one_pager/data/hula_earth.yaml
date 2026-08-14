@@ -16,6 +16,7 @@ location: München
 founded: "2023"
 team_size: "k. A."
 website: hula.earth
+logo: assets/hula_earth/logo.jpg
 
 sections:
   loesung: >
@@ -55,10 +56,13 @@ sections:
 visuals:
   visual_solution:
     label: Visualisierung der Lösung
-    placeholder: "Produktbild Hula BioT-Sensor (solarbetriebene Box) — von hula.earth oder aus dem Deck"
+    # BioT-Sensor mit Solarpanel im Feld — das Produkt in seiner Einsatzumgebung.
+    image: assets/hula_earth/biot_sensor.jpg
   visual_how_it_works:
     label: So funktioniert die Lösung
-    placeholder: "Schema Sensor + Satellit -> Plattform-Dashboard, oder Screenshot des Biodiversitäts-Cockpits"
+    # Screenshot der Hula-Plattform ("Hula Biodiversity Insights"): Biodiversity
+    # Score, Artenzahlen, Action Plan und Satellitenansicht in einem Dashboard.
+    image: assets/hula_earth/platform_dashboard.jpg
 
 sources:
   - "https://hula.earth/ — BioT-Sensor (low-cost, low-power, long-range IoT), Earth observation, Plattform-Dashboard, Industrien (Solar/Wind, Agrar, Naturschutz), Engie Green Success Story"
