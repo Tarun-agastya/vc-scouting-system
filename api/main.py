@@ -261,11 +261,35 @@ async def health():
 # Served by this same process so there is no second service, no CORS, and it is
 # reachable on the office LAN the moment the API is up. Mounted AFTER the API
 # routers so a static path can never shadow an endpoint.
+
+
+class _RevalidatingStaticFiles(StaticFiles):
+    """
+    Plain StaticFiles sends Last-Modified/ETag but no Cache-Control, which
+    leaves the browser free to use heuristic caching — no explicit directive
+    means "use your own guess," and that guess is allowed to be "don't even
+    ask the server." Found live 14 Aug 2026: a dashboard tab left open
+    across several same-day JS deploys (fixes shipped and confirmed correct
+    server-side, curl'd directly) kept running the OLD code, because
+    navigating the SPA's hash routes (#/browse etc.) never re-fetches the
+    already-loaded ES modules — only a real page load does, and heuristic
+    caching meant even that wasn't guaranteed to ask. `no-cache` (despite
+    the name) doesn't disable caching — it forces a revalidation request on
+    every load, which is a cheap conditional GET returning 304 when nothing
+    changed (confirmed: ETag stays intact), so this costs nothing when the
+    dashboard hasn't changed and guarantees a fresh module the moment it has.
+    """
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 _UI_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ui", "static"
 )
 if os.path.isdir(_UI_DIR):
-    app.mount("/dashboard", StaticFiles(directory=_UI_DIR, html=True), name="dashboard")
+    app.mount("/dashboard", _RevalidatingStaticFiles(directory=_UI_DIR, html=True), name="dashboard")
     logger.info("Team dashboard mounted at /dashboard")
 else:
     logger.warning(f"Dashboard directory not found at {_UI_DIR} — /dashboard disabled")
