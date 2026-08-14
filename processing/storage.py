@@ -12,6 +12,30 @@ or auto-overwrites existing startup data. Given an incoming extraction it:
     (`staged_duplicate` / `staged_anomaly`).
 Provenance (source_history) and derived scores are the only things applied to
 an existing master automatically — never extracted startup data.
+
+One narrow, owner-approved exception (14 Aug 2026): a possible_duplicate is
+auto-merged (`auto_merged_empty_duplicate`) instead of staged when ALL of:
+  - the matcher's identity confidence is already "high" (strong name+
+    embedding match, a shared founder, or a corroborated domain match; see
+    processing/matcher.py::_classify);
+  - the INCOMING side carries no substantive data beyond a name (see
+    `_is_empty_incoming`) — the RSS-"roundup"-article shape (deutsche-
+    startups.de's "5 neue Startups: X, Y, Z…" names real, already-tracked
+    companies with zero individual facts);
+  - the EXISTING MASTER is NOT also a bare stub (see `_is_bare_master`) —
+    this is load-bearing, not a redundant check: Phase J-2 (4 Aug) already
+    established that two bare stubs (no description, no website on EITHER
+    side — "HBC Campus 1"/"HBC Campus 2") must never be silently resolved,
+    because two genuinely different numbered variants of the same base name
+    hit the SAME "high" identity score a real duplicate would. Only a
+    master with independently verified substance actually confirms "this is
+    a real, singular, already-understood entity" — that's what makes an
+    empty incoming side provably redundant rather than merely similar-
+    looking.
+This still never overwrites master data — an all-empty loser can't overwrite
+anything — it just skips creating a review with nothing for a human to
+decide. The "low" confidence tier and every `anomaly` outcome are NOT
+exempted and still always go to a human.
 """
 import logging
 import os
@@ -88,6 +112,7 @@ def upsert_startup(
       record_id — stable UUID string of the master this touched, or None on skip/error
       status    — one of: "new_master" | "no_op" | "staged_update"
                   | "staged_duplicate" | "staged_anomaly"
+                  | "auto_merged_empty_duplicate"
     """
     from database.connection import SessionLocal
     from database.models import Startup
@@ -207,6 +232,36 @@ def upsert_startup(
                 return str(new_row.id), "new_master"  # human already said "different"
             master = db.query(Startup).filter(Startup.id == report.master_id).first()
             rtype = "anomaly" if report.outcome == "anomaly" else "possible_duplicate"
+
+            # Auto-merge exception (14 Aug 2026) — see module docstring for
+            # the full policy. Never for anomaly: an anomaly IS the signal
+            # something looks wrong, not merely redundant. Both emptiness
+            # checks are required — see _is_bare_master's docstring for why
+            # an empty INCOMING side alone isn't enough (Phase J-2's "HBC
+            # Campus 1"/"Campus 2" trap: two bare stubs can share a "high"
+            # identity score by name pattern alone while being genuinely
+            # different entities).
+            if (rtype == "possible_duplicate" and report.risk_level == "high"
+                    and master is not None and _is_empty_incoming(startup)
+                    and not _is_bare_master(master)):
+                _fill_empty_fields(master, startup)  # no-op by definition here; kept for consistency
+                _append_source_history(master, source_entry, flag_modified)
+                try:
+                    qdrant_store.delete_startup(str(new_row.id))
+                except Exception as exc:
+                    logger.warning(
+                        f"[Storage] Qdrant delete failed auto-merging empty "
+                        f"duplicate {new_row.id} into '{master.name}': {exc}"
+                    )
+                db.delete(new_row)
+                db.commit()
+                logger.info(
+                    f"[Storage] Auto-merged empty-incoming duplicate '{name}' "
+                    f"into existing '{master.name}' ({master.id}) — high-confidence "
+                    f"match, nothing for a human to decide"
+                )
+                return str(master.id), "auto_merged_empty_duplicate"
+
             _create_review(
                 db, review_type=rtype, master=master, incoming_row=new_row,
                 incoming_data={**startup, "_source_excerpt": saved_excerpt},
@@ -909,6 +964,52 @@ def _sanitize_for_column(field: str, value):
         return False, None
 
     return True, value
+
+
+_SUBSTANTIVE_INCOMING_FIELDS = (
+    "one_liner", "description", "website", "industry", "city",
+    "funding_stage", "employee_count",
+)
+
+
+def _is_empty_incoming(startup: dict) -> bool:
+    """
+    True if an incoming extraction carries nothing beyond a name — the shape
+    an RSS "roundup" article produces (e.g. deutsche-startups.de's "5 neue
+    Startups: X, Y, Z…", which correctly names real, already-tracked
+    companies but supplies zero individual facts about any of them). Used by
+    upsert_startup's possible_duplicate auto-merge gate — see the module
+    docstring for the full policy and why it's gated to risk_level=="high"
+    on top of this.
+    """
+    from processing.field_policy import is_empty
+    return all(is_empty(startup.get(f)) for f in _SUBSTANTIVE_INCOMING_FIELDS)
+
+
+def _is_bare_master(master) -> bool:
+    """
+    True if the EXISTING master has no substantive data of its own either.
+
+    This is the other half of the auto-merge gate, and it's load-bearing:
+    Phase J-2 (4 Aug, review-inbox-flooding audit) established that a
+    possible_duplicate between two bare stubs — no description, no website
+    on EITHER side, e.g. "HBC Campus 1" / "HBC Campus 2" — must never be
+    silently resolved, because a bare master's rich-looking name similarity
+    proves nothing: two genuinely different numbered variants of the same
+    base name (Campus 1 vs Campus 2, Building A vs Building B) hit the exact
+    same "high" identity-confidence tier as two mentions of the SAME real
+    company would. Only when the MASTER already carries independent,
+    verified substance is a "nothing new here" incoming stub actually safe
+    to fold in without a human ever looking — the master's own data is what
+    confirms it's a real, singular, already-understood entity, not just a
+    name pattern.
+    """
+    from processing.field_policy import is_empty
+    return all(
+        is_empty(getattr(master, col, None))
+        for col in ("short_description", "description", "website",
+                    "industry", "city", "funding_stage", "employee_count")
+    )
 
 
 def _fill_empty_fields(existing, new_data: dict) -> None:

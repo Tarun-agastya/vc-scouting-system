@@ -128,3 +128,52 @@ def test_possible_duplicate_with_real_evidence_tagged_normal(make, db):
     rev = db.query(DuplicateReview).filter(DuplicateReview.master_id == r1).first()
     assert rev is not None
     assert (rev.evidence or {}).get("evidence_level") == "normal"
+
+
+def test_empty_duplicate_of_a_documented_master_auto_merges(make, db):
+    """
+    Auto-merge exception (14 Aug 2026) — the tripbot shape: an RSS "roundup"
+    article names a real, already-well-documented company with zero
+    individual facts. The incoming side has nothing to contribute and the
+    master is independently verified real (has a website + description), so
+    this must resolve with no human involved at all — see
+    processing.storage's module docstring and _is_bare_master's docstring
+    for why this is safe specifically BECAUSE the master isn't bare (unlike
+    test_possible_duplicate_between_bare_stubs_tagged_minimal_evidence,
+    which this must NOT regress).
+    """
+    r1, s1 = make("Auto Merge Rich Co", website="pytest-automerge-rich.com",
+                  city="Munich", industry="Software",
+                  description="a real, well-documented pytest company")
+    assert s1 == "new_master"
+
+    r2, s2 = make("Auto Merge Rich Co")  # bare name-only stub, no website/description
+    assert s2 == "auto_merged_empty_duplicate"
+    assert r2 == r1  # folded into the SAME existing master, no surviving second row
+
+    rev = db.query(DuplicateReview).filter(
+        DuplicateReview.master_id == r1, DuplicateReview.review_type == "possible_duplicate"
+    ).first()
+    assert rev is None  # nothing staged — there was nothing for a human to decide
+
+    master = _get(db, r1)
+    assert master.description == "a real, well-documented pytest company"  # untouched
+    assert any(h.get("url") for h in (master.source_history or []))  # but provenance grew
+
+
+def test_low_confidence_empty_duplicate_still_goes_to_a_human(make, db):
+    """The auto-merge exception requires risk_level=="high" specifically —
+    a merely "in the review band" match with an empty incoming side must
+    still be staged, not auto-resolved, since weak identity evidence plus
+    nothing to independently corroborate it is exactly where a wrong guess
+    could silently swallow a genuinely different company. "Foxtrot Data" vs
+    "Foxtrot Analytics Base" verified empirically (14 Aug 2026) to land in
+    the matcher's risk_level=="low" band (name_sim ~0.75, emb ~0.84 — below
+    STRONG on name but the aggregate score still clears the review band)."""
+    r1, s1 = make("Foxtrot Analytics Base", website="pytest-foxtrot-base.com",
+                  city="Munich", industry="Software", description="enterprise analytics tooling")
+    assert s1 == "new_master"
+
+    r2, s2 = make("Foxtrot Data")
+    assert s2 != "auto_merged_empty_duplicate"
+    assert s2 == "staged_duplicate"

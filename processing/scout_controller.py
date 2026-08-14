@@ -139,7 +139,7 @@ def _progress_to_dict(progress: RecordProgress) -> dict:
 _METRIC_FIELDS = (
     "pages_crawled", "pages_skipped", "chunks_created", "chunks_filtered",
     "qwen_calls", "qwen_failures", "startups_extracted", "startups_inserted",
-    "updates_staged", "duplicates_staged", "unchanged", "bare_stub_new_masters",
+    "updates_staged", "duplicates_staged", "duplicates_auto_merged", "unchanged", "bare_stub_new_masters",
     # Phase R-0 adaptive-pipeline instrumentation. Zero until later phases
     # populate them; listed now so each phase is measurable from the start.
     "pages_rendered", "pages_static", "pagination_clicks", "pagination_items_gained",

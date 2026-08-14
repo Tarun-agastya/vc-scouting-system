@@ -163,6 +163,9 @@ class PipelineMetrics:
     startups_inserted   — new master records inserted (status "new_master")
     updates_staged      — field changes staged for human review (status "staged_update")
     duplicates_staged   — possible-duplicate/anomaly pairs staged (status "staged_duplicate"/"staged_anomaly")
+    duplicates_auto_merged — high-confidence duplicate whose incoming side had
+                          no data, auto-merged with no review (status
+                          "auto_merged_empty_duplicate", 14 Aug 2026)
     unchanged           — exact re-extractions with no meaningful change (status "no_op")
     total_processing_time — wall-clock seconds from first URL fetch to last upsert
 
@@ -194,6 +197,7 @@ class PipelineMetrics:
     startups_inserted:      int   = 0
     updates_staged:         int   = 0
     duplicates_staged:      int   = 0
+    duplicates_auto_merged: int   = 0
     unchanged:              int   = 0
     total_processing_time:  float = 0.0
 
@@ -739,6 +743,7 @@ async def storage_worker_task(
             "staged_duplicate": "duplicates_staged",
             "staged_anomaly":   "duplicates_staged",
             "no_op":            "unchanged",
+            "auto_merged_empty_duplicate": "duplicates_auto_merged",
         }
         counter = _STATUS_COUNTER.get(status)
         if counter:

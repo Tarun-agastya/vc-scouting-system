@@ -29,6 +29,7 @@ const METRIC_LABELS = [
   ["startups_inserted", "New masters"],
   ["updates_staged", "Updates staged"],
   ["duplicates_staged", "Duplicates staged"],
+  ["duplicates_auto_merged", "Duplicates auto-merged"],
 ];
 
 const STATUS_DOT = { running: "dot--live", failed: "dot--error", skipped: "dot--error", cancelled: "dot--idle" };
