@@ -316,6 +316,7 @@ async def status_command(interaction: discord.Interaction):
         await interaction.followup.send(embed=embed)
     except Exception as exc:
         # 3. Use followup.send() for the error state too
+        logger.error(f"[Bot] /status failed: {exc}")
         await interaction.followup.send("API server not reachable. Run `start.ps1` first.")
 
 
