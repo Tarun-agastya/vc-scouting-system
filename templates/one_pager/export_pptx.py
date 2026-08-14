@@ -47,7 +47,13 @@ GAP = 0.17
 RIGHT_X = MARGIN + LEFT_W + GAP
 RIGHT_W = SLIDE_W - MARGIN - RIGHT_X
 VIS_GAP = 0.16
-VIS_H = (BODY_H - VIS_GAP) / 2          # 50/50, as in both reference pages
+# 40/60, matching render.py and the ONOX/Arctory reference pages: the bottom
+# ("how it works") box usually carries a denser graphic — a product breakdown
+# or a UI screenshot — and reads better with the extra height. Previously
+# hardcoded 50/50 here with a comment incorrectly claiming parity with the
+# references; the two exporters must not disagree on this.
+VIS_H_TOP = (BODY_H - VIS_GAP) * 0.40
+VIS_H_BOTTOM = (BODY_H - VIS_GAP) * 0.60
 CARD_PAD = 0.17
 LOGO_W, LOGO_H = 1.55, 0.50
 
@@ -124,7 +130,7 @@ def _fit_cover(src: Path, box_w_in: float, box_h_in: float, tmp_dir: Path) -> Pa
     return out
 
 
-def _visual(slide, slot: dict, default_label: str, base_dir: Path, tmp_dir: Path, y: float):
+def _visual(slide, slot: dict, default_label: str, base_dir: Path, tmp_dir: Path, y: float, h: float):
     """One image box: a real picture when we have one, otherwise the accent-violet
     placeholder from the blank template, carrying the label so an unfilled slot is
     obviously unfilled."""
@@ -134,15 +140,15 @@ def _visual(slide, slot: dict, default_label: str, base_dir: Path, tmp_dir: Path
     if image:
         src = (base_dir / str(image)).resolve()
         if src.exists():
-            pic = _fit_cover(src, RIGHT_W, VIS_H, tmp_dir)
+            pic = _fit_cover(src, RIGHT_W, h, tmp_dir)
             slide.shapes.add_picture(str(pic), Inches(RIGHT_X), Inches(y),
-                                     Inches(RIGHT_W), Inches(VIS_H))
-            _rect(slide, RIGHT_X, y, RIGHT_W, VIS_H, fill=None, line=INK)
+                                     Inches(RIGHT_W), Inches(h))
+            _rect(slide, RIGHT_X, y, RIGHT_W, h, fill=None, line=INK)
             return
         print(f"      ! image not found, using placeholder: {src}")
 
-    _rect(slide, RIGHT_X, y, RIGHT_W, VIS_H, fill=ACCENT, line=INK)
-    tb, tf = _txbox(slide, RIGHT_X + 0.35, y + VIS_H / 2 - 0.45, RIGHT_W - 0.70, 0.90)
+    _rect(slide, RIGHT_X, y, RIGHT_W, h, fill=ACCENT, line=INK)
+    tb, tf = _txbox(slide, RIGHT_X + 0.35, y + h / 2 - 0.45, RIGHT_W - 0.70, 0.90)
     tf.vertical_anchor = MSO_ANCHOR.MIDDLE
     p = tf.paragraphs[0]
     p.alignment = PP_ALIGN.CENTER
@@ -228,8 +234,9 @@ def build_slide(prs: Presentation, data: dict, base_dir: Path, tmp_dir: Path) ->
 
     # ── right column ─────────────────────────────────────────────────────────
     visuals = data["visuals"]
-    for (key, default_label), y in zip(VISUALS, (BODY_Y, BODY_Y + VIS_H + VIS_GAP)):
-        _visual(slide, visuals.get(key) or {}, default_label, base_dir, tmp_dir, y)
+    slots = zip(VISUALS, (BODY_Y, BODY_Y + VIS_H_TOP + VIS_GAP), (VIS_H_TOP, VIS_H_BOTTOM))
+    for (key, default_label), y, h in slots:
+        _visual(slide, visuals.get(key) or {}, default_label, base_dir, tmp_dir, y, h)
 
 
 def new_deck() -> Presentation:
