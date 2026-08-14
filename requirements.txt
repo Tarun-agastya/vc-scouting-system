@@ -49,5 +49,12 @@ ruamel.yaml==0.19.1
 # ── Press monitor (e-paper PDF text extraction + page screenshots) ───────────
 pymupdf==1.26.5
 
+# ── Startup one-pagers (templates/one_pager) ─────────────────────────────────
+# python-pptx renders the editable PowerPoint export; Pillow crops/downscales the
+# images it and the HTML renderer embed. Neither is used by the scouting
+# pipeline itself — the one-pager tooling is the only consumer.
+python-pptx==1.0.2
+pillow==11.3.0
+
 # ── Testing ──────────────────────────────────────────────────────────────────
 pytest==8.4.2

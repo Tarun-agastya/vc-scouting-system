@@ -10,13 +10,45 @@ blank GT Hub template plus two filled references — **ONOX** (S. 5) and
 > the shorter `Ort: … / Gründung: … / Team: …`. That is the convention.
 
 This exists to be executed, not just read: `schema.yaml` is the data contract,
-`render.py` turns a data file into the finished page, and `data/*.yaml` are real
-filled examples. Adding a startup means writing one YAML file — nothing else.
+`data/*.yaml` are real filled examples, and two exporters turn a data file into a
+finished page. Adding a startup means writing one YAML file — nothing else.
+
+## Two ways to change a one-pager
+
+Pick whichever suits the change. They are not in conflict: YAML is the source of
+truth for *generating* a page, PowerPoint is where a page gets *finished*.
+
+**A — Edit the PowerPoint directly.** For "swap this screenshot", "fix this
+sentence", "move that box". No terminal, no Python.
 
 ```bash
-python3 templates/one_pager/render.py templates/one_pager/data/ligaro.yaml
-python3 templates/one_pager/render.py templates/one_pager/data/*.yaml --out-dir /tmp/onepagers
+python3 templates/one_pager/export_pptx.py templates/one_pager/data/ligaro.yaml
 ```
+
+Every text block is a real text box (click and type) and every image is a real
+picture (right-click → **Change Picture**). The slide is 16:9, so it pastes
+straight into the Matchmaking deck. Opens in PowerPoint, Keynote, LibreOffice and
+Google Slides. The section text box has **shrink-on-overflow** enabled, so adding
+a sentence scales the type down instead of spilling out of the card.
+
+> Edits made in PowerPoint do **not** flow back into the YAML. If a change should
+> survive a re-export — a corrected figure, a better claim — put it in the YAML
+> too, or the next generated page will quietly reintroduce the old wording.
+
+**B — Edit the YAML and re-generate.** For content changes you want to keep, and
+the path automation will use.
+
+```bash
+python3 templates/one_pager/render.py    data/ligaro.yaml            # HTML (review / print-to-PDF)
+python3 templates/one_pager/render.py    data/*.yaml --embed         # HTML, images inlined, one file
+python3 templates/one_pager/export_pptx.py data/*.yaml --combine deck.pptx   # all pages, one deck
+python3 templates/one_pager/render.py    data/*.yaml --check         # validate only, write nothing
+```
+
+**To swap an image**, drop the new file in `data/assets/<startup>/` and point the
+`image:` key at it. Any format Pillow reads works; it is centre-cropped to fill
+the frame. Set `placeholder:` instead of `image:` to go back to a labelled empty
+box.
 
 ---
 
