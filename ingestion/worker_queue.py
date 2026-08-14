@@ -679,6 +679,7 @@ async def storage_worker_task(
     from processing.storage import upsert_startup
 
     sentinels_seen = 0
+    loop = asyncio.get_event_loop()
 
     while True:
         item = await storage_queue.get()
@@ -691,12 +692,30 @@ async def storage_worker_task(
             continue
 
         t0 = time.time()
-        record_id, status = upsert_startup(
-            item.startup_dict,
-            item.source,
-            item.source_url,
-            item.published_date,
-            origin_url=item.origin_url or None,
+        # upsert_startup() is synchronous: an Ollama embedding call, fuzzy-
+        # match DB queries, a commit, and a Qdrant upsert — called once per
+        # extracted startup. Found live 14 Aug 2026 running directly here,
+        # unwrapped, inside this coroutine: since this task shares the SAME
+        # event loop as the FastAPI server, every one of those blocking calls
+        # froze the entire API for its duration — /health, /scout/list,
+        # /reviews, /scout/search, everything — for as long as any ingestion
+        # run was extracting startups, which on a real scrape is the whole
+        # run. This is the dashboard-freezes-during-ingestion bug. Dispatched
+        # via run_in_executor now, matching qwen_worker_task's identical fix
+        # for the same reason a few hundred lines up in this file. Semantics
+        # unchanged: the worker still awaits each call before pulling the
+        # next item, so storage stays exactly as serial as the docstring
+        # above promises — only the THREAD doing the blocking work moved,
+        # nothing about ordering or concurrency did.
+        record_id, status = await loop.run_in_executor(
+            None,
+            lambda: upsert_startup(
+                item.startup_dict,
+                item.source,
+                item.source_url,
+                item.published_date,
+                origin_url=item.origin_url or None,
+            ),
         )
         metrics.inc("storage_time_s", time.time() - t0)
 

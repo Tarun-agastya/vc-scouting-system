@@ -338,8 +338,18 @@ export default {
     async function runSemantic() {
       const q = searchCard.querySelector("#q-input").value.trim();
       if (!q) { toast("Enter a query first", "error"); return; }
+      // Search shares the GPU mutex with ingestion (see api.semanticSearch's
+      // comment) — if a scrape/sweep is running, this genuinely waits behind
+      // it rather than the usual ~30s, so say so instead of just under-
+      // promising "a minute" and leaving someone staring at a spinner
+      // wondering if it's stuck.
+      let waitNote = "this can take up to a minute…";
+      try {
+        const s = await api.ingestionStatus();
+        if (s.current_run) waitNote = "an ingestion run is in progress, so this may take several minutes — it's queued, not stuck…";
+      } catch { /* status check is best-effort; fall back to the default note */ }
       resultsRegion.innerHTML = `<div class="card row" style="justify-content:center;padding:40px;gap:10px">
-        <span class="spinner"></span><span class="dim">Asking the local AI model — this can take up to a minute…</span></div>`;
+        <span class="spinner"></span><span class="dim">Asking the local AI model — ${waitNote}</span></div>`;
       try {
         const res = await api.semanticSearch(q, { limit: 30 });
         state.aiAnalysis = res.ai_analysis;

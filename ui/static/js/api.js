@@ -64,9 +64,19 @@ export const api = {
   /** Phase Q3: bulk Interested/Not Interested marking. status: "interested" | "not_interested" | null (clears back to unset). */
   markInterest: (ids, status) => post("/scout/mark-interest", { ids, status }),
   deleteStartup: (id) => del(`/scout/startup/${id}`, { confirm: "true" }),
-  /** Semantic (vector) search — different endpoint + shape from listStartups. */
+  /**
+   * Semantic (vector) search — different endpoint + shape from listStartups.
+   * Its synthesis step queues on the SAME gpu_mutex as ingestion (see
+   * /scout/search's own docstring) — if a scrape/sweep is mid-run, this
+   * waits behind the whole thing, not just a moment. Found live 14 Aug 2026:
+   * the default 30s client timeout meant search reliably errored out
+   * whenever ingestion happened to be running, even though the request was
+   * queued fine server-side and would have succeeded. Extended to match the
+   * timeout already used for /startup/{id}/web-verify and /compare — the
+   * other two endpoints that queue on this same mutex for a single LLM call.
+   */
   semanticSearch: (query, opts = {}) =>
-    post("/scout/search", { query, limit: opts.limit ?? 30, ...opts }),
+    post("/scout/search", { query, limit: opts.limit ?? 30, ...opts }, { timeout: 320000 }),
   /**
    * Phase P-3: on-demand web verification for ONE startup. Runs a live
    * search + a 14B verdict call (100-300s observed) — extended timeout,
