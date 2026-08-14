@@ -1,0 +1,80 @@
+# LIGARO — GT Hub one-pager data.
+# Source: LIGARO "Pitch Deck 2026" (provided 14 Aug 2026). Every figure below is
+# traceable to a specific slide; see `sources:` at the bottom.
+
+meta:
+  page_label: Matchmaking-Startups
+
+claim: "Biobasierter Holzklebstoff für CO₂-reduzierte Holzwerkstoffe"
+
+name: LIGARO
+location: Hannover
+founded: "2023 (Forschungsstart)"
+team_size: "6"
+website: www.ligaro.org
+
+sections:
+  loesung: >
+    LIGARO entwickelt biobasierte Klebstoffe für Holzwerkstoffe, insbesondere
+    Spanplatten. Hauptbestandteil ist Protein aus industriellen Reststoffen,
+    etwa aus der Lebensmittelindustrie. Der Klebstoff ist frei von Isocyanaten
+    und Formaldehyd und vollständig biologisch abbaubar. Zwei Patente sind
+    angemeldet.
+
+  mehrwerte: >
+    Bis zu 90 % geringere CO₂-Emissionen gegenüber konventionellen Klebstoffen
+    (interne Bilanzierung, verglichen mit UF-, PF- und PVAc-Systemen). 100 %
+    erneuerbare Rohstoffe bei preislicher Wettbewerbsfähigkeit sowie
+    vergleichbarer Bindefestigkeit und Wasserfestigkeit.
+
+  usp: >
+    Einzigartige Kombination aus Wasserfestigkeit und Nachhaltigkeit: LIGARO ist
+    im Wettbewerbsvergleich der einzige Anbieter, der zugleich 100 % recycelbar,
+    ungiftig, zu 100 % aus erneuerbaren Rohstoffen und wasserfest ist.
+    Etablierte "nachhaltige" Klebstoffe (Henkel Loctite HB S ECO, Solenis,
+    Evertree) erreichen 20–90 % erneuerbare Rohstoffe, sind aber nicht
+    recycelbar; konkurrierende Start-ups wie BindEthics sind nicht wasserfest.
+
+  zielgruppe: >
+    Industrielle Holzwerkstoffhersteller (Spanplatten). Seit Beginn der
+    Kundenansprache im Oktober 2025 haben 7 Kunden mit einem Bedarf von
+    zusammen über 200.000 t Holzklebstoff pro Jahr Tests zugesagt — darunter
+    Sonae Arauco, EGGER, Hasslacher Norica Timber, Nordpan/Rubner und elka
+    Holzwerke. Mit mehreren Partnern liegen unterzeichnete Absichtserklärungen
+    (LOI) vor.
+
+  geschaeftsmodell: >
+    B2B-Verkauf des Klebstoffs an Holzwerkstoffhersteller. Geplanter
+    Markteintritt 2028 mit vier kleineren Herstellern und einem Zielvolumen von
+    500 t Klebstoff.
+
+visuals:
+  visual_solution:
+    label: Visualisierung der Lösung
+    placeholder: "Deck S. 2 — verklebte Holzprobe (Produktbild) oder S. 9 Laborbilder"
+  visual_how_it_works:
+    label: So funktioniert die Lösung
+    placeholder: "Deck S. 4 — Wettbewerbsvergleich (Recyclingfähigkeit / Toxizität / erneuerbare Rohstoffe / Wasserfestigkeit)"
+
+sources:
+  - "Deck S. 2 — Lösung: Spanplatten, biobasiert, isocyanat-/formaldehydfrei, 90 % CO₂, 2 Patente, preiskompetitiv"
+  - "Deck S. 3 — Traktion: 7 Testkunden, >200.000 t/Jahr, Logos + LOI-Legende"
+  - "Deck S. 4 — Wettbewerbstabelle: BindEthics, Henkel, Solenis, Evertree; 100 % vs 68 % / 70-90 % / 20-90 %"
+  - "Deck S. 5 — Team: 3 Gründerinnen + 3 Chemical Development = 6; Leibniz Universität Hannover"
+  - "Deck S. 6 — Roadmap: Forschungsstart 2023, Markteintritt 2028, 4 Kunden, 500 t"
+  - "Deck S. 8 — CHEManager 2/2026: 'Start-up aus Hannover', EXIST-Gründungsstipendium"
+  - "Deck S. 9 — Protein stammt aus Industrie-Reststoffen (z. B. Lebensmittel)"
+  - "Deck S. 10 — SDG: bis zu 90 % geringere Emissionen ggü. UF, PF, PVAc"
+
+review:
+  status: draft
+  open_questions:
+    - "Gründungsjahr: Deck weist nur '2023: Start Research' aus; das Team wird
+       aktuell über das EXIST-Gründungsstipendium gefördert. Ist die GmbH bereits
+       gegründet, und wenn ja wann? Meta-Zeile entsprechend anpassen."
+    - "Teamgröße 6 = die auf S. 5 abgebildeten Personen (3 Gründerinnen +
+       3 Chemical Development Team). Beirat ist laut Deck erst im Aufbau. Bitte
+       bestätigen, ob 6 die aktuelle Zahl ist."
+    - "LOI-Zuordnung: Die Legende auf S. 3 unterscheidet unterzeichnete LOI von
+       bestätigtem Interesse. Welche Firmen namentlich als LOI genannt werden
+       dürfen, bitte freigeben — im Entwurf bewusst ohne Namenszuordnung."

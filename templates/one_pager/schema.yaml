@@ -1,0 +1,112 @@
+# GT Hub one-pager — data contract.
+# See FORMAT.md for the spec this encodes. render.py validates against it.
+#
+# Required fields are marked `required: true`. A missing required field is a hard
+# error, not a warning — a half-rendered outward-facing page is worse than none.
+
+meta:
+  page_label:
+    required: false
+    default: "Matchmaking-Startups"
+    description: Right-hand header text.
+  page_number:
+    required: false
+    description: Slide number shown top-right. Integer or string.
+
+claim:
+  required: true
+  type: string
+  max_chars: 70
+  description: >
+    The 1-sentence value proposition. A NOUN PHRASE — product category plus the
+    single differentiator. No verb, no trailing period.
+    Good: "Elektrischer Traktor mit Wechselbatterien"
+
+name:
+  required: true
+  type: string
+  description: Startup name as it should appear (respect their own casing).
+
+location:
+  required: true
+  type: string
+  description: City / region. "k. A." if genuinely unknown.
+
+founded:
+  required: true
+  type: string
+  description: >
+    Founding year. String, not int, so it can carry a qualifier when the date is
+    ambiguous — e.g. "2023 (Forschungsstart)".
+
+team_size:
+  required: true
+  type: string
+  description: Headcount. "k. A." if unknown — never estimate.
+
+logo:
+  required: false
+  type: path
+  description: Path to logo image. Falls back to a violet plate with the name.
+
+website:
+  required: false
+  type: string
+
+# ── The five sections. Fixed order, fixed headings, none optional. ────────────
+sections:
+  required: true
+  type: object
+  keys:
+    loesung:
+      required: true
+      heading: "Lösung & Funktionalität"
+      guidance: What the product is and how it works. 2-3 sentences.
+    mehrwerte:
+      required: true
+      heading: "Mehrwerte & Leistungen"
+      guidance: KPIs / performance. MUST contain at least one concrete number.
+    usp:
+      required: true
+      heading: "USP & Abgrenzung vom Wettbewerb"
+      guidance: Why not the incumbent. Name the real alternative. 2-3 sentences.
+    zielgruppe:
+      required: true
+      heading: "Zielgruppe & Kunden"
+      guidance: Who buys, plus traction figures. 2-3 sentences.
+    geschaeftsmodell:
+      required: true
+      heading: "Geschäftsmodell"
+      guidance: How money is made. 1-2 sentences.
+
+# ── Two image slots. Each takes `image:` OR `placeholder:`. ───────────────────
+visuals:
+  required: true
+  type: object
+  keys:
+    visual_solution:
+      required: true
+      label_default: "Visualisierung der Lösung"
+      description: Top box. Product overview / hero.
+    visual_how_it_works:
+      required: true
+      label_default: "So funktioniert die Lösung"
+      description: Bottom box. Range, variants, how it works.
+
+# ── Provenance. Not rendered; kept so a page can always be audited. ───────────
+sources:
+  required: false
+  type: list
+  description: >
+    Where each fact came from (deck slide numbers, URLs). Strongly recommended —
+    this is the same evidence discipline the ingestion pipeline enforces, and the
+    only way to re-check a page months later.
+
+review:
+  required: false
+  type: object
+  keys:
+    status:
+      description: draft | approved. Only `approved` should ever be sent out.
+    open_questions:
+      description: List of facts that still need human confirmation.

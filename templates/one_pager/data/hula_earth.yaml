@@ -1,0 +1,83 @@
+# Hula Earth — GT Hub one-pager data.
+#
+# NOTE ON SOURCING: no pitch deck was provided for Hula Earth, and the company is
+# not in the scouting database. This page was built from the company's own website
+# and one press article (all URLs under `sources:`). It is therefore a DRAFT with
+# lower evidential weight than the LIGARO page, which came from a real deck.
+# Confirm against the deck before this goes to any partner.
+
+meta:
+  page_label: Matchmaking-Startups
+
+claim: "Echtzeit-Biodiversitätsmonitoring per Sensor und Satellit"
+
+name: Hula Earth
+location: München
+founded: "2023"
+team_size: "k. A."
+website: hula.earth
+
+sections:
+  loesung: >
+    Hula Earth misst Biodiversität in Echtzeit. Die selbst entwickelten
+    BioT-Sensoren sind solarbetrieben und wartungsfrei und erkennen Arten —
+    vor allem Vogelstimmen — per KI direkt auf dem Gerät, ohne
+    SD-Kartenwechsel oder Batterietausch. Ergänzt wird das um
+    Satelliten-Erdbeobachtung; die Hula-Plattform führt beide Datenquellen in
+    einem Dashboard für Monitoring, Reporting und Verifizierung (MRV) zusammen.
+
+  mehrwerte: >
+    Über 80 Sensoren sind bereits im Feld im Einsatz (Stand Ende 2025). Die
+    Verarbeitung direkt auf dem Gerät ersetzt einen erheblichen Teil manueller
+    biologischer Feldarbeit. Das Dashboard liefert Kennzahlen zu
+    Ökosystemvitalität, Blattflächenindex und Wasserspeicherkapazität und
+    unterstützt die Berichtspflichten nach CSRD/ESRS E4.
+
+  usp: >
+    Nicht nur Sensorik oder nur Satellitendaten, sondern die Verschneidung
+    beider: Stichproben aus repräsentativen Flächen lassen sich auf große
+    Gebiete hochrechnen und ergeben ein skalierbares Bild der Biodiversität.
+    Die Datenverarbeitung erfolgt in Echtzeit auf dem Gerät und ist
+    datenschutzkonform. Hula Earth entwickelt zudem die ersten deutschen
+    Biodiversitätszertifikate.
+
+  zielgruppe: >
+    Betreiber von Solar- und Windparks, Landwirtschaft, Projektentwickler
+    (u. a. Moorrenaturierung), Naturschutzverbände sowie Zertifizierer und
+    Versicherungen. Als Referenz nennt das Unternehmen Engie Green — dort wird
+    die Windparksteuerung an den Vogelzug gekoppelt.
+
+  geschaeftsmodell: >
+    B2B: Verkauf bzw. Bereitstellung der BioT-Sensorik kombiniert mit einem
+    Plattform- und Datenabonnement für MRV-Reporting. Biodiversitätszertifikate
+    sind als zusätzlicher Erlöshebel adressiert.
+
+visuals:
+  visual_solution:
+    label: Visualisierung der Lösung
+    placeholder: "Produktbild Hula BioT-Sensor (solarbetriebene Box) — von hula.earth oder aus dem Deck"
+  visual_how_it_works:
+    label: So funktioniert die Lösung
+    placeholder: "Schema Sensor + Satellit -> Plattform-Dashboard, oder Screenshot des Biodiversitäts-Cockpits"
+
+sources:
+  - "https://hula.earth/ — BioT-Sensor (low-cost, low-power, long-range IoT), Earth observation, Plattform-Dashboard, Industrien (Solar/Wind, Agrar, Naturschutz), Engie Green Success Story"
+  - "https://hula.earth/company — 'founded in Munich in 2023'; Mission; 730 Mrd. USD nature funding gap; ML + Satellit + BioT; MRV"
+  - "https://www.umweltdialog.de/de/WIRTSCHAFT/Wirtschaft/2025/Start-up-Hula-Earth-waechst-Biodiversitaet-langfristig-beobachten.php (31.12.2025) — über 80 Kästen im Feld; Vogelstimmenerkennung; Echtzeitverarbeitung; Kennzahlen Ökosystemvitalität/Blattflächenindex/Wasserspeicherkapazität; Mitgründer David Schmider (CTO), Florian Geiser (CEO, TUM-Alumnus); Kunden: Moorrenaturierung, Solarparks, Naturschutzverbände"
+  - "https://www.munich-startup.de/startups-and-ecosystem/hula-earth — CSRD/ESRS E4, Kunming-Montreal, erste deutsche Biodiversitätszertifikate, Zusammenarbeit mit Zertifizierern und Versicherungen"
+
+review:
+  status: draft
+  open_questions:
+    - "KEIN PITCH DECK VORHANDEN — diese Seite stammt aus Website + Presse.
+       Bitte gegen das Deck prüfen, bevor sie an Partner geht."
+    - "Teamgröße unbekannt ('k. A.'). Bekannt sind nur die Mitgründer Florian
+       Geiser (CEO) und David Schmider (CTO). Bitte Headcount ergänzen."
+    - "Geschäftsmodell ist aus dem Angebot abgeleitet (Hardware + Plattform-Abo),
+       nicht wörtlich belegt. Bitte bestätigen — insbesondere ob Sensoren
+       verkauft oder vermietet werden."
+    - "Gründungsjahr 2023 laut eigener Website. Rechtsform/GmbH-Gründung nicht
+       geprüft."
+    - "Traktion: Über die 80 Sensoren hinaus liegen keine belastbaren
+       Kundenzahlen vor. Falls vorhanden, in 'Zielgruppe & Kunden' ergänzen —
+       das ist aktuell die schwächste Sektion."
