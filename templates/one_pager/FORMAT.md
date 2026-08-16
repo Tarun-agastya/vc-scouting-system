@@ -158,22 +158,101 @@ Type: one sans family throughout (Arial/Helvetica in PowerPoint; the renderer us
 a system stack). Claim ~34px, startup name ~19px bold, meta ~12px italic,
 section heading ~12.5px bold underlined, body ~12px.
 
-## 6. Automation notes
+## 6. The generator
 
-Where this is heading — a startup in the scouting DB becomes a one-pager without
-a human writing prose.
+`generate.py` turns a pitch deck into a filled-in draft of everything above.
 
-- **Data contract** is `schema.yaml`. Renderer validates against it and fails loudly
-  on a missing required field rather than emitting a half page.
-- **Drafting** should run on the local extraction model, one section per call,
-  each constrained to text present in the source (deck text, `source_excerpt`,
-  or a cited page). Same grounding gate as `reasoning/qwen_client._ground_startup`
-  — an unsupported number gets nulled, not printed.
-- **Never auto-publish.** A one-pager is outward-facing. Generate → human approves
-  → export. Treat it exactly like the Review Inbox: staged, never silently applied.
-- **Fields the DB already has** (`name`, `city`, `founded_year`, `website`,
-  `short_description`, `industry`) map straight onto the meta line and give
-  section 1 its first draft. `employee_count` fills `Team`.
-- **Fields the DB does not have** and that a deck or interview must supply:
-  traction specifics, the competitor comparison, the business model, and both
-  images. These are the human-in-the-loop parts; don't let a model invent them.
+```bash
+python3 templates/one_pager/generate.py --deck ~/Desktop/ONOX.pdf  --name ONOX
+python3 templates/one_pager/generate.py --deck deck.pptx --name LIGARO --url https://ligaro.org
+python3 templates/one_pager/generate.py --deck deck.pdf  --name X --no-llm   # no drafting
+```
+
+**Accepts `.pdf` and `.pptx`.** A legacy binary `.ppt` is rejected with an
+instruction to re-save — there is no reliable pure-python reader for it.
+
+What it does, in order:
+1. Reads the deck slide by slide (`deck.py`), keeping slide numbers so every
+   fact stays traceable.
+2. Extracts **every** embedded image plus a full-page render per slide into
+   `data/assets/<slug>/`, named `slide07_img2.jpg`.
+3. Optionally pulls the company website (`--url`) for extra context.
+4. Drafts the claim, the meta line and all five sections on the local 7B model
+   (`llm.py`), constrained to the deck text.
+5. Applies the grounding checks in §8.
+6. Writes `data/<slug>.yaml` as `status: draft` with an `open_questions` list.
+
+**It deliberately stops there.** It never picks the two images, never exports,
+and never marks anything approved — same staged model as the Review Inbox, for
+the same reason: a one-pager is outward-facing.
+
+> A fresh draft **will** fail `render.py --check` if the model could not fill
+> everything. That is correct, not a bug: validation gates *export*, not
+> drafting.
+
+### Two things it will not do, and why
+
+- **It does not pick the images.** Choosing a good product shot is visual
+  judgement. On LIGARO's own material the largest, most prominent assets were
+  funder and partner logos (EXIST, Leibniz Universität, Future Greentech
+  Incubator); the only real product shot was the poster frame of a site video.
+  Anything automatic would have confidently chosen wrong.
+- **It does not read the scouting database.** An earlier version of this
+  section proposed pre-filling `name`/`city`/`founded_year` from it. That is now
+  forbidden — see §7.
+
+## 7. Isolation contract
+
+The one-pager tooling is **standalone**. It imports nothing from
+`processing/`, `ingestion/`, `api/`, `database/`, `vector_db/`, `reasoning/` or
+`config/`, opens no database, and writes only inside `templates/one_pager/`.
+
+This is deliberately stricter than `press_monitor/`, the repo's other isolated
+subsystem, which imports three project symbols. The one-pager tooling has no
+scheduled job and no shared credential, so it needs nothing from the pipeline
+at all — and the owner's requirement was explicit: if this breaks, nothing else
+may be affected.
+
+| Decision | Reason |
+|---|---|
+| Own Ollama client (`llm.py`, raw `httpx` to `/api/chat`) rather than `reasoning/qwen_client.py` | Keeps the zero-import line, and sidesteps a real trap: the repo's `venv/` carries `ollama==0.2.1`, whose `chat()` has no `think` parameter and only accepts `format: Literal['','json']`. A raw POST has no such coupling. |
+| Config from `os.environ`, not `config.settings` | `OLLAMA_BASE_URL` (default `http://localhost:11434`), `ONEPAGER_MODEL` (default `qwen2.5:7b-instruct`), `ONEPAGER_TIMEOUT` (75s). |
+| No launchd job, no scheduler | Human-triggered only. Nothing fires unattended, so nothing fails unattended. |
+| Enforced by `tests/test_one_pager_isolation.py` | An AST scan, not an import — it passes with Ollama, Postgres and Qdrant all down, which is when isolation matters most. |
+
+**The one shared resource is the local Ollama server**, and the cost is honest:
+a separate process does not share `QwenClient`'s single-worker semaphore, so
+running the generator during an ingestion sweep makes both slower. It cannot
+produce wrong data — only a slow run.
+
+Failure model — only an unreadable deck is fatal:
+
+| Condition | Behaviour |
+|---|---|
+| Deck missing / unreadable / legacy `.ppt` | Clear error, exit 1 |
+| Ollama down, busy, or timing out | Sections left empty, reason in `open_questions`, YAML still written, exit 0 |
+| `--url` unreachable | Warn, continue from the deck alone |
+| No images extractable | Placeholders kept, flagged |
+| Number in the draft not in the deck | Flagged in `open_questions`, never silently deleted |
+| Target YAML exists | Refuses without `--force` |
+
+## 8. Grounding — what the generator will and will not check
+
+Follows the discipline in `reasoning/qwen_client.py::_ground_startup` (mirrored,
+not imported): *gate only what is both fabrication-prone and checkable; never
+gate paraphrase, because nulling a correct paraphrase is worse than leaving a
+wrong one.*
+
+- **The five sections are paraphrase → never auto-nulled.** Rewriting the deck's
+  message in GT Hub's voice is the entire job.
+- **Numbers inside them are checkable → verified.** Every figure in drafted prose
+  must appear in the deck text, compared digits-only so `95.861` and `95861`
+  don't read as different. A number with no counterpart is **flagged, not
+  deleted** — `Mehrwerte` is *required* to carry a real figure, so a silent strip
+  would leave a page that looks finished but isn't.
+  *This is not theoretical:* on the first live run, from a deck stating
+  `121.300 EUR` and `95.861 EUR`, the model wrote *"25.439 EUR gesenkt"* —
+  arithmetic it did itself, correct but stated nowhere in the source.
+- **Meta-line fields are checked the same way** and fall back to `k. A.` rather
+  than a guess. This is exactly why Hula Earth's `Team` is `k. A.` today.
+- Everything ships `status: draft`. Nothing is auto-approved or auto-exported.
