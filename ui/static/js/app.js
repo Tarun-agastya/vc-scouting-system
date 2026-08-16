@@ -13,6 +13,7 @@ import reviews from "./views/reviews.js";
 import ingestion from "./views/ingestion.js";
 import sources from "./views/sources.js";
 import regional from "./views/regional.js";
+import onepager from "./views/onepager.js";
 
 /* ── Theme (persisted; falls back to the OS preference) ─────────────────── */
 const THEME_KEY = "scout.theme";
@@ -45,6 +46,7 @@ register("reviews", reviews);
 register("ingestion", ingestion);
 register("sources", sources);
 register("regional", regional);
+register("onepager", onepager);
 
 /* ── Command palette + manual refresh ─────────────────────────────────────
    Refresh re-navigates to the current hash; router.navigate() force-resolves

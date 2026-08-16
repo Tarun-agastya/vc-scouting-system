@@ -85,6 +85,32 @@ def test_no_database_or_http_api_access(path=None):
         assert not hits, f"{f.name} references {hits} — the one-pager tooling must never touch pipeline storage"
 
 
+def test_the_api_route_shells_out_and_never_imports_the_generator():
+    """
+    The dashboard route (api/routes/onepager.py) must drive the generator as a
+    SUBPROCESS, never by importing it.
+
+    This is the direction of coupling that actually matters for the owner's
+    requirement. The one-pager tooling importing the pipeline would only mean
+    "a pipeline breakage breaks one-pagers". The API importing the GENERATOR
+    means the reverse: a hang, crash, or bad import inside the generator would
+    take down the API — dashboard and scouting pipeline with it. Subprocess
+    execution keeps a generator failure to an exit code and a bounded timeout.
+    """
+    route = Path(__file__).resolve().parent.parent / "api" / "routes" / "onepager.py"
+    assert route.exists(), "api/routes/onepager.py is missing"
+
+    tool_modules = {p.stem for p in _python_files()}          # deck, llm, generate, render, export_pptx
+    imported = _imported_roots(route)
+    leaked = imported & tool_modules
+    assert not leaked, (
+        f"api/routes/onepager.py imports {sorted(leaked)} directly from the one-pager "
+        f"tooling. It must shell out via subprocess instead, so a generator failure "
+        f"cannot reach the API process — see that file's own module docstring."
+    )
+    assert "subprocess" in imported, "the route should be driving the generator via subprocess"
+
+
 def test_the_guard_itself_would_catch_a_violation():
     """
     A guard that cannot fail is worse than none. Prove the AST scan actually

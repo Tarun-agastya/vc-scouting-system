@@ -135,6 +135,49 @@ export const api = {
    *  semicolon-delimited + BOM so German Excel opens it with umlauts intact. */
   regionalExportUrl: (filters) => `/regional/export.csv${qs(filters)}`,
 
+  // ── One-pager generator ───────────────────────────────────────────────
+  /** Drafts on disk (templates/one_pager/data/*.yaml). */
+  listOnePagers: () => get("/onepager"),
+  getOnePagerYaml: (slug) => get(`/onepager/${encodeURIComponent(slug)}/yaml`),
+  /** Rendered preview + editable PowerPoint are plain URLs (iframe / download). */
+  onePagerPreviewUrl: (slug) => `/onepager/${encodeURIComponent(slug)}/preview`,
+  onePagerPptxUrl: (slug) => `/onepager/${encodeURIComponent(slug)}/pptx`,
+  /**
+   * Upload a pitch deck and generate a draft. multipart/form-data, so this
+   * bypasses the JSON `request()` helper. The server runs the generator as a
+   * subprocess (see api/routes/onepager.py) — a local 7B draft over a dense
+   * deck takes ~20-60s, and longer if an ingestion run is holding the GPU,
+   * so this gets the same generous ceiling as the other LLM-bound calls.
+   */
+  async generateOnePager({ file, name, url, noLlm, force }) {
+    const form = new FormData();
+    form.append("deck", file);
+    form.append("name", name);
+    if (url) form.append("url", url);
+    form.append("no_llm", noLlm ? "true" : "false");
+    form.append("force", force ? "true" : "false");
+
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 320000);
+    try {
+      const res = await fetch("/onepager/generate", { method: "POST", body: form, signal: ctrl.signal });
+      if (!res.ok) {
+        let detail = `${res.status} ${res.statusText}`;
+        try {
+          const j = await res.json();
+          if (j.detail) detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+        } catch { /* non-JSON error body */ }
+        throw new Error(detail);
+      }
+      return res.json();
+    } catch (err) {
+      if (err.name === "AbortError") throw new Error("Generation timed out — is the local model busy with an ingestion run?");
+      throw err;
+    } finally {
+      clearTimeout(t);
+    }
+  },
+
   // ── Sources ───────────────────────────────────────────────────────────
   listSources: () => get("/sources"),
   addWebSource: (src) => post("/sources/web", src),

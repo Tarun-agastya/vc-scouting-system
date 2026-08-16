@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from api.routes import scout, matchmaking, ingestion, sources, reviews, verification, classification, theses, regional
+from api.routes import scout, matchmaking, ingestion, sources, reviews, verification, classification, theses, regional, onepager
 from database.connection import init_db
 
 logging.basicConfig(
@@ -244,6 +244,11 @@ app.include_router(theses.router,      prefix="/theses",       tags=["Theses"])
 # employers for membership outreach, not an investment funnel) and must not be
 # buried among them. Reads/writes only `regional_companies`.
 app.include_router(regional.router,    prefix="/regional",     tags=["Regional"])
+# One-pager generator. Drives templates/one_pager/ as a SUBPROCESS and never
+# imports it — see api/routes/onepager.py's docstring. That boundary is what
+# keeps a generator crash or hang from taking this process down with it, and
+# tests/test_one_pager_isolation.py enforces it.
+app.include_router(onepager.router,    prefix="/onepager",     tags=["One-Pager"])
 
 
 @app.get("/health", tags=["System"])
