@@ -137,9 +137,18 @@ async def _recheck_one(db, record) -> str:
 
     layer1_changes = _layer1_reground(record)
     if layer1_changes:
+        from processing.field_policy import safe_string_list
+
         raw = dict(record.raw_data or {})
         for field, value in layer1_changes.items():
-            if field in ("founders", "funding_amount"):
+            if field == "founders":
+                # Guarded like every other founders/tags write site — see
+                # safe_string_list's docstring. _ground_startup is fixed at
+                # source now, but this is the last hop before the value is
+                # persisted, so it must not be the one place that trusts
+                # whatever it was handed.
+                raw[field] = safe_string_list(value)
+            elif field in ("funding_amount",):
                 # Not a Startup column — lives only in raw_data (same as the
                 # extraction pipeline stores it), so a plain setattr() here
                 # would silently create an unmapped, never-persisted

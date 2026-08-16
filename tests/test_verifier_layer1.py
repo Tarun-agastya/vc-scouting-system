@@ -54,3 +54,43 @@ def test_layer1_reground_omits_funding_amount_when_unchanged():
         changes = _layer1_reground(record)
 
     assert "funding_amount" not in changes
+
+
+# ── _ground_startup: founders must never be iterated as characters ──────────
+# Root cause of the founders-shredding corruption, proven live 16 Aug 2026.
+# _ground_startup's founders loop iterated s["founders"] directly, so a bare
+# STRING (which the LLM's own output, a manual /add-startup payload, or an
+# already-corrupted raw_data row can all supply) got walked character by
+# character -- every single letter appearing as a standalone token in the
+# source text "passed" the surname check and was kept, producing the real
+# ['A','t','e','S','t','t','e'] rows found in the database. This ran on every
+# ingest AND every nightly recheck, so it kept manufacturing new corruption
+# even after the 14 Aug data repair.
+
+_GROUND_CFG = {
+    "check_founders": True, "check_founded_year": False,
+    "check_employee_count": False, "check_funding_amount": False,
+}
+_SRC = "Anne Sraders is a senior reporter. Ate Stte founded the company. A t e S."
+
+
+def test_ground_startup_does_not_shred_a_bare_string_founders():
+    from reasoning.qwen_client import _ground_startup
+    out = _ground_startup({"name": "T", "founders": "Anne Sraders"}, _SRC, _GROUND_CFG)
+    assert out["founders"] == ["Anne Sraders"], (
+        "a bare string must be treated as ONE founder name, never iterated into characters"
+    )
+    assert not any(len(f) == 1 for f in out["founders"])
+
+
+def test_ground_startup_leaves_a_correct_list_alone():
+    from reasoning.qwen_client import _ground_startup
+    out = _ground_startup({"name": "T", "founders": ["Anne Sraders"]}, _SRC, _GROUND_CFG)
+    assert out["founders"] == ["Anne Sraders"]
+
+
+def test_ground_startup_still_drops_a_founder_absent_from_the_source():
+    """The grounding gate's actual job must survive the coercion fix."""
+    from reasoning.qwen_client import _ground_startup
+    out = _ground_startup({"name": "T", "founders": ["Zzzz Nonexistent"]}, _SRC, _GROUND_CFG)
+    assert out["founders"] == []

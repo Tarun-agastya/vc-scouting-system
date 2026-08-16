@@ -216,8 +216,22 @@ def _ground_startup(s: dict, source_text: str, cfg: dict) -> dict:
             nulled.append("employee_count")
 
     if cfg.get("check_founders", True) and s.get("founders"):
+        # ROOT CAUSE of the founders-shredding corruption (proven 16 Aug):
+        # this loop used to iterate s["founders"] directly. When that value
+        # was a bare STRING rather than a list -- which the LLM's own output,
+        # a manual /add-startup payload, or an already-corrupted raw_data row
+        # can all produce -- `for name in "Anne Sraders"` iterates CHARACTERS,
+        # and every single letter that happens to appear as a standalone token
+        # in the source text passes the surname check and gets "kept". That is
+        # exactly the ['A','t','e','S','t','t','e'] shape found in the DB.
+        # It ran on every ingest AND every nightly recheck, which is why a
+        # fresh corrupted row (Moss, 15 Aug 01:16) appeared even after the
+        # 14 Aug repair. safe_string_list is the same coercion every other
+        # tags/founders read/write site now goes through.
+        from processing.field_policy import safe_string_list
+
         kept = []
-        for name in s["founders"]:
+        for name in safe_string_list(s["founders"]):
             if not isinstance(name, str) or not name.strip():
                 continue
             surname = name.strip().split()[-1]
