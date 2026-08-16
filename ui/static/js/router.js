@@ -106,7 +106,12 @@ export function confirmAction(message) {
   return window.confirm(message);
 }
 
-/* ── Poller: interval that pauses when the tab is hidden ────────────────── */
+/* ── Poller: interval that pauses when the tab is hidden ──────────────────
+   `ms` may be a number OR a function returning one, re-read after every tick.
+   That lets a view poll fast only while it has a reason to — the Ingestion
+   page needs 2s counters during a run but was still hammering 4 endpoints
+   every 2s when nothing was running at all (measured 16 Aug). A fixed
+   interval can't express "fast while it matters, idle otherwise". */
 
 export function poll(fn, ms) {
   let stopped = false;
@@ -117,7 +122,14 @@ export function poll(fn, ms) {
     if (!document.hidden) {
       try { await fn(); } catch { /* transient errors shouldn't kill the poller */ }
     }
-    if (!stopped) timer = setTimeout(tick, ms);
+    if (stopped) return;
+    let delay;
+    try {
+      delay = typeof ms === "function" ? ms() : ms;
+    } catch {
+      delay = 5000; // a broken interval callback must never stop the poller
+    }
+    timer = setTimeout(tick, delay);
   };
   tick();
 

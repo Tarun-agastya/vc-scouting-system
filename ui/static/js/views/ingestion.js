@@ -79,6 +79,7 @@ export default {
     let busy = false;              // prevents double-submits while a trigger request is in flight
     let triggerBuilt = false;
     let lastSourceKey = null;      // rebuild the <select> only when the source list actually changes
+    let runActive = false;         // set each render; drives the adaptive poll interval below
 
     const triggerRun = async (label, fn) => {
       if (busy) return;
@@ -166,18 +167,17 @@ export default {
         return;
       }
 
-      try {
-        verification = await api.verificationStatus();
-      } catch {
-        verification = null; // Data quality card degrades to a fallback state
-      }
-      try {
-        classification = await api.classificationStatus();
-      } catch {
-        classification = null; // same graceful degrade
-      }
+      // In parallel — two independent read-only status calls that were being
+      // awaited one after the other on every single tick.
+      const [vRes, cRes] = await Promise.allSettled([
+        api.verificationStatus(), api.classificationStatus(),
+      ]);
+      // null on failure -> each card degrades to its own fallback state
+      verification = vRes.status === "fulfilled" ? vRes.value : null;
+      classification = cRes.status === "fulfilled" ? cRes.value : null;
 
       const running = status.current_run;
+      runActive = !!running;  // drives the adaptive poll interval, see below
       const disabled = !!running || busy;
       const runningNote = running ? "A run is already in progress" : "GPU mutex serializes everything — safe to trigger anytime";
 
@@ -399,6 +399,13 @@ export default {
       statusRegion.appendChild(histCard);
     }
 
-    return poll(render, 2000);
+    // 2s while something is actually running — the live counters are the whole
+    // point of this page and need to feel live. 10s when idle: this page was
+    // firing FOUR endpoints (ingestion status, sources, verification,
+    // classification) and rebuilding the entire status region every 2 seconds
+    // round the clock, to redraw a schedule table and a run history that had
+    // not changed. Measured 16 Aug: ~2 requests/second, indefinitely, for a
+    // page sitting still.
+    return poll(render, () => (runActive ? 2000 : 10000));
   },
 };

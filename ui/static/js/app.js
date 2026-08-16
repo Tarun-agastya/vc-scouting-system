@@ -65,31 +65,43 @@ const reviewBadge = document.getElementById("nav-review-count");
 const ingestDot = document.getElementById("nav-ingest-dot");
 
 poll(async () => {
-  // Health + startup count
-  try {
-    const h = await api.health();
+  // All three in PARALLEL, not one-after-another. These are independent reads;
+  // awaiting them in sequence made the shell's own refresh cost three serial
+  // round trips every 5 seconds on every page. A backend that's down fails all
+  // three effectively instantly (connection refused), so nothing is gained by
+  // gating the other two behind health.
+  const [health, counts, ingest] = await Promise.allSettled([
+    api.health(),
+    // reviewCounts, NOT listReviews({limit:200}). Measured 16 Aug: the old
+    // call pulled up to 200 FULL review objects — 84.7 KB, ~440 bytes/row —
+    // every 5 seconds on every page, and then read exactly one integer off
+    // it (`total`) for the nav badge. /reviews/counts answers the same
+    // question from a SQL aggregate in 0.1 KB. Over an 8-hour day with the
+    // dashboard open that is ~490 MB of transfer and 5,760 pointless
+    // 200-row serialisations saved.
+    api.reviewCounts("pending"),
+    api.ingestionStatus(),
+  ]);
+
+  if (health.status === "fulfilled") {
     healthDot.className = "dot dot--live";
-    healthText.textContent = `${h.startups_in_db} startups`;
-  } catch {
+    healthText.textContent = `${health.value.startups_in_db} startups`;
+  } else {
     healthDot.className = "dot dot--error";
     healthText.textContent = "backend offline";
-    return; // if the API is down, the rest will fail too
+    return; // everything below would only render stale chrome
   }
 
-  // Pending reviews badge
-  try {
-    const r = await api.listReviews({ status: "pending", limit: 200 });
-    const n = r.total ?? 0;
+  if (counts.status === "fulfilled") {
+    const n = counts.value.total ?? 0;
     reviewBadge.textContent = n;
     reviewBadge.classList.toggle("hidden", n === 0);
-  } catch { /* non-fatal */ }
+  }
 
-  // Ingestion running indicator
-  try {
-    const s = await api.ingestionStatus();
-    const running = !!s.current_run;
+  if (ingest.status === "fulfilled") {
+    const running = !!ingest.value.current_run;
     ingestDot.className = `dot ${running ? "dot--live" : "dot--idle"}`;
     ingestDot.classList.toggle("hidden", !running);
-    ingestDot.title = running ? `Running: ${s.current_run.source}` : "";
-  } catch { /* non-fatal */ }
+    ingestDot.title = running ? `Running: ${ingest.value.current_run.source}` : "";
+  }
 }, 5000);
