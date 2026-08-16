@@ -138,43 +138,93 @@ def test_list_all_uids_handles_no_matches():
     assert ing._list_all_uids(days=14) == []
 
 
-# ── newsletter_ingestor: UIDVALIDITY-aware state ────────────────────────────
+def test_old_uid_state_file_is_migrated_not_trusted(tmp_path, monkeypatch):
+    """
+    Replaces two tests of the old UIDVALIDITY reset logic, removed 16 Aug 2026
+    together with the UID keying they defended.
 
-def test_state_reset_when_uidvalidity_changes(tmp_path, monkeypatch):
-    """Old processed-UID lists must not be trusted after Gmail bumps
-    UIDVALIDITY -- stale UIDs could silently point at different messages."""
+    The marker is now the RFC 5322 Message-ID, which is stable across a
+    UIDVALIDITY bump, across the 12 Aug Gmail-API -> IMAP migration, and across
+    a full re-download of the mailbox — so there is nothing left for a
+    UIDVALIDITY check to protect against. What the loader must do instead is
+    refuse to trust the old file: the live state file was found holding a MIX
+    of 112 Gmail-API hex ids and 37 IMAP UIDs, neither of which is a
+    Message-ID, and treating either as one would silently hide real mail.
+    """
     import json
     from ingestion import newsletter_ingestor as mod
 
     state_path = tmp_path / "newsletter_state.json"
-    state_path.write_text(json.dumps({"processed_ids": ["1", "2", "3"], "uidvalidity": "1000"}))
+    state_path.write_text(json.dumps({
+        "processed_ids": ["66", "67", "19efef57c86302b1"],   # the real mixed shape
+        "uidvalidity": "1",
+    }))
     monkeypatch.setattr(mod, "_STATE_PATH", str(state_path))
 
-    class _FakeConn:
-        def response(self, code):
-            assert code == "UIDVALIDITY"
-            return ("UIDVALIDITY", [b"2000"])  # changed
-
-    ing = mod.NewsletterIngestor()
-    ing._conn = _FakeConn()
-    state = ing._load_state()
-    assert state["processed_ids"] == []
-    assert state["uidvalidity"] == "2000"
+    state = mod.NewsletterIngestor()._load_state()
+    assert state["processed_message_ids"] == [], "old UIDs/Gmail ids must never be read as Message-IDs"
+    assert state["legacy_ids"] == ["66", "67", "19efef57c86302b1"], "kept for reference, not for matching"
 
 
-def test_state_preserved_when_uidvalidity_unchanged(tmp_path, monkeypatch):
+def test_message_id_state_round_trips(tmp_path, monkeypatch):
+    """A file already in the new format is loaded verbatim, and saving is atomic."""
     import json
     from ingestion import newsletter_ingestor as mod
 
     state_path = tmp_path / "newsletter_state.json"
-    state_path.write_text(json.dumps({"processed_ids": ["1", "2", "3"], "uidvalidity": "1000"}))
+    monkeypatch.setattr(mod, "_STATE_PATH", str(state_path))
+    ing = mod.NewsletterIngestor()
+
+    ids = ["abc@mail.example", "def@newsletter.test"]
+    ing._save_state({"processed_message_ids": ids, "legacy_ids": []})
+    assert not (tmp_path / "newsletter_state.json.tmp").exists(), "temp file must be renamed away"
+
+    loaded = ing._load_state()
+    assert loaded["processed_message_ids"] == ids
+
+
+def test_a_message_that_yielded_nothing_is_still_marked(tmp_path, monkeypatch):
+    """
+    Remembering "we looked and it had nothing" matters as much as remembering a
+    successful extraction — otherwise every newsletter with no startups in it
+    gets re-fetched and re-parsed by the LLM on every single run, forever.
+    """
+    import json
+    from ingestion import newsletter_ingestor as mod
+
+    state_path = tmp_path / "newsletter_state.json"
     monkeypatch.setattr(mod, "_STATE_PATH", str(state_path))
 
-    class _FakeConn:
-        def response(self, code):
-            return ("UIDVALIDITY", [b"1000"])  # unchanged
-
     ing = mod.NewsletterIngestor()
-    ing._conn = _FakeConn()
-    state = ing._load_state()
-    assert state["processed_ids"] == ["1", "2", "3"]
+    ing._conn = object()                                     # never used: everything below is stubbed
+    monkeypatch.setattr(ing, "_authenticate", lambda: None)
+    monkeypatch.setattr(ing, "_list_all_uids", lambda days: [b"7"])
+    monkeypatch.setattr(ing, "_message_ids_for", lambda uids: {b"7": "empty@news.test"})
+    monkeypatch.setattr(ing, "_process_message", lambda uid: 0)   # zero startups found
+
+    assert ing.run_ingestion(max_messages=10, days=90) == 0
+    assert json.loads(state_path.read_text())["processed_message_ids"] == ["empty@news.test"]
+
+
+def test_already_marked_messages_are_never_fetched(tmp_path, monkeypatch):
+    """The skip must happen before the expensive body fetch, not after."""
+    import json
+    from ingestion import newsletter_ingestor as mod
+
+    state_path = tmp_path / "newsletter_state.json"
+    state_path.write_text(json.dumps({
+        "processed_message_ids": ["seen@news.test"], "legacy_ids": [],
+    }))
+    monkeypatch.setattr(mod, "_STATE_PATH", str(state_path))
+
+    fetched = []
+    ing = mod.NewsletterIngestor()
+    ing._conn = object()
+    monkeypatch.setattr(ing, "_authenticate", lambda: None)
+    monkeypatch.setattr(ing, "_list_all_uids", lambda days: [b"1", b"2"])
+    monkeypatch.setattr(ing, "_message_ids_for",
+                        lambda uids: {b"1": "seen@news.test", b"2": "fresh@news.test"})
+    monkeypatch.setattr(ing, "_process_message", lambda uid: fetched.append(uid) or 3)
+
+    assert ing.run_ingestion(max_messages=10, days=90) == 3
+    assert fetched == [b"2"], "the already-marked message must not be fetched at all"

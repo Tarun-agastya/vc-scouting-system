@@ -92,24 +92,32 @@ async def scrape_universities():
 
 
 @router.post("/newsletters")
-async def ingest_newsletters(days: int = 14, max_messages: int = 50):
+async def ingest_newsletters(days: int = 90, max_messages: int = 50):
     """
     Trigger Gmail newsletter ingestion through the controller.
 
-    days=14 (default) is the routine window the scheduler also uses. Pass a
-    much larger value (e.g. days=3650) to run a one-time backfill sweep of
-    older mail — the rolling window never reaches anything past `days` on
-    its own, confirmed live 24 Jul: a 61-message mailbox had 46 messages
-    (32 of them in the Promotions category) permanently unreachable under
-    the old fixed 14-day-only design. Safe to re-run at any window size;
-    already-processed messages are always skipped.
+    days=90 (default, raised from 14 on 16 Aug 2026). The 14-day window was
+    silently losing mail: measured live that day, the mailbox held 103
+    messages spanning June-August but only 32 were reachable at days=14, and
+    all 29 June newsletters had never been ingested at all. Newsletters are
+    the richest source this pipeline has, so that was the worst place for a
+    quiet drop.
+
+    90 days is affordable because the already-seen check now happens before
+    any body fetch or LLM call — the ingestor resolves Message-IDs with one
+    header-only pass and skips known ones — so a wider window costs a cheap
+    header fetch, not a re-ingestion.
+
+    Pass a larger value (e.g. days=3650) to sweep the whole mailbox. Safe to
+    re-run at any size; already-ingested messages are always skipped, now by
+    stable Message-ID rather than a mailbox-scoped IMAP UID.
     """
     import asyncio
     from processing.scout_controller import scout_controller
 
     # Chained (Phase AR-1, 12 Aug 2026) — same reasoning as /ingestion/rss above.
     asyncio.create_task(scout_controller.run_newsletters_then_recheck(max_messages=max_messages, days=days))
-    window = "routine 14-day" if days <= 14 else f"backfill, {days}-day"
+    window = f"routine {days}-day" if days <= 90 else f"backfill, {days}-day"
     return {"status": "started", "message": f"Gmail newsletter ingestion queued ({window} window)"}
 
 

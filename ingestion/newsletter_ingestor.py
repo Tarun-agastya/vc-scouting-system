@@ -78,56 +78,118 @@ class NewsletterIngestor:
 
     def _load_state(self) -> dict:
         """
-        Load processed-UID set from disk, keyed to the mailbox's current
-        UIDVALIDITY. IMAP UIDs are only meaningful within one UIDVALIDITY
-        generation — if Gmail ever rebuilds the mailbox and bumps it, old
-        UIDs could silently refer to different messages. Detected here by
-        comparing against the connected mailbox's live UIDVALIDITY (set by
-        _authenticate's SELECT) and the stale state is discarded rather than
-        trusted — reprocessing a message once is a harmless no-op thanks to
-        upsert_startup's dedup, silently mismatching UIDs is not.
-        """
-        current_uidvalidity = None
-        if self._conn is not None:
-            status, data = self._conn.response("UIDVALIDITY")
-            if data and data[0]:
-                current_uidvalidity = data[0].decode() if isinstance(data[0], bytes) else str(data[0])
+        Load the set of already-processed messages, keyed by RFC 5322
+        **Message-ID** — the globally unique, immutable identifier the sender
+        stamps on the mail itself.
 
-        if os.path.exists(_STATE_PATH):
-            try:
-                with open(_STATE_PATH) as f:
-                    state = json.load(f)
-                if current_uidvalidity and state.get("uidvalidity") not in (None, current_uidvalidity):
-                    logger.warning(
-                        f"[Gmail] UIDVALIDITY changed ({state.get('uidvalidity')} -> "
-                        f"{current_uidvalidity}) — old processed-UID list is no longer "
-                        "trustworthy, starting fresh (re-processed messages are a no-op)"
-                    )
-                    return {"processed_ids": [], "uidvalidity": current_uidvalidity}
-                state.setdefault("uidvalidity", current_uidvalidity)
-                return state
-            except Exception:
-                pass
-        return {"processed_ids": [], "uidvalidity": current_uidvalidity}
+        WHY NOT IMAP UID (changed 16 Aug 2026). UIDs are mailbox-scoped and
+        only meaningful within one UIDVALIDITY generation, and this mailbox
+        has already survived one identity change that the old scheme could not
+        express: before 12 Aug the ingestor ran on the Gmail API and recorded
+        Gmail's own hex message ids; after the IMAP migration it recorded IMAP
+        UIDs. The live state file was found holding BOTH — 112 stale hex ids
+        that can never match anything, plus 37 real UIDs — so every message
+        handled in the Gmail-API era had effectively lost its "already done"
+        marker. Message-ID survives both migrations, a UIDVALIDITY bump, and a
+        re-download of the whole mailbox, and it is already what
+        _process_message writes into source_url/source_history, so the state
+        file and the database now agree on what identifies a newsletter.
+
+        Old-format files are migrated on read rather than discarded: any
+        surviving entry is kept under "legacy_ids" purely so a human can see
+        what was there, and the mailbox is re-scanned by Message-ID. A
+        re-processed message is a harmless no-op (upsert_startup dedups); a
+        silently skipped one is not, which is the failure this replaces.
+        """
+        state = {"processed_message_ids": [], "legacy_ids": []}
+        if not os.path.exists(_STATE_PATH):
+            return state
+        try:
+            with open(_STATE_PATH) as f:
+                raw = json.load(f)
+        except Exception as exc:
+            logger.warning(f"[Gmail] state file unreadable ({exc}) — starting fresh")
+            return state
+
+        if isinstance(raw.get("processed_message_ids"), list):
+            state["processed_message_ids"] = [str(x) for x in raw["processed_message_ids"]]
+            state["legacy_ids"] = [str(x) for x in (raw.get("legacy_ids") or [])]
+            return state
+
+        # Pre-16-Aug format: {"processed_ids": [...], "uidvalidity": ...} — a
+        # mix of Gmail-API hex ids and IMAP UIDs, neither of which is a
+        # Message-ID. Keep them for the record, trust none of them.
+        legacy = [str(x) for x in (raw.get("processed_ids") or [])]
+        if legacy:
+            logger.warning(
+                f"[Gmail] migrating state file from the old UID/Gmail-id format "
+                f"({len(legacy)} entries kept for reference but not trusted). "
+                f"Messages will be re-checked by Message-ID; anything genuinely "
+                f"already ingested is a no-op via upsert_startup's dedup."
+            )
+        state["legacy_ids"] = legacy
+        return state
 
     def _save_state(self, state: dict) -> None:
-        """Persist processed-UID set to disk."""
+        """Persist the processed-Message-ID set to disk."""
         os.makedirs(os.path.dirname(_STATE_PATH), exist_ok=True)
-        with open(_STATE_PATH, "w") as f:
-            json.dump(state, f)
+        tmp = _STATE_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, _STATE_PATH)   # atomic: never leave a half-written marker file
+
+    def _message_ids_for(self, uids: List[str]) -> dict:
+        """
+        Map UID -> Message-ID with ONE cheap header-only fetch.
+
+        This is what makes a wide lookback window affordable: the expensive
+        part of ingestion is fetching and LLM-parsing full bodies, so the
+        already-seen check has to happen before that. Headers for the whole
+        mailbox cost a single round trip.
+        """
+        if not uids:
+            return {}
+        out = {}
+        for uid in uids:
+            try:
+                typ, data = self._conn.uid("fetch", uid, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+                if typ != "OK" or not data or not data[0]:
+                    continue
+                raw = data[0][1]
+                msg = email.message_from_bytes(raw if isinstance(raw, (bytes, bytearray)) else raw.encode())
+                mid = (msg.get("Message-ID") or "").strip().strip("<>")
+                if mid:
+                    out[uid] = mid
+            except Exception as exc:
+                logger.debug(f"[Gmail] header fetch failed for uid {uid}: {exc}")
+        return out
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
-    def run_ingestion(self, max_messages: int = 50, days: int = 14) -> int:
+    def run_ingestion(self, max_messages: int = 50, days: int = 90) -> int:
         """
         Fetch and process Gmail newsletters. Returns total startups stored.
-        Already-processed messages are skipped via the state file.
+        Already-processed messages are skipped by **Message-ID**.
 
-        days: the search window. Default 14 for the routine scheduled
-          top-up. Pass a much larger value (e.g. 3650) for a one-time
-          backfill sweep of older mail the rolling window never reaches —
-          safe to re-run any time since already-processed messages are
-          always skipped regardless of window size.
+        days: the search window, default 90 (raised from 14 on 16 Aug 2026).
+
+          The old 14-day default was silently losing mail. Measured on the
+          live mailbox that day: 103 messages spanning June-August, of which
+          only 32 were reachable at days=14 — every one of the 29 June
+          newsletters had never been ingested at all, and 61 messages in
+          total had produced no database record. Nothing was broken; the
+          window simply never reached them, and the manual backfill that
+          could have was never run. Newsletters are the richest source this
+          pipeline has, so quietly dropping two thirds of them was the worst
+          possible place for that to happen.
+
+          90 days is affordable now only because the already-seen check moved
+          in front of the expensive work: run_ingestion resolves Message-IDs
+          with one header-only fetch and skips known ones before any body is
+          downloaded or any LLM call is made. Widening the window therefore
+          costs one cheap header pass, not a re-ingestion. Pass a larger
+          value (e.g. 3650) to sweep the entire mailbox; it is safe to re-run
+          at any size.
 
         max_messages: caps how many NEW messages get PROCESSED this run —
           it does NOT cap how many are listed. IMAP SEARCH returns every
@@ -152,42 +214,53 @@ class NewsletterIngestor:
 
         try:
             state = self._load_state()
-            processed_ids: set = set(state.get("processed_ids", []))
+            done: set = set(state.get("processed_message_ids", []))
 
             all_uids = self._list_all_uids(days)
             logger.info(f"[Gmail] {len(all_uids)} messages match the {days}-day window")
 
-            new_processed: list = []
+            # Resolve Message-IDs FIRST, with one cheap header-only pass, so
+            # the already-seen check happens before any body fetch or LLM call.
+            # This is what makes a wide window affordable — the cost of looking
+            # further back is now a header fetch, not a full re-ingestion.
+            uid_to_mid = self._message_ids_for(all_uids)
+            pending = [u for u in all_uids if uid_to_mid.get(u) not in done]
+            already = len(all_uids) - len(pending)
+            logger.info(
+                f"[Gmail] {already} already ingested (by Message-ID), {len(pending)} to process"
+            )
+
+            new_ids: list = []
             total_startups = 0
 
-            for uid in all_uids:
-                if uid in processed_ids:
-                    logger.debug(f"[Gmail] Skipping already-processed message {uid}")
-                    continue
-                if len(new_processed) >= max_messages:
+            for uid in pending:
+                if len(new_ids) >= max_messages:
                     logger.info(
                         f"[Gmail] Reached max_messages={max_messages} for this run — "
-                        f"{len(all_uids) - len(processed_ids) - len(new_processed)} more "
-                        "new message(s) remain for the next run"
+                        f"{len(pending) - len(new_ids)} new message(s) remain for the next run"
                     )
                     break
 
                 count = self._process_message(uid)
                 total_startups += count
-                new_processed.append(uid)
+                # Record the marker even when a message yielded zero startups:
+                # "we looked at this and it had nothing" is exactly as important
+                # to remember as a successful extraction, or every empty
+                # newsletter gets re-parsed by the LLM on every single run.
+                mid = uid_to_mid.get(uid)
+                if mid:
+                    new_ids.append(mid)
 
-            if new_processed:
-                # Retain only the last 2000 IDs so the state file stays small but
-                # still comfortably covers a full-mailbox backfill (500 was sized
-                # for the old 14-day-only window; a backfill can legitimately
-                # process far more than 500 messages in its lifetime).
-                retained_ids = list(processed_ids) + new_processed
-                state["processed_ids"] = retained_ids[-2000:]
+            if new_ids:
+                # Cap the file, keeping the most recent markers. 2000 is far
+                # past this mailbox's size, so in practice nothing is ever
+                # forgotten — the cap only stops unbounded growth.
+                state["processed_message_ids"] = (list(done) + new_ids)[-2000:]
                 self._save_state(state)
 
             logger.info(
-                f"[Gmail] Done — {len(new_processed)} new emails processed, "
-                f"{len(all_uids) - len(new_processed)} already seen or beyond this run's cap, "
+                f"[Gmail] Done — {len(new_ids)} new emails processed, "
+                f"{already} already ingested, "
                 f"{total_startups} startups stored"
             )
             return total_startups
