@@ -284,6 +284,16 @@ web_sources:
     crawl_frequency: weekly
     priority: HIGH
     render_mode: auto
+# Added via dashboard on 2026-08-19
+  - source_id: startup_valley
+    source_name: Startup Valley
+    source_type: university_hub
+    location: Pforzheim
+    primary_url: https://startupvalley.news/de/startups/
+    crawl_strategy: website_scrape
+    crawl_frequency: weekly
+    priority: MEDIUM
+    render_mode: auto
 newsletter_senders: []
 
 

@@ -166,7 +166,7 @@ class NewsletterIngestor:
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
-    def run_ingestion(self, max_messages: int = 50, days: int = 90) -> int:
+    def run_ingestion(self, max_messages: int = 50, days: int = 90, progress=None) -> int:
         """
         Fetch and process Gmail newsletters. Returns total startups stored.
         Already-processed messages are skipped by **Message-ID**.
@@ -230,6 +230,12 @@ class NewsletterIngestor:
                 f"[Gmail] {already} already ingested (by Message-ID), {len(pending)} to process"
             )
 
+            # Real denominator for the live progress bar, known before any
+            # body is fetched. Without this the dashboard showed a grid of
+            # zeros for the entire run — see ScoutController._work_newsletters.
+            if progress is not None:
+                progress.total = min(len(pending), max_messages)
+
             new_ids: list = []
             total_startups = 0
 
@@ -243,6 +249,8 @@ class NewsletterIngestor:
 
                 count = self._process_message(uid)
                 total_startups += count
+                if progress is not None:
+                    progress.processed += 1
                 # Record the marker even when a message yielded zero startups:
                 # "we looked at this and it had nothing" is exactly as important
                 # to remember as a successful extraction, or every empty

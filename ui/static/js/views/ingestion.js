@@ -210,7 +210,18 @@ export default {
         // dict {processed, total, current_name} instead — they don't crawl pages or
         // chunks, so showing the pipeline tile grid for them always read as all-zeros
         // even while genuinely running. Detect by the presence of "total".
+        // Which live shape is this? A PipelineMetrics (web crawl: pages/
+        // chunks/LLM calls) or a RecordProgress (processed-of-total loop).
+        // `hasAnyMetrics` is the guard that makes the old "everything shows
+        // 0" bug structurally impossible: when a run reports NOTHING yet, we
+        // must say so rather than render nine tiles of 0, which for years
+        // read as "the run is broken" when it actually meant "no numbers
+        // have arrived". Reported three times; each earlier fix corrected a
+        // producer, none stopped the UI from lying when a producer was
+        // missing. Now a silent producer is visible as silence.
         const isRecordProgress = typeof m.total === "number";
+        const hasAnyMetrics = Object.keys(m || {}).some(
+          (k) => typeof m[k] === "number" && m[k] > 0);
         const recordPct = isRecordProgress && m.total > 0 ? Math.round((m.processed / m.total) * 100) : null;
         liveCard.innerHTML = `
           <div class="card__head">
@@ -238,7 +249,11 @@ export default {
                 <span class="dim mono" style="font-size:12px">${recordPct ?? 0}%</span>
               </div>
               ${m.current_name ? `<div class="dim" style="font-size:12px">Currently checking: <strong>${esc(m.current_name)}</strong></div>` : ""}
-            </div>` : `
+            </div>` : !hasAnyMetrics ? `
+          <div class="row" style="gap:10px;padding:6px 0">
+            <span class="spinner"></span>
+            <span class="dim" style="font-size:13px">Started — waiting for the first counters…</span>
+          </div>` : `
           <div class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr))">
             ${METRIC_LABELS.map(([k, label]) => `
               <div style="padding:8px 0">

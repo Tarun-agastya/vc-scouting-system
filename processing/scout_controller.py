@@ -357,21 +357,29 @@ class ScoutController:
 
     # ── Raw workers (no record — used internally) ────────────────────────────────
 
-    async def _work_rss(self, max_entries: int) -> dict:
+    async def _work_rss(self, max_entries: int, rec: RunRecord) -> dict:
+        """
+        RSS feeds -> extracted startups.
+
+        rec.live_metrics is a RecordProgress (16 Aug 2026). Before that, this
+        worker attached NOTHING, so RunRecord.to_dict() fell through to the
+        still-empty `metrics` dict for the whole run and every dashboard tile
+        read 0 from start to finish. That "everything shows 0" symptom was
+        reported three separate times; each earlier fix only corrected the
+        FINAL numbers, never the live ones, which is why it kept coming back.
+        """
         from ingestion.rss_parser import rss_parser
+
+        progress = RecordProgress(total=0)
+        rec.live_metrics = progress
         loop = asyncio.get_event_loop()
         startups = await loop.run_in_executor(
-            None, lambda: rss_parser.ingest_feeds(max_entries=max_entries)
+            None, lambda: rss_parser.ingest_feeds(max_entries=max_entries, progress=progress)
         )
-        # ingest_feeds() previously had no `return` statement at all (dead
-        # code after an unrelated method, found live 12 Aug — the dashboard
-        # showed a flat 0/"—" for every RSS run, live AND after completion,
-        # since this always got back None and reported {} unconditionally).
-        # _store_startup discards upsert_startup's status, so this can only
-        # report the raw extracted count, not a new/updated/duplicate
-        # breakdown the way _work_web's PipelineMetrics does — a real gap,
-        # left for later rather than a disproportionate refactor right now.
-        return {"startups_extracted": len(startups or [])}
+        # _store_startup discards upsert_startup's status, so this reports the
+        # raw extracted count rather than a new/updated/duplicate breakdown.
+        return {"startups_extracted": len(startups or []),
+                "processed": progress.processed, "total": progress.total}
 
     async def _work_web(self, url: str, source_type: str, rec: RunRecord,
                         force_render: bool = False) -> dict:
@@ -410,13 +418,26 @@ class ScoutController:
         )
         return _metrics_to_dict(result)
 
-    async def _work_newsletters(self, max_messages: int, days: int = 14) -> dict:
+    async def _work_newsletters(self, max_messages: int, rec: RunRecord, days: int = 90) -> dict:
+        """
+        Gmail newsletters -> extracted startups.
+
+        Same live-progress fix as _work_rss, and this one was worse: its only
+        final metric was `startups_stored`, which is not among the keys the
+        dashboard's tile grid reads, so a newsletter run showed 0 on every
+        tile even AFTER it finished successfully.
+        """
         from ingestion.newsletter_ingestor import newsletter_ingestor
+
+        progress = RecordProgress(total=0)
+        rec.live_metrics = progress
         loop = asyncio.get_event_loop()
         stored = await loop.run_in_executor(
-            None, lambda: newsletter_ingestor.run_ingestion(max_messages=max_messages, days=days)
+            None, lambda: newsletter_ingestor.run_ingestion(
+                max_messages=max_messages, days=days, progress=progress)
         )
-        return {"startups_stored": stored}
+        return {"startups_stored": stored,
+                "processed": progress.processed, "total": progress.total}
 
     async def _work_recheck(self, limit: int, rec: RunRecord) -> dict:
         """
@@ -495,7 +516,7 @@ class ScoutController:
         batch_id: Optional[str] = None, batch_index: Optional[int] = None, batch_total: Optional[int] = None,
     ) -> RunRecord:
         rec = self._new_run("rss", "rss-feeds", batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
-        return await self._execute(rec, lambda: self._work_rss(max_entries))
+        return await self._execute(rec, lambda: self._work_rss(max_entries, rec))
 
     async def run_newsletters(
         self, max_messages: int = 50, days: int = 14, *,
@@ -511,7 +532,7 @@ class ScoutController:
         label = "gmail-newsletters" if days <= 14 else f"gmail-newsletters (backfill, {days}d)"
         rec = self._new_run("newsletter", label,
                             batch_id=batch_id, batch_index=batch_index, batch_total=batch_total)
-        return await self._execute(rec, lambda: self._work_newsletters(max_messages, days))
+        return await self._execute(rec, lambda: self._work_newsletters(max_messages, rec, days))
 
     async def run_rss_then_recheck(
         self, max_entries: int = 50, *,
@@ -754,10 +775,10 @@ class ScoutController:
         """
         if kind == "rss":
             rec = self._new_run("rss", "rss-feeds")
-            work: Callable[[], Awaitable[dict]] = lambda: self._work_rss(50)
+            work: Callable[[], Awaitable[dict]] = lambda: self._work_rss(50, rec)
         elif kind == "newsletter":
             rec = self._new_run("newsletter", "gmail-newsletters")
-            work = lambda: self._work_newsletters(50)
+            work = lambda: self._work_newsletters(50, rec)
         elif source_id:
             src = self._find_registry_source(source_id)  # raises ValueError if unknown
             target_url, target_type = src.primary_url, src.source_type.value

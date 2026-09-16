@@ -21,21 +21,47 @@ class RSSParser:
     def ingest_feeds(
         self,
         feed_urls: Optional[List[str]] = None,
-        max_entries: int = 50
+        max_entries: int = 50,
+        progress=None,
     ) -> List[dict]:
-        """Main entry point: ingest one or all RSS feeds."""
+        """
+        Main entry point: ingest one or all RSS feeds.
+
+        progress: optional scout_controller.RecordProgress. Updated per feed
+          ENTRY so /ingestion/status reports real live movement while the run
+          is in flight. Without it the dashboard showed a grid of zeros for
+          the whole run — see ScoutController._work_rss's docstring. Optional
+          so the CLI (scripts/run_ingestion.py) keeps working unchanged.
+        """
         urls = feed_urls or [f["url"] for f in self.feeds]
         all_startups: List[dict] = []
 
+        # Two passes over the feed list: parse everything first so `total` is
+        # a real denominator from the first tick rather than climbing as it
+        # goes (a progress bar whose total moves is worse than none). Parsing
+        # is the cheap part; extraction is where the time goes.
+        parsed = []
         for url in urls:
-            logger.info(f"[RSS] Processing: {url}")
             try:
-                feed = feedparser.parse(url)
-                for entry in feed.entries[:max_entries]:
-                    startups = self._process_entry(entry, url)
-                    all_startups.extend(startups)
+                parsed.append((url, feedparser.parse(url).entries[:max_entries]))
             except Exception as exc:
                 logger.error(f"[RSS] Failed for {url}: {exc}")
+        if progress is not None:
+            progress.total = sum(len(entries) for _, entries in parsed)
+
+        for url, entries in parsed:
+            logger.info(f"[RSS] Processing: {url} ({len(entries)} entries)")
+            for entry in entries:
+                if progress is not None:
+                    progress.current_name = (getattr(entry, "title", "") or url)[:120]
+                try:
+                    all_startups.extend(self._process_entry(entry, url))
+                except Exception as exc:
+                    # One bad entry must never abort the remaining feeds.
+                    logger.error(f"[RSS] Entry failed for {url}: {exc}")
+                finally:
+                    if progress is not None:
+                        progress.processed += 1
 
         logger.info(f"[RSS] Total startups extracted: {len(all_startups)}")
         return all_startups
