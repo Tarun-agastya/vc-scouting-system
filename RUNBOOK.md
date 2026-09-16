@@ -62,6 +62,23 @@ If you want certainty while away, run the §1 health check remotely, or ask some
 
 ---
 
+### 3.1 Known data-quality gap (16 Sep 2026)
+
+One class of extraction junk is **not** filtered and will occasionally appear
+in Browse: bare academic subject titles picked up from a university page —
+"Energierecht", "Konstruktion und Entwerfen", "Geschichte und Theorie der
+Architektur". Faculty *role* titles ("Stud.Dekan …", "Wissenschaftliche
+Leitung …") **are** now caught by `academic_office_pattern` in
+`config/tuning.yaml`.
+
+Subject titles are deliberately left uncaught: every rule broad enough to
+match them also matches plausible real company names, and that check deletes
+the whole record rather than one field. If you see one, delete it by hand
+from the Browse detail panel — that is cheaper than the false positives an
+aggressive rule would cause.
+
+---
+
 ## 4. Troubleshooting by symptom
 
 Ordered by how likely you are to hit it. Every fix here is safe to run.
@@ -264,6 +281,30 @@ curl -X DELETE http://localhost:8000/sources/web/<source_id>
 
 Or use the dashboard's Sources page. A malformed entry is skipped and logged, never crashes a run.
 
+**Check whether the registered sites are still reachable** (cheap, one GET
+each, safe while the API is up):
+
+```bash
+python3 scripts/check_source_health.py
+```
+
+A dead source is otherwise silent — the crawl just yields nothing. On 16 Sep
+this found 6 of 25 broken: two universities had reorganised their URLs into
+404s, two had certificates valid only for a hostname other than the one
+registered, and one was a `https://example.com/portfolio` placeholder added
+through the dashboard and never filled in.
+
+Before repointing anything, check what the source has actually produced —
+the crawler works from pages it discovers, not only the registered root, so
+a failing root does not always mean a dead source (see the `startupsucht`
+entry in §7):
+
+```bash
+docker exec -it vc_postgres psql -U scout -d vc_scouting -c \
+  "SELECT source_url, count(*), max(extracted_at) FROM startups
+    WHERE source_url ILIKE '%<domain>%' GROUP BY 1 ORDER BY 2 DESC LIMIT 10;"
+```
+
 ---
 
 ## 7. Known issues that are *not* bugs
@@ -275,6 +316,10 @@ Don't spend time on these:
 - **`com.vcscouting.dockerstack` / `com.gthub.pressmonitor` showing `-`** in `launchctl list`. Normal for one-shot jobs.
 - **Log files at ~55 MB each** (`logs/api.log`, `logs/api.error.log`). No rotation is configured, but growth is ~55 MB/month against 764 GB free. Harmless. Truncate any time with `: > logs/api.log` if you want them tidy.
 - **Unused Ollama models** (`qwen3.5:9b`, `gemma4:12b`, `qwen3:8b`, ~19 GB) left over from model A/B testing. Safe to remove with `ollama rm <name>` — the system does not use them.
+- **`startupsucht.com`'s homepage returns 403.** Cloudflare, intermittently — it answers `curl` and Googlebot but not always a browser-shaped request. **The source is healthy**: the crawler works from the `/startup-liste-verzeichnis-<city>` pages, which return 66–199 KB of text and are the origin of 620 startups (63 of them on 14 Sep). If a reachability probe of the homepage ever tells you this source is dead, it is wrong. Don't "fix" it.
+- **Run history is empty after an API restart.** The dashboard's run history is in-memory by design (bounded, `scout_controller._runs`). A restart clears it. The durable record is `logs/api.log`; nothing is actually lost.
+- **"Started — waiting for the first counters…"** on the Ingestion page. Correct and expected: a run has begun but no worker has reported a number yet. It replaces what used to be a grid of nine confident zeros. If it *stays* that way for more than a couple of minutes, then check the log.
+- **Semantic search shows results before the AI analysis.** Intended as of 16 Sep. The matches take ~0.1s; the written report is a 14B call that queues behind any ingestion, so it arrives separately with its own spinner. Results appearing "without the analysis" is the feature, not a half-failure.
 
 ---
 
