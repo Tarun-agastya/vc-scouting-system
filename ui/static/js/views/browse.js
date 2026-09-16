@@ -338,26 +338,60 @@ export default {
     async function runSemantic() {
       const q = searchCard.querySelector("#q-input").value.trim();
       if (!q) { toast("Enter a query first", "error"); return; }
-      // Search shares the GPU mutex with ingestion (see api.semanticSearch's
-      // comment) — if a scrape/sweep is running, this genuinely waits behind
-      // it rather than the usual ~30s, so say so instead of just under-
-      // promising "a minute" and leaving someone staring at a spinner
-      // wondering if it's stuck.
-      let waitNote = "this can take up to a minute…";
+
+      // Two phases, because the two halves of this search cost wildly
+      // different amounts. The vector lookup is ~60ms; the AI report is a
+      // 14B call that queues on the same GPU mutex as ingestion, so during a
+      // sweep it genuinely takes minutes. Previously both were one request,
+      // which meant the RESULTS waited on the REPORT and a mid-sweep search
+      // looked broken for minutes while working perfectly. Now the matches
+      // paint immediately and the report fills in behind them.
+      state.aiAnalysis = null;
+      resultsRegion.innerHTML = `<div class="table-wrap"><div class="skeleton" style="height:240px"></div></div>`;
+
+      let rows;
       try {
-        const s = await api.ingestionStatus();
-        if (s.current_run) waitNote = "an ingestion run is in progress, so this may take several minutes — it's queued, not stuck…";
-      } catch { /* status check is best-effort; fall back to the default note */ }
-      resultsRegion.innerHTML = `<div class="card row" style="justify-content:center;padding:40px;gap:10px">
-        <span class="spinner"></span><span class="dim">Asking the local AI model — ${waitNote}</span></div>`;
-      try {
-        const res = await api.semanticSearch(q, { limit: 30 });
-        state.aiAnalysis = res.ai_analysis;
-        state.lastRows = (res.startups || []).map((s) => ({ ...s, id: s.id }));
-        state.lastTotal = res.total_found ?? state.lastRows.length;
+        const fast = await api.semanticSearch(q, {
+          limit: 30, synthesize: false, searchTimeout: 45000,
+        });
+        rows = (fast.startups || []).map((s) => ({ ...s, id: s.id }));
+        state.lastRows = rows;
+        state.lastTotal = fast.total_found ?? rows.length;
         renderResults();
       } catch (err) {
         resultsRegion.innerHTML = `<div class="empty"><div class="empty__title">Search failed</div><div>${esc(err.message)}</div></div>`;
+        return;
+      }
+
+      if (!rows.length) return;   // nothing to write a report about
+
+      // Phase 2. The wait note still matters — it's now the only thing the
+      // user is actually waiting for, and it says whether the queue is the
+      // reason rather than leaving someone guessing.
+      let waitNote = "this can take up to a minute…";
+      try {
+        const st = await api.ingestionStatus();
+        if (st.current_run) waitNote = "an ingestion run is in progress, so this may take several minutes — it's queued, not stuck…";
+      } catch { /* status check is best-effort; fall back to the default note */ }
+
+      const pending = document.createElement("div");
+      pending.className = "card";
+      pending.style.marginBottom = "var(--gap)";
+      pending.innerHTML = `<div class="row" style="gap:10px;padding:6px 0">
+        <span class="spinner"></span>
+        <span class="dim">Writing the AI analysis — ${waitNote}</span></div>`;
+      resultsRegion.prepend(pending);
+
+      try {
+        const full = await api.semanticSearch(q, { limit: 30 });
+        // Ignore a late response if the user has since searched for
+        // something else — otherwise a slow report lands on new results.
+        if (searchCard.querySelector("#q-input").value.trim() !== q) return;
+        state.aiAnalysis = full.ai_analysis;
+        renderResults();
+      } catch (err) {
+        pending.innerHTML = `<div class="dim" style="padding:6px 0">
+          AI analysis unavailable (${esc(err.message)}) — the ${rows.length} matches above are unaffected.</div>`;
       }
     }
 

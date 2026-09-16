@@ -74,9 +74,21 @@ export const api = {
    * queued fine server-side and would have succeeded. Extended to match the
    * timeout already used for /startup/{id}/web-verify and /compare — the
    * other two endpoints that queue on this same mutex for a single LLM call.
+   *
+   * Two-phase as of 16 Sep 2026. The extended timeout above stopped search
+   * from ERRORING mid-ingestion, but it could not stop it from BLOCKING:
+   * the whole result list waited on the report, so a search during a sweep
+   * showed a spinner for minutes and read as broken even though it was
+   * working. Pass `synthesize: false` for matches only — no Ollama call, no
+   * mutex, ~60ms — which is what Browse now does first. `searchTimeout`
+   * shortens the client timeout for that fast call so it cannot inherit the
+   * 320s budget meant for the LLM half.
    */
-  semanticSearch: (query, opts = {}) =>
-    post("/scout/search", { query, limit: opts.limit ?? 30, ...opts }, { timeout: 320000 }),
+  semanticSearch: (query, opts = {}) => {
+    const { searchTimeout, ...body } = opts;
+    return post("/scout/search", { query, limit: opts.limit ?? 30, ...body },
+                { timeout: searchTimeout ?? 320000 });
+  },
   /**
    * Phase P-3: on-demand web verification for ONE startup. Runs a live
    * search + a 14B verdict call (100-300s observed) — extended timeout,

@@ -20,6 +20,14 @@ class ScoutRequest(BaseModel):
     industry: Optional[str] = None
     funding_stage: Optional[str] = None
     limit: int = 15
+    # Phase 16 Sep 2026: split the fast half of a semantic search from the
+    # slow half. The vector lookup is ~60ms; the investor-report synthesis is
+    # a 14B call that additionally waits on the GPU mutex, so during an
+    # ingestion run a single search legitimately blocks for minutes. The
+    # dashboard now asks for synthesize=false first to paint the matches
+    # immediately, then asks again with synthesize=true to fill in the
+    # report. Defaults to True so every existing API caller is unaffected.
+    synthesize: bool = True
 
 
 class StartupAddRequest(BaseModel):
@@ -47,6 +55,11 @@ async def search_startups(request: ScoutRequest, db: Session = Depends(get_db)):
     """
     Semantic search over the startup database.
     Returns AI-synthesized investor report + raw startup list.
+
+    `synthesize=false` returns the matches WITHOUT the report and without
+    touching Ollama or the GPU mutex — the fast half, ~60ms. The dashboard
+    calls it that way first so results appear immediately, then calls again
+    with synthesize=true for the report. Default stays true.
 
     Both the embedding call and the reasoning-model synthesis are synchronous
     (blocking) Ollama calls — dispatched via run_in_executor so they never
@@ -84,7 +97,11 @@ async def search_startups(request: ScoutRequest, db: Session = Depends(get_db)):
 
         startups = [r.payload for r in results]
 
-        if startups:
+        if startups and not request.synthesize:
+            # Fast path: matches only. Deliberately does not touch Ollama or
+            # the GPU mutex at all, so it stays responsive mid-ingestion.
+            ai_analysis = None
+        elif startups:
             async with scout_controller.gpu_mutex:
                 ai_analysis = await loop.run_in_executor(
                     None, qwen_client.synthesize_scout_results, request.query, startups
@@ -95,7 +112,18 @@ async def search_startups(request: ScoutRequest, db: Session = Depends(get_db)):
                 "Try running /ingestion/rss or /ingestion/run-all to populate the database first."
             )
 
-        # Log session
+        # Log session. Only the synthesizing call is logged: the dashboard
+        # issues two requests per search (fast matches, then the report) and
+        # logging both would double-count every dashboard search in the
+        # session history.
+        if not request.synthesize:
+            return {
+                "query": request.query,
+                "total_found": len(startups),
+                "startups": startups,
+                "ai_analysis": None,
+            }
+
         session = ScoutingSession(
             query=request.query,
             filters=filters or {},
