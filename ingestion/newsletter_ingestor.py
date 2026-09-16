@@ -11,6 +11,11 @@ from config.source_loader import get_newsletter_search_terms, get_newsletter_sen
 
 logger = logging.getLogger(__name__)
 
+# How often to flush the processed-Message-ID markers to disk mid-run. Small
+# enough that an interrupted run loses at most a handful of messages' worth of
+# work, large enough that a long run isn't dominated by file writes.
+_MARKER_FLUSH_EVERY = 5
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _STATE_PATH  = os.path.join(_PROJECT_ROOT, "credentials", "newsletter_state.json")
 
@@ -239,32 +244,53 @@ class NewsletterIngestor:
             new_ids: list = []
             total_startups = 0
 
-            for uid in pending:
-                if len(new_ids) >= max_messages:
-                    logger.info(
-                        f"[Gmail] Reached max_messages={max_messages} for this run — "
-                        f"{len(pending) - len(new_ids)} new message(s) remain for the next run"
-                    )
-                    break
+            def _persist_markers() -> None:
+                """
+                Write the markers collected so far.
 
-                count = self._process_message(uid)
-                total_startups += count
-                if progress is not None:
-                    progress.processed += 1
-                # Record the marker even when a message yielded zero startups:
-                # "we looked at this and it had nothing" is exactly as important
-                # to remember as a successful extraction, or every empty
-                # newsletter gets re-parsed by the LLM on every single run.
-                mid = uid_to_mid.get(uid)
-                if mid:
-                    new_ids.append(mid)
+                Called every _MARKER_FLUSH_EVERY messages AND from a finally
+                below, because this used to save exactly once after the whole
+                loop finished: a crash, a kill, or an API restart mid-run threw
+                away every marker from that run, and the next run re-parsed all
+                of those newsletters through the LLM from scratch. Newsletters
+                are the richest source here and a wide backfill takes hours, so
+                that was the most expensive work in the system to lose. The
+                write is atomic (tmp + os.replace), so writing often is safe.
 
-            if new_ids:
-                # Cap the file, keeping the most recent markers. 2000 is far
-                # past this mailbox's size, so in practice nothing is ever
-                # forgotten — the cap only stops unbounded growth.
+                Caps the file at 2000 markers, keeping the most recent. That is
+                far past this mailbox's size, so in practice nothing is ever
+                forgotten — the cap only stops unbounded growth.
+                """
+                if not new_ids:
+                    return
                 state["processed_message_ids"] = (list(done) + new_ids)[-2000:]
                 self._save_state(state)
+
+            try:
+                for uid in pending:
+                    if len(new_ids) >= max_messages:
+                        logger.info(
+                            f"[Gmail] Reached max_messages={max_messages} for this run — "
+                            f"{len(pending) - len(new_ids)} new message(s) remain for the next run"
+                        )
+                        break
+
+                    count = self._process_message(uid)
+                    total_startups += count
+                    if progress is not None:
+                        progress.processed += 1
+                    # Record the marker even when a message yielded zero
+                    # startups: "we looked at this and it had nothing" is
+                    # exactly as important to remember as a successful
+                    # extraction, or every empty newsletter gets re-parsed by
+                    # the LLM on every single run.
+                    mid = uid_to_mid.get(uid)
+                    if mid:
+                        new_ids.append(mid)
+                        if len(new_ids) % _MARKER_FLUSH_EVERY == 0:
+                            _persist_markers()
+            finally:
+                _persist_markers()
 
             logger.info(
                 f"[Gmail] Done — {len(new_ids)} new emails processed, "

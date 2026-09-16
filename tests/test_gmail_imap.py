@@ -228,3 +228,58 @@ def test_already_marked_messages_are_never_fetched(tmp_path, monkeypatch):
 
     assert ing.run_ingestion(max_messages=10, days=90) == 3
     assert fetched == [b"2"], "the already-marked message must not be fetched at all"
+
+
+def test_markers_survive_a_crash_mid_run(tmp_path, monkeypatch):
+    """
+    16 Sep 2026: markers were written exactly once, after the whole loop. A
+    crash, a kill, or an API restart mid-run discarded every marker from that
+    run, so the next run re-parsed all of those newsletters through the LLM
+    from scratch — the most expensive work in the system to lose, on its
+    richest source, during the month the owner is away.
+
+    Simulates the crash on the 7th message and asserts the first 5 markers
+    (one flush interval) are on disk, plus whatever the finally-block saved.
+    """
+    from ingestion import newsletter_ingestor as NI
+
+    ing = NI.NewsletterIngestor()
+    state_file = tmp_path / "newsletter_state.json"
+    monkeypatch.setattr(ing, "_state_path", str(state_file), raising=False)
+
+    uids = [str(i) for i in range(1, 11)]
+    mids = {u: f"<msg{u}@example.com>" for u in uids}
+
+    monkeypatch.setattr(ing, "_connect", lambda: None, raising=False)
+    monkeypatch.setattr(ing, "_disconnect", lambda: None, raising=False)
+    monkeypatch.setattr(ing, "_load_state", lambda: {"processed_message_ids": []})
+    monkeypatch.setattr(ing, "_list_all_uids", lambda days: uids)
+    monkeypatch.setattr(ing, "_message_ids_for", lambda u: mids)
+
+    saved = {}
+    monkeypatch.setattr(ing, "_save_state", lambda st: saved.update(st))
+
+    class Boom(RuntimeError):
+        pass
+
+    processed = []
+
+    def _process(uid):
+        processed.append(uid)
+        if len(processed) == 7:
+            raise Boom("simulated crash mid-run")
+        return 1
+
+    monkeypatch.setattr(ing, "_process_message", _process)
+
+    try:
+        ing.run_ingestion(max_messages=50, days=90)
+    except Boom:
+        pass
+
+    ids = saved.get("processed_message_ids") or []
+    assert ids, "a crash mid-run must not discard every marker collected so far"
+    # 6 succeeded before the 7th raised; the finally-block flush catches all 6.
+    assert len(ids) == 6, f"expected the 6 completed messages to be marked, got {len(ids)}"
+    assert "<msg1@example.com>" in ids and "<msg6@example.com>" in ids
+    assert "<msg7@example.com>" not in ids, "the message that crashed must NOT be marked done"
