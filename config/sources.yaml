@@ -76,7 +76,12 @@ web_sources:
     location: Augsburg, Germany
     # Domain moved (old funkenwerk.tha.de is NXDOMAIN as of 5 Aug); repointed
     # at the startups listing rather than the landing page. Verified live.
-    primary_url: https://www.tha.de/tha-funkenwerk/Start-ups.html
+    # Moved AGAIN — 16 Sep 2026 the /tha-funkenwerk/* paths all 404 after the
+    # university reorganised its URLs under /hochschule/organisation/. Two
+    # candidates were checked live: .../start-ups/ is a call-to-action page
+    # with 1,240 chars and no listings, while .../inkubatorteams/ carries the
+    # actual teams (5,639 chars, 15 images). Pointed at the latter.
+    primary_url: https://www.tha.de/hochschule/organisation/einrichtungen/institut-fuer-gruendung-und-innovation-tha-funkenwerk/inkubatorteams/
     crawl_strategy: website_scrape
     crawl_frequency: weekly
     priority: HIGH
@@ -85,7 +90,15 @@ web_sources:
     source_name: HBC Biberach Gründungsberatung
     source_type: university_hub
     location: Biberach an der Riß, Germany
-    primary_url: https://www.hochschule-biberach.de/forschung-transfer/gruendung
+    # Repointed 16 Sep 2026. The old URL 404s, and the consequence was worse
+    # than "no data": with no valid entry page the crawl wandered into
+    # /studium/bachelorstudium/* and stored 11 course subjects and faculty
+    # roles as startups ("Energierecht", "Stud.Dekan Master /
+    # Öffentlichkeitsarbeit"). Those rows are deleted and the name-shaped
+    # half of that junk is now caught by tuning.yaml's
+    # academic_office_pattern. /gruenderinitiative is the live Gründung
+    # landing page (200, 8,558 chars extracted).
+    primary_url: https://www.hochschule-biberach.de/gruenderinitiative
     crawl_strategy: website_scrape
     crawl_frequency: weekly
     priority: HIGH
@@ -102,10 +115,19 @@ web_sources:
     priority: HIGH
 
   - source_id: xpreneurs
-    source_name: XPRENEURS
+    source_name: XPRENEURS (UnternehmerTUM Accelerator)
     source_type: accelerator
     location: Munich, Germany
-    primary_url: https://www.xpreneurs.io
+    # Repointed 16 Sep 2026. www.xpreneurs.io serves a certificate for a
+    # different hostname, so every fetch failed TLS verification — this was
+    # the "resolves but refuses both static and headless fetches, cause
+    # unknown" entry that had been carried as an open question since July.
+    # The cause is simply that the programme moved: xpreneurs.io (no www)
+    # redirects to accelerator.unternehmertum.de, whose /portfolio page
+    # carries the batch listing. Verified live: 200, 1.4 MB, 54,582 chars of
+    # extracted text with names AND one-line descriptions per company. This
+    # source had produced ZERO startups in its entire registered lifetime.
+    primary_url: https://accelerator.unternehmertum.de/portfolio
     crawl_strategy: website_scrape
     crawl_frequency: weekly
     priority: HIGH
@@ -199,7 +221,11 @@ web_sources:
     source_name: Arena2036
     source_type: incubator
     location: Stuttgart, Germany
-    primary_url: https://www.arena2036.de
+    # Repointed 16 Sep 2026: the www host presents a self-signed certificate
+    # and failed TLS verification on every fetch, while the apex domain is
+    # fine (200, 325 KB, 35,592 chars extracted). The other half of the same
+    # July "cause unknown" open question. Had produced zero startups.
+    primary_url: https://arena2036.de
     crawl_strategy: website_scrape
     crawl_frequency: biweekly
     priority: MEDIUM
@@ -236,15 +262,10 @@ web_sources:
 # Empty = accept every sender in the inbox; relevance is filtered by content
 # downstream (candidate_filter.is_relevant). Add entries here only if you
 # want to restrict to specific senders (substring match, case-insensitive).
-# Added via dashboard on 2026-07-15
-  - source_id: new_accelerator
-    source_name: Some New Accelerator
-    source_type: accelerator
-    location: Global
-    primary_url: https://example.com/portfolio
-    crawl_strategy: website_scrape
-    crawl_frequency: weekly
-    priority: MEDIUM
+# Removed 16 Sep 2026: source_id `new_accelerator` ("Some New Accelerator",
+# https://example.com/portfolio) was a placeholder added through the dashboard
+# on 2026-07-15 and never filled in. It burned a crawl slot every weekly sweep
+# fetching example.com and produced zero startups in two months.
 # Added via dashboard on 2026-07-17
   - source_id: start_base
     source_name: Start Base

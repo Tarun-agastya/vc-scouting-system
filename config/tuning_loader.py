@@ -176,6 +176,18 @@ DEFAULTS = {
             r"\b(m[üu]nchner|munich|schw[äa]bisch\w*|bayerisch\w*|deutsche?)\b"
             r".*\b(startups|gr[üu]nder\w*)\b"
         ),
+        # University office / chair / committee titles harvested off a
+        # curriculum or faculty page (16 Sep 2026, hochschule-biberach.de).
+        # Anchored at the start of the name: these read as a function, not a
+        # company, and the leading token is the tell.
+        "academic_office_pattern": (
+            r"^(?:stud\.?\s*dekan(?:in)?|studiendekan(?:in|at)?|prodekan(?:in)?"
+            r"|dekan(?:in)?|rektor(?:in)?|kanzler(?:in)?"
+            r"|wissenschaftliche[rs]?\s+leitung|studiengang(?:s)?leitung"
+            r"|lehrstuhl|professur|fakult[äa]t|pr[üu]fungsausschuss"
+            r"|medienausschuss|qualit[äa]tsmanagement|[öo]ffentlichkeitsarbeit"
+            r"|studienberatung)\b"
+        ),
     },
     "inspector": {
         "min_group_items": 4,

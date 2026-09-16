@@ -321,6 +321,26 @@ institutional_junk:
   # shipping: 2/2 matches confirmed junk, zero false positives.
   person_title_pattern: "^(?:\\S+-)?(chef|gesch[äa]ftsf[üu]hrer(?:in)?|vorstand(?:svorsitzende[rn]?)?|ministerpr[äa]sident(?:in)?|oberb[üu]rgermeister(?:in)?|b[üu]rgermeister(?:in)?|landr[äa]t(?:in)?)\\s+[A-ZÄÖÜ][\\w.-]+(?:\\s+[A-ZÄÖÜ][\\w.-]+)?$"
 
+  # University office / chair / committee titles, harvested off a curriculum
+  # or faculty page rather than a startup listing (16 Sep 2026): a crawl of
+  # hochschule-biberach.de wandered from the registered URL into
+  # /studium/bachelorstudium/* and stored 11 "startups" that were actually
+  # course subjects and faculty roles — "Stud.Dekan Master /
+  # Öffentlichkeitsarbeit", "Wissenschaftliche Leitung Modellbauwerkstatt".
+  # Anchored at the START of the name, because the leading token is what
+  # distinguishes a function from a company. Verified against every name in
+  # the DB before shipping: 3/3 matches confirmed junk, zero false positives
+  # across 2,985 startups AND 1,343 real established regional companies.
+  #
+  # Deliberately does NOT try to catch the other half of that crawl's junk —
+  # bare academic subject titles ("Energierecht", "Konstruktion und
+  # Entwerfen", "Geschichte und Theorie der Architektur"). Every rule broad
+  # enough to match those also matches plausible real company names, and this
+  # check drops the WHOLE record. That class is handled at the source instead
+  # (the registered URL now points at the Gründerinitiative page, not the
+  # course catalogue) and is listed as a known gap in RUNBOOK.md.
+  academic_office_pattern: "^(?:stud\\.?\\s*dekan(?:in)?|studiendekan(?:in|at)?|prodekan(?:in)?|dekan(?:in)?|rektor(?:in)?|kanzler(?:in)?|wissenschaftliche[rs]?\\s+leitung|studiengang(?:s)?leitung|lehrstuhl|professur|fakult[\u00e4a]t|pr[\u00fcu]fungsausschuss|medienausschuss|qualit[\u00e4a]tsmanagement|[\u00f6o]ffentlichkeitsarbeit|studienberatung)\\b"
+
 # Phase P-1 (29 Jul): a soft, config-toggleable scouting bias for whichever
 # theses in config/theses.yaml are marked `priority: true` (e.g. SÜDPACK's
 # flexible/foil packaging + sterile-medical packaging focus). A chunk that

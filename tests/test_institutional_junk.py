@@ -80,3 +80,43 @@ def test_single_comma_is_allowed():
     # be enough alone to reject a name — only 2+ commas signal a concatenated
     # list of multiple entities.
     assert not _is_implausible_startup_name("Acme, Inc.", _CFG)
+
+
+def test_university_office_and_chair_titles_are_caught():
+    """
+    16 Sep 2026: a crawl registered against hochschule-biberach.de's (now
+    404) Gründung URL wandered into /studium/bachelorstudium/* and stored 11
+    "startups" that were course subjects and faculty roles. These three are
+    the ones a name-shaped rule can catch safely.
+    """
+    names = [
+        "Wissenschaftliche Leitung Modellbauwerkstatt",
+        "Qualitätsmanagement / Medienausschuss",
+        "Stud.Dekan Master / Öffentlichkeitsarbeit / Alumni",
+        "Studiendekanat Bauingenieurwesen",
+        "Prodekanin Architektur",
+        "Lehrstuhl für Baukonstruktion",
+        "Prüfungsausschuss Master",
+    ]
+    for name in names:
+        assert _is_implausible_startup_name(name, _CFG), f"expected {name!r} to be flagged as junk"
+
+
+def test_academic_office_rule_does_not_eat_real_company_names():
+    """
+    The rule drops the WHOLE record, so a false positive is expensive. These
+    are names that share vocabulary with the pattern but are real companies —
+    the rule is anchored at the start of the name precisely so they survive.
+    """
+    keep = [
+        "Qualitest GmbH",              # 'qualit...' but not Qualitätsmanagement
+        "Dekade Labs",                 # 'deka...' prefix, not 'Dekan'
+        "Professional Robotics",       # 'profes...' prefix, not 'Professur'
+        "Rektorat Software UG",        # leading token is not one of the offices
+        "Leitungswerk GmbH",           # 'Leitung' compound, not 'Wissenschaftliche Leitung'
+        "Ligaro",
+        "Hula Earth",
+    ]
+    for name in keep:
+        assert not _is_implausible_startup_name(name, _CFG), \
+            f"{name!r} is a plausible company name and must not be dropped"

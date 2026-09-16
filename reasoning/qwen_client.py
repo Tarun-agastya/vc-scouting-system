@@ -322,6 +322,10 @@ def _is_implausible_startup_name(name: str, cfg: dict) -> bool:
     if person_title_pattern and re.search(person_title_pattern, stripped, re.IGNORECASE):
         return True
 
+    academic_office_pattern = cfg.get("academic_office_pattern")
+    if academic_office_pattern and re.match(academic_office_pattern, stripped, re.IGNORECASE):
+        return True
+
     return False
 
 
