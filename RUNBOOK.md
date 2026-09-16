@@ -282,6 +282,25 @@ python3 -m pytest tests/test_reviews.py
 
 Run the suite after **any** change to matching, storage, scoring, or config loaders. It runs against live Postgres/Qdrant/Ollama; test data is namespaced `PYTEST` and purged automatically — real records are never touched.
 
+### Recall (how much of a page the pipeline actually extracts)
+
+```bash
+python3 scripts/recall_test.py --source-id xpreneurs   # one source
+python3 scripts/recall_test.py                          # every testable source
+```
+
+Dry run — real fetch and real extraction, but nothing is written to Postgres or
+Qdrant. **It is slow and GPU-heavy**: the xpreneurs portfolio page alone took
+55 minutes and 354 LLM calls to measure at 91% recall. Run one source at a
+time, and not while a sweep is running.
+
+Read the page it chose, printed under the source name. It prefers the
+highest-entity-count page already known for that domain, which is often **not**
+the URL in `sources.yaml` — so a result may be measuring a stale cached page
+rather than the one you just changed.
+
+---
+
 ### Sources (no restart needed — `config/sources.yaml` is re-read every run)
 
 ```bash
