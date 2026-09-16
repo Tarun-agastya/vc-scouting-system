@@ -511,7 +511,13 @@ export default {
         });
       });
 
-      if (!state.aiAnalysis) {
+      // Guard on the MODE, not on the absence of an AI report. Those meant
+      // the same thing until semantic search became two-phase (16 Sep 2026) —
+      // now `aiAnalysis` is legitimately null while phase 1's matches are on
+      // screen, and keying off it rendered offset pagination over a single
+      // 30-row vector result whose Prev/Next called load() and silently
+      // replaced the semantic matches with keyword ones.
+      if (state.mode === "keyword") {
         const footer = document.createElement("div");
         footer.className = "row";
         footer.style.cssText = "justify-content:space-between;margin-top:10px;font-size:12px";
