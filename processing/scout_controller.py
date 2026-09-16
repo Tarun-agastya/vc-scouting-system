@@ -147,6 +147,7 @@ _METRIC_FIELDS = (
     "chunks_bypassed_filter", "name_batch_chunks", "card_chunks",
     "detail_pages_followed", "recall_shortfalls", "retries_attempted",
     "retries_recovered", "profile_hits", "profile_misses", "profile_probes",
+    "profile_reprobes",
     "strategy_llm_calls", "strategy_llm_failures",
     # Bottleneck-testing instrumentation (3 Aug) — cumulative per-stage
     # wall-clock seconds, always on. See PipelineMetrics' own docstring for

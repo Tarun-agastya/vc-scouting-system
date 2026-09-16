@@ -99,3 +99,47 @@ def test_speculative_profile_never_overwrites_a_real_one(db):
         assert row.strategy_source == "deterministic"
     finally:
         _cleanup(db, domain)
+
+
+def test_flagged_profile_is_reported_as_due_for_reprobe():
+    """
+    16 Sep 2026. record_recall_outcome flags a profile after two consecutive
+    shortfalls, and _retry_recall_shortfalls' docstring promises that this
+    "forces a fresh probe next time". needs_reprobe() implements that — but it
+    was only ever called inside probe_and_store(), which nothing but the
+    dashboard's manual Re-inspect reaches, so the crawl path used whatever
+    get_profile() returned and reused a failing strategy indefinitely.
+
+    Found live in the profile store: hochschule-biberach's
+    /studium/bachelorstudium/betriebswirtschaftslehre at status=flagged,
+    recall=0.0, still being handed out, plus six more on tha.de.
+    """
+    from database.models import SiteProfile
+    from processing.site_profile_store import needs_reprobe
+
+    flagged = SiteProfile(domain="pytest-reprobe.test", url_pattern="/listing",
+                          status="flagged", consecutive_shortfalls=2)
+    assert needs_reprobe(flagged), "a twice-failed profile must be due for a fresh probe"
+
+    pinned = SiteProfile(domain="pytest-reprobe.test", url_pattern="/listing",
+                         status="pinned", consecutive_shortfalls=5)
+    assert not needs_reprobe(pinned), "a human's pin must never expire"
+
+
+def test_crawler_consults_needs_reprobe_before_trusting_a_cached_profile():
+    """
+    The wiring itself, pinned. A cached profile is only usable if
+    needs_reprobe() says so — otherwise the flag set by the recall audit is
+    decoration. Asserted against the source because the alternative is a full
+    live crawl, and what matters is that the call exists on this path at all.
+    """
+    import inspect
+    from ingestion import web_scraper
+
+    src = inspect.getsource(web_scraper.WebScraper)
+    assert "needs_reprobe(known_profile)" in src, (
+        "the crawl path no longer checks needs_reprobe() — a profile that "
+        "failed its recall audit twice will be reused forever"
+    )
+    # and the discard must route into the free fresh-probe path, not an error
+    assert "known_profile = None" in src

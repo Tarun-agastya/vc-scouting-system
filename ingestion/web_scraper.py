@@ -826,7 +826,9 @@ class WebScraper:
                 strategy = PageStrategy.DEFAULT
                 known_profile = None
                 if adaptive:
-                    from processing.site_profile_store import get_profile, strategy_from_profile
+                    from processing.site_profile_store import (
+                        get_profile, needs_reprobe, strategy_from_profile,
+                    )
                     # strict=True unconditionally (Phase R-7): a page never
                     # silently inherits the domain-default profile's
                     # strategy just because it lacks its own — confirmed
@@ -839,6 +841,37 @@ class WebScraper:
                     # below, which is free (no LLM) and reads the page's
                     # own actual content instead of guessing from a sibling.
                     known_profile = get_profile(current_url, strict=True)
+                    # Honour needs_reprobe() here (16 Sep 2026). Until now the
+                    # crawl path took whatever get_profile returned and used it
+                    # forever: needs_reprobe() was only ever consulted inside
+                    # probe_and_store(), which nothing but the dashboard's
+                    # manual "Re-inspect" calls. So the self-correction this
+                    # module documents did not actually happen —
+                    # _retry_recall_shortfalls' own docstring promises that two
+                    # failed audits "flag the profile and force a fresh probe
+                    # next time", and the flag was set but never acted on.
+                    #
+                    # Measured on the live profile store: hochschule-biberach's
+                    # /studium/bachelorstudium/betriebswirtschaftslehre sat at
+                    # status=flagged, recall=0.0 and was still being handed out,
+                    # and tha.de had six more flagged profiles in the same
+                    # state. A profile that failed twice kept being reused
+                    # indefinitely, which is precisely the recall leak the
+                    # ladder exists to close.
+                    #
+                    # Dropping it costs nothing: a None here falls through to
+                    # the store_deterministic path below, which derives a fresh
+                    # strategy from the HTML already in hand — no extra fetch,
+                    # no LLM, no GPU mutex. `pinned` profiles are exempt inside
+                    # needs_reprobe(), so a human override still never expires.
+                    if known_profile is not None and needs_reprobe(known_profile):
+                        logger.info(
+                            f"[Scraper] Discarding due-for-reprobe profile for {current_url} "
+                            f"(status={known_profile.status}, "
+                            f"shortfalls={known_profile.consecutive_shortfalls or 0})"
+                        )
+                        known_profile = None
+                        metrics.inc("profile_reprobes")
                     if known_profile is not None:
                         metrics.inc("profile_hits")
                         strategy = strategy_from_profile(known_profile)

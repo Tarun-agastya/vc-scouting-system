@@ -185,6 +185,7 @@ class PipelineMetrics:
     detail_pages_followed — per-company detail pages crawled
     recall_shortfalls / retries_attempted / retries_recovered — the audit loop
     profile_hits / profile_misses / profile_probes — SiteProfile cache behaviour
+    profile_reprobes — cached profiles discarded as due for a fresh probe
     strategy_llm_calls / strategy_llm_failures — the one-call-per-source strategist
     """
     pages_crawled:          int   = 0
@@ -229,6 +230,7 @@ class PipelineMetrics:
     profile_hits:                int = 0
     profile_misses:              int = 0
     profile_probes:              int = 0
+    profile_reprobes:            int = 0
     strategy_llm_calls:          int = 0
     strategy_llm_failures:       int = 0
 
