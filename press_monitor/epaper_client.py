@@ -27,6 +27,11 @@ _LOGIN_URL = (
 )
 _COOKIE_ACCEPT_PATTERNS = ("Alle akzeptieren", "Akzeptieren", "Accept All", "Zustimmen")
 
+# The dashboard element this whole function exists to click. Waiting for
+# THIS is what tells us the post-login page is ready — see the networkidle
+# note in download_todays_edition.
+_EDITION_LINK_SELECTOR = 'a[href^="javascript:pdfDownloadClickHandler"]'
+
 
 async def _dismiss_cookie_banner(page) -> None:
     """Best-effort — never raises, mirrors ingestion/web_scraper.py's convention."""
@@ -51,7 +56,7 @@ async def download_todays_edition(
     (e.g. the e-paper hasn't published today's issue) — never raises for
     that case, since it's an expected daily-scheduling race, not an error.
     """
-    from playwright.async_api import async_playwright
+    from playwright.async_api import TimeoutError as PlaywrightTimeout, async_playwright
 
     target_date = target_date or date.today()
     date_str = target_date.strftime("%d.%m.%Y")   # matches the site's own "Di., 04.08.2026" display format's date part
@@ -62,14 +67,52 @@ async def download_todays_edition(
         context = await browser.new_context(accept_downloads=True)
         page = await context.new_page()
         try:
+            # Deliberately NOT wait_until="networkidle" (changed 16 Sep 2026).
+            # networkidle needs 500ms with no in-flight requests, which a page
+            # carrying analytics/ads/tracking may never reach — and when it
+            # doesn't, Playwright raises and the whole digest is lost for the
+            # day. That is exactly what happened on 16 Sep: the 08:00 run died
+            # on `wait_for_load_state("networkidle")` with a hard
+            # TimeoutError while the 15 Sep run had succeeded, on unchanged
+            # code and unchanged credentials. Nothing about the page was
+            # broken; one request simply never went quiet.
+            #
+            # So each wait is now for the specific element the next step needs,
+            # which is both faster and can't be defeated by a chatty tracker.
             await page.goto(
-                _LOGIN_URL.format(region=region), wait_until="networkidle", timeout=25_000,
+                _LOGIN_URL.format(region=region), wait_until="domcontentloaded",
+                timeout=25_000,
             )
             await _dismiss_cookie_banner(page)
+            await page.wait_for_selector("#inputUsername", timeout=25_000)
             await page.fill("#inputUsername", email)
             await page.fill("#inputPassword", password)
             await page.click('button[type="submit"], input[type="submit"]')
-            await page.wait_for_load_state("networkidle", timeout=25_000)
+
+            # Wait for the edition download link itself. If it never appears we
+            # must NOT simply report "not published yet", because a failed
+            # login looks identical from here — and quietly mislabelling a
+            # credential problem as an expected non-event is how a month of
+            # missing digests would go unnoticed. So distinguish the two: the
+            # login form still being on screen means we never got in.
+            try:
+                await page.wait_for_selector(
+                    _EDITION_LINK_SELECTOR, timeout=40_000, state="attached",
+                )
+            except PlaywrightTimeout:
+                still_on_login = await page.locator("#inputUsername").count()
+                if still_on_login:
+                    raise RuntimeError(
+                        "[EPaper] Login appears to have failed — the login form is "
+                        "still present after submitting. Check EPAPER_EMAIL / "
+                        "EPAPER_PASSWORD in .env, and whether the subscription is "
+                        "still active."
+                    )
+                logger.warning(
+                    "[EPaper] Logged in, but no edition download link appeared within "
+                    "40s — treating as 'not published yet'. If this repeats for days, "
+                    "the dashboard markup has probably changed."
+                )
             await _dismiss_cookie_banner(page)
 
             # Find today's edition ID dynamically from the dashboard — the ID
@@ -78,14 +121,14 @@ async def download_todays_edition(
             # inside the hero card.
             handler_call = await page.evaluate(
                 """
-                (dateStr) => {
+                ([dateStr, sel]) => {
                   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
                   let node;
                   while (node = walker.nextNode()) {
                     if (node.textContent.includes(dateStr)) {
                       let el = node.parentElement;
                       for (let i = 0; i < 6 && el; i++) {
-                        const a = el.querySelector && el.querySelector('a[href^="javascript:pdfDownloadClickHandler"]');
+                        const a = el.querySelector && el.querySelector(sel);
                         if (a) return a.getAttribute('href');
                         el = el.parentElement;
                       }
@@ -94,7 +137,7 @@ async def download_todays_edition(
                   return null;
                 }
                 """,
-                date_str,
+                [date_str, _EDITION_LINK_SELECTOR],
             )
             if not handler_call:
                 logger.warning(f"[EPaper] No edition found for {date_str} — not published yet, or date format mismatch")

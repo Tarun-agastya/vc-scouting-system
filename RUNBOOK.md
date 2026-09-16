@@ -13,9 +13,10 @@ Run these three. If all three look right, the system is fine — everything else
 ```bash
 cd ~/vc-scouting-system/vc-scouting-system
 
-curl -s http://localhost:8000/health          # → {"status":"ok","startups_in_db":2144}
+curl -s http://localhost:8000/health          # → {"status":"ok","startups_in_db":2974}
 docker ps --format "table {{.Names}}\t{{.Status}}"   # → 3 containers, all (healthy)
 launchctl list | grep -E "vcscouting|gthub"   # → com.vcscouting.api has a real PID
+cat press_monitor/_last_run.json              # → {"status":"sent", ...} from this morning
 ```
 
 **What "right" looks like:**
@@ -25,8 +26,17 @@ launchctl list | grep -E "vcscouting|gthub"   # → com.vcscouting.api has a rea
 | `/health` | `{"status":"ok","startups_in_db":<number>}` | API + Qdrant both alive. The number only ever grows. |
 | `docker ps` | `vc_postgres`, `vc_qdrant`, `vc_searxng` — all `(healthy)` | Databases + search fallback up. |
 | `launchctl list` | `com.vcscouting.api` shows a **number** in column 1 | API service running. `-` means dead. |
+| `_last_run.json` | `"status": "sent"` (or `not_published` / `no_matches`) dated today | This morning's press run. `"status": "failed"` carries the error. A date older than today, or no file at all, means the 08:00 job didn't run — check `logs/pressmonitor.error.log`. |
 
 For `com.vcscouting.dockerstack` and `com.gthub.pressmonitor`, a `-` in column 1 is **normal** — they are one-shot jobs, not services. They only hold a PID while actually running. Column 2 is their last exit code; `0` = last run succeeded.
+
+`press_monitor/_last_run.json` exists because of a real silent failure: on
+16 Sep the 08:00 run died on a Playwright timeout and the only evidence was a
+traceback inside a 65 MB log plus a `1` in that exit-code column. The file
+gives you the same answer in one command. **There is still no alerting** — a
+failure is discoverable, not announced. Deciding who should receive a failure
+email (the digest list is colleagues, who shouldn't get technical notices) is
+a call for you to make.
 
 ---
 

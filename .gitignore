@@ -70,3 +70,7 @@ logs/
 # numbers and e-mail addresses — never commit them.
 regional/data/
 regional/_geocode_cache.json
+
+# Press monitor per-run scratch + last-run status (local state, not source)
+press_monitor/_runs/
+press_monitor/_last_run.json

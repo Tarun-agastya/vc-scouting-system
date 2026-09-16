@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import shutil
 from datetime import date, datetime
@@ -89,6 +90,35 @@ async def run(target_date: date = None) -> dict:
         shutil.rmtree(run_dir, ignore_errors=True)
 
 
+_STATUS_PATH = Path(__file__).parent / "_last_run.json"
+
+
+def _write_status(payload: dict) -> None:
+    """
+    Record the outcome of this run where a human can find it in one command.
+
+    Added 16 Sep 2026 after a real silent failure: the 08:00 run that day died
+    on a Playwright timeout, and the only trace was a traceback inside a 65 MB
+    log plus an exit code in `launchctl list`. Nothing surfaced it, and the
+    machine is running unattended for a month — a daily job that fails
+    invisibly is worse than one that fails, because the loss is only noticed
+    long after the editions are gone.
+
+    Deliberately NOT an email alert. Alerting requires deciding who receives
+    it, and the digest's own recipient list is colleagues who should not get
+    technical failure notices. That decision is the owner's; this file is the
+    part that needed no decision. See RUNBOOK.md §1.
+
+    Best-effort by design: never let status bookkeeping turn a successful run
+    into a failed one.
+    """
+    try:
+        payload = {**payload, "recorded_at": datetime.now().isoformat(timespec="seconds")}
+        _STATUS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.warning(f"[PressMonitor] Could not write {_STATUS_PATH.name}: {exc}")
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -96,7 +126,16 @@ def main():
     args = ap.parse_args()
 
     target = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else None
-    result = asyncio.run(run(target))
+    try:
+        result = asyncio.run(run(target))
+    except Exception as exc:
+        _write_status({
+            "status": "failed",
+            "date": (target or date.today()).isoformat(),
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+        })
+        raise
+    _write_status(result)
     print(result)
 
 
