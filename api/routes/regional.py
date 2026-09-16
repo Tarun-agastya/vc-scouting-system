@@ -169,15 +169,22 @@ async def list_regional(
     # Nearest-first by default: for partnership outreach a company 3 km away
     # matters more than one 48 km away, so proximity is the natural order.
     if sort == "employees":
-        query = query.order_by(RegionalCompany.employees.desc().nullslast())
+        order_cols = [RegionalCompany.employees.desc().nullslast()]
     elif sort == "name":
         name_col = RegionalCompany.name
-        query = query.order_by(name_col.desc() if order == "desc" else name_col.asc())
+        order_cols = [name_col.desc() if order == "desc" else name_col.asc()]
     elif sort == "tier":
-        query = query.order_by(RegionalCompany.triage_tier.asc().nullslast(),
-                               RegionalCompany.distance_km.asc().nullslast())
+        order_cols = [RegionalCompany.triage_tier.asc().nullslast(),
+                      RegionalCompany.distance_km.asc().nullslast()]
     else:
-        query = query.order_by(RegionalCompany.distance_km.asc().nullslast())
+        order_cols = [RegionalCompany.distance_km.asc().nullslast()]
+
+    # Unique final tiebreaker (16 Sep 2026), same defect as /scout/list: every
+    # column above is non-unique, so rows within a tie could come back in a
+    # different order per query and a paged walk showed some companies twice
+    # while others were unreachable — measured 3 duplicates in the first 150
+    # rows of sort=tier, where whole triage tiers share one value.
+    query = query.order_by(*order_cols, RegionalCompany.id)
 
     rows = query.offset(offset).limit(limit).all()
     return {"total": total, "limit": limit, "offset": offset,

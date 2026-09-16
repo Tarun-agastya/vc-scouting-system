@@ -620,7 +620,10 @@ async def list_startups(
         # page) so it can reorder before slicing — fine at current DB size
         # (hundreds-low-thousands of rows), same tradeoff already accepted
         # by the "no precomputed relevance, always fresh" V-3 design.
-        matched = query.all()
+        # order_by(id) so ranking ties resolve the same way on every
+        # request — see the pagination note below; without it a paged
+        # thesis walk could repeat rows and skip others.
+        matched = query.order_by(Startup.id).all()
         ids = [str(s.id) for s in matched]
         loop = asyncio.get_event_loop()
         # Both the Qdrant fetch and the thesis-summary embed are blocking
@@ -670,6 +673,15 @@ async def list_startups(
             r.pop("description", None)
         return {"total": total, "offset": offset, "limit": limit, "startups": page}
 
+    # Every ORDER BY below ends with Startup.id (16 Sep 2026). None of the
+    # sort columns is unique — enrichment_score, extracted_at and the
+    # priority score all have large tie groups — and Postgres is free to
+    # order rows within a tie differently on each query. With LIMIT/OFFSET
+    # that made a paged walk of Browse show some startups twice and others
+    # NEVER AT ALL: measured 14 duplicates in the first 150 rows of
+    # sort=score, 11 of sort=priority, 7 of sort=extracted_at. `name` and
+    # `created_at` looked fine only because they happen to be near-unique.
+    # A unique final key makes the total order deterministic across pages.
     if sort == "priority":
         # Phase P-1 + Q1: an additive compound priority score, not a strict
         # hierarchy — a startup matching MORE priority signals ranks higher,
@@ -688,7 +700,8 @@ async def list_startups(
         priority_score = priority_score + case((Startup.business_model == "B2B", 1), else_=0)
         priority_score = priority_score + case((Startup.is_gmbh.is_(True), 1), else_=0)
         startups = (
-            query.order_by(priority_score.desc(), Startup.enrichment_score.desc())
+            query.order_by(priority_score.desc(), Startup.enrichment_score.desc(),
+                           Startup.id)
             .offset(offset).limit(limit).all()
         )
     else:
@@ -699,7 +712,7 @@ async def list_startups(
             "score": Startup.enrichment_score,
         }.get(sort, Startup.created_at)
         sort_col = sort_col.asc() if order == "asc" else sort_col.desc()
-        startups = query.order_by(sort_col).offset(offset).limit(limit).all()
+        startups = query.order_by(sort_col, Startup.id).offset(offset).limit(limit).all()
 
     return {
         "total": total,
