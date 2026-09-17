@@ -282,6 +282,32 @@ python3 -m pytest tests/test_reviews.py
 
 Run the suite after **any** change to matching, storage, scoring, or config loaders. It runs against live Postgres/Qdrant/Ollama; test data is namespaced `PYTEST` and purged automatically — real records are never touched.
 
+### Never run two test runs at once
+
+**One `pytest` at a time, and not while something heavy is using the GPU.**
+Break either rule and the suite invents failures that look exactly like real
+bugs.
+
+Every test shares one namespace: fixtures create `PYTEST`-prefixed rows and
+`tests/conftest.py`'s autouse fixture purges everything matching `PYTEST%`
+before *and* after each test. Two concurrent runs therefore delete each
+other's fixtures mid-test. Measured 17 Sep, with two runs overlapping: 12
+failures, then a different 15, then 54 — varying every time and escalating,
+which is the tell. A single run on the same commit exits 0.
+
+The GPU is the second trigger. Dedup matching needs a live embedding call, so
+when Ollama is saturated the match doesn't happen and every test that depends
+on "the second upsert finds the first" fails — the diagnostic traceback is
+`assert 'new_master' == 'no_op'`. That hits `test_storage_staging`,
+`test_reviews`, `test_reviews_grouped` and `test_scout_api` hardest.
+
+So: before believing a scatter of failures in those four files, check
+`pgrep -fl pytest` and `ollama ps`. And trust pytest's **exit code**, not the
+dots — a truncated `tail` of `-q` output hides the `F`s and reads as a clean
+run, which is exactly how this got misdiagnosed the first time.
+
+---
+
 ### Recall (how much of a page the pipeline actually extracts)
 
 ```bash
