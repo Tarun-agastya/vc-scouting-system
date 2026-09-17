@@ -592,6 +592,25 @@ class QwenClient:
                         model=settings.ollama_extract_model,
                         messages=messages,
                         format=_STARTUP_EXTRACTION_SCHEMA,
+                        # think=False here too (17 Sep 2026). It was set on
+                        # every reasoning-model call in Aug but never on this
+                        # one, because the extraction model of the day
+                        # (qwen2.5:7b-instruct) has no thinking mode and so
+                        # didn't need it. That made the extraction path
+                        # quietly unable to run ANY Qwen3-generation model:
+                        # measured on this machine, qwen3:8b and qwen3.5:9b
+                        # both scored 0.00 precision and 0.00 recall on a
+                        # 5-case extraction set, timing out on 9 of 10 calls,
+                        # because the reasoning block consumes the whole
+                        # num_predict budget before the constrained JSON is
+                        # ever emitted.
+                        #
+                        # Harmless on a non-thinking model — A/B'd on the same
+                        # input: 35.1s with, 37.8s without, byte-identical
+                        # output. So this is set unconditionally rather than
+                        # sniffing the model name, which would need updating
+                        # for every future model.
+                        think=False,
                         options={"temperature": 0, "num_predict": 3000},
                     )
                 data = json.loads(response["message"]["content"])

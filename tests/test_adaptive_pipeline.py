@@ -152,20 +152,28 @@ class _FakeOllamaClient:
 
     def __init__(self, response_startups=None):
         self.last_messages = None
+        self.last_kwargs = None
         self._response_startups = response_startups if response_startups is not None else []
 
-    def chat(self, *, model, messages, format, options):
+    # **kwargs so adding a parameter to the real call doesn't break four
+    # prompt-selection tests that don't care about it (which is what happened
+    # when think= was added on 17 Sep). Anything worth asserting is captured
+    # in last_kwargs instead.
+    def chat(self, *, model, messages, format, options, **kwargs):
         self.last_messages = messages
+        self.last_kwargs = {"model": model, "format": format, "options": options, **kwargs}
         return {"message": {"content": json.dumps({"startups": self._response_startups})}}
 
 
-def _extract_with_fake_client(chunk_kind):
+def _extract_with_fake_client(chunk_kind, *, want_kwargs=False):
     from reasoning.qwen_client import QwenClient
 
     client = QwenClient()
     fake = _FakeOllamaClient()
     client._extract_ollama_client = fake  # bypass lazy ollama.Client() construction
     client.extract_startups("Some chunk text about a company.", chunk_kind=chunk_kind)
+    if want_kwargs:
+        return fake.last_kwargs
     return fake.last_messages[1]["content"]  # the user-role prompt
 
 
@@ -187,3 +195,24 @@ def test_extract_startups_prose_chunk_kind_uses_trimmed_prompt():
 def test_extract_startups_card_chunk_kind_uses_trimmed_prompt():
     prompt = _extract_with_fake_client("card")
     assert "BARE NAME LISTS" not in prompt
+
+
+def test_extraction_call_disables_thinking_mode():
+    """
+    17 Sep 2026: think=False was set on every reasoning-model call back in
+    August but never on the extraction call, because the extraction model of
+    the day (qwen2.5:7b-instruct) has no thinking mode. That left this path
+    structurally unable to run any Qwen3-generation model — measured on this
+    machine, qwen3:8b and qwen3.5:9b both scored 0.00 precision and 0.00
+    recall across a 5-case set, timing out on 9 of 10 calls, because the
+    reasoning block consumes the whole num_predict budget before the
+    constrained JSON is emitted.
+
+    Pinned because the symptom is indistinguishable from "the new model is
+    bad": nothing errors, output is simply empty and slow.
+    """
+    kwargs = _extract_with_fake_client(None, want_kwargs=True)
+    assert kwargs.get("think") is False, (
+        "the extraction call must pass think=False, or any thinking-capable "
+        "model spends its whole token budget reasoning and returns nothing"
+    )
