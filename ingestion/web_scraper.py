@@ -101,6 +101,29 @@ SKIP_PATTERNS: frozenset = frozenset({
     # logos as "startups" — see _is_irrelevant_url's sub-token matching
     # below and _drop_numbered_sequences)
     "organe", "mensa", "rechenzentrum",
+    # Degree-programme catalogue pages (confirmed junk twice, 16 + 17 Sep).
+    # A curriculum page lists subject areas and the professor who teaches
+    # each, which the extractor reads as a company plus a website — so
+    # hochschule-biberach.de/studium/bachelorstudium/architektur produced
+    # "Konstruktion und Entwerfen" and "Geschichte und Theorie der
+    # Architektur" as startups, each with a /kontakt/<person> staff page as
+    # its "website". Deleted on 16 Sep and back within a day, because
+    # repointing the source's entry URL doesn't stop the crawl frontier
+    # reaching these pages from the new entry point.
+    #
+    # Blocked at the PAGE level rather than by name, deliberately: every
+    # name-shaped rule broad enough to catch "Konstruktion und Entwerfen"
+    # also catches plausible real company names, and the junk gate drops the
+    # whole record (see tuning.yaml's academic_office_pattern, which covers
+    # only the unambiguous role titles for exactly this reason). A degree
+    # catalogue is never a startup listing, so the URL is the safe signal.
+    #
+    # NOT blocking "studium" itself — it's the parent of these but can also
+    # hold a genuine Gründung/entrepreneurship subpage.
+    "bachelorstudium", "masterstudium", "bachelorstudiengaenge",
+    "masterstudiengaenge", "studiengaenge", "studiengang", "studienangebot",
+    "modulhandbuch", "pruefungsordnung", "lehrveranstaltungen",
+    "vorlesungsverzeichnis",
 })
 
 

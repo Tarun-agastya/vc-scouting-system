@@ -4,6 +4,8 @@
 
 This is the single source of truth for running, checking, and repairing the system. It is written to be usable by someone who did not build it.
 
+**Looking for an explanation rather than a command?** [OWNER_GUIDE.md](OWNER_GUIDE.md) covers the same system in plain language — what it does, why the design decisions were made, and which alarming messages are harmless. This file stays deliberately terse and command-first; that one explains. Keep both in step when you change either.
+
 ---
 
 ## 1. The 60-second health check
