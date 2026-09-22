@@ -113,6 +113,7 @@ def _apply_field_updates(db, master: Startup, proposed: dict) -> None:
     """
     from processing.field_policy import safe_string_list
 
+    touched: set = set()
     for field, change in (proposed or {}).items():
         new_val = change.get("new")
         if field == "founders":
@@ -131,6 +132,16 @@ def _apply_field_updates(db, master: Startup, proposed: dict) -> None:
                 )
                 continue
             setattr(master, field, cleaned)
+            touched.add(field)
+
+    # Approving a website fill changes the record's identity anchor. Without
+    # this the fingerprint stays NULL and the record can never again be
+    # recognised as an exact re-sighting — see
+    # storage.refresh_identity_fingerprint for what that cost.
+    if "website" in touched:
+        from processing.storage import refresh_identity_fingerprint
+        refresh_identity_fingerprint(master)
+
     master.extracted_at = datetime.utcnow()
     master.updated_at = datetime.utcnow()
 

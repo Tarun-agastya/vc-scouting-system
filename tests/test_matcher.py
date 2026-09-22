@@ -147,3 +147,55 @@ def test_brand_new_no_match(make, db):
                 "city": "Reykjavik", "description": "volcanic geothermal drilling rigs"}
     rep = build_match_report(incoming, db, _vec(incoming))
     assert rep.outcome == "no_match"
+
+
+def test_filling_in_a_website_refreshes_the_identity_fingerprint(make, db):
+    """
+    22 Sep 2026, the most expensive bug found in this system so far.
+
+    A record from a bare-name listing has no website, so it stores
+    fingerprint NULL by design. When a website was later filled in — by
+    storage's auto-apply path or by approving a review — nothing recomputed
+    the fingerprint, so it stayed NULL. build_match_report's exact-identity
+    test is `WHERE fingerprint = <computed>`, which NULL can never satisfy,
+    so the record became permanently invisible to exact-match dedup and every
+    re-crawl inserted another copy.
+
+    Measured before the fix: 683 records had a website but no fingerprint,
+    718 of 3,591 rows were redundant copies ("gameforge" stored 12 times),
+    and the collision warning had fired 668 times, accelerating each sweep.
+    """
+    from database.models import Startup
+    from processing.deduplicator import generate_fingerprint
+    from processing.storage import refresh_identity_fingerprint
+
+    rid, _ = make("Fingerprint Refresh", city="Munich", description="widgets")
+    row = db.query(Startup).filter(Startup.id == rid).first()
+    row.website = "https://fingerprint-refresh.example"
+
+    assert refresh_identity_fingerprint(row) is True
+    assert row.fingerprint == generate_fingerprint(row.name, row.website), \
+        "a record with a website must carry the fingerprint the matcher looks up"
+
+    # Idempotent: a second call is a no-op rather than churn.
+    assert refresh_identity_fingerprint(row) is False
+
+
+def test_clearing_a_website_clears_the_fingerprint(make, db):
+    """
+    The other direction. A stale fingerprint pointing at a domain the record
+    no longer claims would assert an identity it can't support — worse than
+    NULL, which correctly falls through to the multi-signal matcher.
+    """
+    from database.models import Startup
+    from processing.storage import refresh_identity_fingerprint
+
+    rid, _ = make("Fingerprint Clear", city="Bonn", description="widgets")
+    row = db.query(Startup).filter(Startup.id == rid).first()
+    row.website = "https://fingerprint-clear.example"
+    refresh_identity_fingerprint(row)
+    assert row.fingerprint
+
+    row.website = ""
+    assert refresh_identity_fingerprint(row) is True
+    assert row.fingerprint is None

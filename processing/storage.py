@@ -193,6 +193,11 @@ def upsert_startup(
                             f"'{master.name}': value doesn't fit the column ({val!r})"
                         )
 
+                # A website may have just been filled in above; without this
+                # the record stays invisible to exact-match dedup forever.
+                if "website" in auto_apply:
+                    refresh_identity_fingerprint(master, flag_modified)
+
                 _append_source_history(master, source_entry, flag_modified)
                 _rescore(master, source_url, db, flag_modified)
                 _backfill_source_excerpt(master, startup, flag_modified)
@@ -284,6 +289,59 @@ def upsert_startup(
 
 
 # ── Insert / score / index a new master ───────────────────────────────────────
+
+def refresh_identity_fingerprint(master, flag_modified=None) -> bool:
+    """
+    Recompute a master's `fingerprint` from its CURRENT name + website.
+
+    Call this after anything writes to `website`. Returns True if it changed.
+
+    Why this exists (22 Sep 2026). A record created from a bare-name listing
+    has no website, so it stores fingerprint NULL by design and relies on the
+    multi-signal matcher. When a website is later filled in — by the
+    auto-apply path below, or by approving a review — the record now HAS a
+    real identity domain, but nothing recomputed the fingerprint, so it stayed
+    NULL forever.
+
+    The consequence is severe and was silently compounding.
+    build_match_report's exact-same-record test is
+    `WHERE fingerprint = <computed>`; a NULL fingerprint can never match it, so
+    the record became permanently invisible to exact-match dedup and every
+    single re-crawl inserted a fresh copy. Measured before the fix: 683 records
+    had a website but no fingerprint (about half of all websited records),
+    3,591 rows contained 718 redundant copies — "gameforge" stored 12 times,
+    nine of them with a byte-identical website — and the
+    "stable_id collision ... investigate if this fires often" warning that
+    _insert_master emits had fired 668 times, accelerating every sweep
+    (17 -> 20 -> 40 -> 51 -> 60 -> 86).
+
+    That flood is also what fills the Review Inbox: each redundant copy raises
+    a possible_duplicate review, and each one is independently web-verified and
+    re-embedded.
+
+    Deliberately does NOT touch `id`. The stable_id is name+website derived
+    too, but it is a primary key with rows referencing it; re-keying live
+    records is a migration, not a field update. The fingerprint alone is what
+    the exact-match path reads.
+    """
+    from processing.deduplicator import extract_domain, generate_fingerprint
+
+    website = (getattr(master, "website", "") or "").strip()
+    domain = extract_domain(website)
+    # Mirrors upsert_startup's rule exactly: identity only counts with a real
+    # domain, so a cleared or unusable website goes back to NULL rather than
+    # leaving a stale fingerprint pointing at the old domain.
+    new_fp = generate_fingerprint(master.name, website) if domain else None
+    if new_fp == master.fingerprint:
+        return False
+    master.fingerprint = new_fp
+    if flag_modified is not None:
+        try:
+            flag_modified(master, "fingerprint")
+        except Exception:
+            pass
+    return True
+
 
 def _insert_master(db, startup, name, website, fingerprint, stable_id,
                    source, source_url, source_entry, published_date, now):
