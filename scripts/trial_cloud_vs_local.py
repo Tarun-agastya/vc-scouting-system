@@ -129,11 +129,37 @@ def ask_local(system, prompt, schema, model=None):
         return None, time.time() - t0, {"error": f"{type(exc).__name__}: {exc}"}
 
 
+class AuthFailure(RuntimeError):
+    """Raised on 401/403 so the run stops instead of repeating a doomed call."""
+
+
+def check_cloud_key() -> str:
+    """
+    Validate the key's shape before spending a request on it.
+
+    Added 22 Sep after a real run where the key was set to the literal string
+    "..." — the placeholder from the instructions, pasted verbatim. Every one
+    of the 34 calls returned 401 and the summary reported "0% accuracy", which
+    reads as "the model got everything wrong" when in fact it never ran.
+    """
+    key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+    if not key:
+        raise AuthFailure(
+            "ANTHROPIC_API_KEY is not set.\n"
+            "  export ANTHROPIC_API_KEY=sk-ant-...your real key..."
+        )
+    if not key.startswith("sk-ant-") or len(key) < 20:
+        raise AuthFailure(
+            f"ANTHROPIC_API_KEY does not look like a real key (got {key[:8]!r}...).\n"
+            "  A real key starts with 'sk-ant-'. If you copied the instructions\n"
+            "  literally, you have set it to the placeholder rather than the key."
+        )
+    return key
+
+
 def ask_cloud(system, prompt, schema, model):
     import httpx
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        return None, 0.0, {"error": "ANTHROPIC_API_KEY not set"}
+    key = check_cloud_key()
     tool = {"name": "answer", "description": "Record the judgement.", "input_schema": schema}
     payload = {
         "model": model, "max_tokens": 400, "temperature": 0,
@@ -149,6 +175,9 @@ def ask_cloud(system, prompt, schema, model):
                 "x-api-key": key, "anthropic-version": API_VERSION,
                 "content-type": "application/json"})
         el = time.time() - t0
+        if resp.status_code in (401, 403):
+            raise AuthFailure(f"HTTP {resp.status_code} from the API — the key was rejected. "
+                              "Nothing was charged.")
         if resp.status_code != 200:
             return None, el, {"error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
         body = resp.json()
@@ -234,6 +263,18 @@ def main():
         cases = ([(s, "not_company") for s in junk]
                  + [(s, "company") for s in real]
                  + [(s, None) for s in amb])
+        # Validate the key BEFORE running anything. The local half takes ~3.5
+        # minutes, and failing after that on a bad key wastes the wait and
+        # buries the real problem under 34 identical error lines.
+        if args.with_cloud:
+            try:
+                check_cloud_key()
+            except AuthFailure as exc:
+                print(f"Cannot start the cloud half:\n\n  {exc}\n")
+                print("Nothing was run and nothing was charged. Fix the key and re-run,")
+                print("or drop --with-cloud to measure the local baseline alone.")
+                sys.exit(2)
+
         print(f"Job A — is this a company?")
         print(f"  known NOT companies : {len(junk)}")
         print(f"  known companies     : {len(real)}")
@@ -247,17 +288,25 @@ def main():
             providers.append(("cloud", lambda s, p, sc: ask_cloud(s, p, sc, args.cloud_model)))
 
         for pname, fn in providers:
-            correct = graded = 0
+            correct = graded = errors = 0
             elapsed = 0.0
             tok_in = tok_out = 0
+            aborted = None
             print(f"--- {pname} ---")
             for s, label in cases:
-                out, el, usage = fn(_SYSTEM_A, _PROMPT_A.format(**_fields(s)), _SCHEMA_A)
+                try:
+                    out, el, usage = fn(_SYSTEM_A, _PROMPT_A.format(**_fields(s)), _SCHEMA_A)
+                except AuthFailure as exc:
+                    aborted = str(exc)
+                    break
                 elapsed += el
                 tok_in += usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0)
                 tok_out += usage.get("output_tokens", 0)
                 ans = (out or {}).get("answer", "ERROR")
-                if label:
+                if ans == "ERROR":
+                    errors += 1
+                    mark = "ERR "
+                elif label:
                     graded += 1
                     if ans == label:
                         correct += 1
@@ -269,16 +318,25 @@ def main():
                 results.append({"provider": pname, "name": s.name, "label": label,
                                 "answer": ans, "reason": (out or {}).get("reason"),
                                 "seconds": round(el, 2)})
+            if aborted:
+                scores[pname] = {"did_not_run": True, "reason": aborted}
+                print(f"\n  !! {pname} did not run: {aborted}\n")
+                continue
             acc = correct / graded if graded else 0.0
             scores[pname] = {"accuracy": acc, "correct": correct, "graded": graded,
+                             "errors": errors,
                              "total_seconds": round(elapsed, 1),
                              "mean_seconds": round(elapsed / max(len(cases), 1), 2),
                              "tokens_in": tok_in, "tokens_out": tok_out}
-            print(f"  => accuracy on labelled cases: {correct}/{graded} = {acc:.0%}   "
-                  f"{elapsed:.0f}s total, {elapsed/max(len(cases),1):.1f}s/record\n")
+            print(f"  => accuracy on labelled cases: {correct}/{graded} = {acc:.0%}"
+                  + (f"   ({errors} call errors, excluded)" if errors else "")
+                  + f"   {elapsed:.0f}s total, {elapsed/max(len(cases),1):.1f}s/record\n")
 
         print("=" * 72)
         for p, sc in scores.items():
+            if sc.get("did_not_run"):
+                print(f"  {p:6} DID NOT RUN — {sc['reason'].splitlines()[0]}")
+                continue
             print(f"  {p:6} accuracy {sc['accuracy']:.0%} ({sc['correct']}/{sc['graded']})   "
                   f"{sc['mean_seconds']}s per record" +
                   (f"   tokens in/out {sc['tokens_in']}/{sc['tokens_out']}" if sc['tokens_in'] else ""))
