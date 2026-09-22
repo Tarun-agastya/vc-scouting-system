@@ -92,6 +92,52 @@ def _tier_b(db):
     return {k: g for k, g in buckets.items() if len(g) > 1}
 
 
+def _source_site_rows(db) -> list:
+    """Rows whose `website` is really the listing site they were found on."""
+    from processing.storage import clean_company_website
+    out = []
+    for s in db.query(Startup).all():
+        w = (s.website or "").strip()
+        if w and clean_company_website(w, s.name) == "":
+            out.append(s)
+    return out
+
+
+def _tier_c(db, ignore_ids=None):
+    """
+    Same normalized name, and at most ONE distinct real domain across the group.
+
+    `ignore_ids` are rows whose website is about to be cleared, so the dry run
+    predicts what --apply will actually do rather than the pre-cleaning state.
+    Without it the preview under-reported, which defeats the point of a preview.
+
+    Safe because nothing in the group contradicts anything else: either no row
+    claims a domain, or exactly one does and the rest are silent. Groups where
+    two rows claim DIFFERENT domains are excluded — that is a genuine identity
+    question (a rebrand? two companies?) and belongs to a human or the
+    adjudicator, not to a bulk script.
+    """
+    from processing.deduplicator import extract_domain
+    ignore_ids = ignore_ids or set()
+    buckets = defaultdict(list)
+    for s in db.query(Startup).order_by(Startup.created_at.asc()).all():
+        key = (s.normalized_name or s.name or "").strip().lower()
+        if key:
+            buckets[key].append(s)
+
+    safe, conflicted = {}, {}
+    for key, g in buckets.items():
+        if len(g) < 2:
+            continue
+        domains = {
+            "" if x.id in ignore_ids else extract_domain(x.website or "")
+            for x in g
+        }
+        domains.discard("")
+        (safe if len(domains) <= 1 else conflicted)[key] = g
+    return safe, conflicted
+
+
 def _cleanup_refs(db, loser_id) -> tuple:
     """Delete reviews/suppressions pointing at a row that is about to vanish."""
     r = db.query(DuplicateReview).filter(
@@ -103,7 +149,26 @@ def _cleanup_refs(db, loser_id) -> tuple:
     return r, s
 
 
-def run(apply: bool, limit: int, report_tier_b: bool) -> None:
+def _merge_group(db, g) -> tuple:
+    """Merge every row in `g` into the oldest. Returns (merged, reviews, supps)."""
+    from api.routes.reviews import _merge_records
+    from processing.storage import refresh_identity_fingerprint
+
+    keeper, losers = g[0], g[1:]
+    merged = reviews = supps = 0
+    for loser in losers:
+        r, sp = _cleanup_refs(db, loser.id)
+        reviews += r
+        supps += sp
+        _merge_records(db, keeper, loser, loser.raw_data or {})
+        merged += 1
+    refresh_identity_fingerprint(keeper)
+    db.commit()
+    return merged, reviews, supps
+
+
+def run(apply: bool, limit: int, report_tier_b: bool,
+        clean_source_websites: bool = False, tier_c: bool = False) -> None:
     db = SessionLocal()
     try:
         groups = _groups(db)
@@ -128,10 +193,38 @@ def run(apply: bool, limit: int, report_tier_b: bool) -> None:
             print("  These need evidence this script doesn't have — two different companies")
             print("  can share a name with nothing to separate them. Left alone deliberately.")
 
+        if clean_source_websites:
+            bad = _source_site_rows(db)
+            print(f"\nSource-site websites to clear: {len(bad)}")
+            for s_ in bad[:6]:
+                print(f"    {s_.name[:34]:36} {(s_.website or '')[:44]}")
+
+        if tier_c:
+            pending_clear = {r.id for r in _source_site_rows(db)} if clean_source_websites else set()
+            safe, conflicted = _tier_c(db, ignore_ids=pending_clear)
+            print(f"\nTier C — same name, at most one distinct domain (safe to merge)")
+            print(f"  groups: {len(safe)}   rows merged away: {sum(len(g)-1 for g in safe.values())}")
+            print(f"\nExcluded — same name but CONFLICTING domains (left for a human)")
+            print(f"  groups: {len(conflicted)}   rows: {sum(len(g)-1 for g in conflicted.values())}")
+            for k, g in sorted(conflicted.items(), key=lambda kv: -len(kv[1]))[:8]:
+                from processing.deduplicator import extract_domain
+                doms = [extract_domain(x.website or "") or "(none)" for x in g]
+                print(f"    {len(g)}x  {k[:30]:32} {doms[:4]}")
+
         if not apply:
             print("\nDry run — nothing merged or deleted. Re-run with --apply.")
             print("Take a backup first; this cannot be undone.")
             return
+
+        if clean_source_websites:
+            from processing.storage import refresh_identity_fingerprint
+            cleared = 0
+            for s_ in _source_site_rows(db):
+                s_.website = None
+                refresh_identity_fingerprint(s_)
+                cleared += 1
+            db.commit()
+            print(f"\nCleared {cleared} source-site websites (web-verify can refill them properly).")
 
         merged = reviews_gone = supps_gone = 0
         from api.routes.reviews import _merge_records
@@ -153,6 +246,14 @@ def run(apply: bool, limit: int, report_tier_b: bool) -> None:
             refresh_identity_fingerprint(keeper)
             db.commit()
 
+        if tier_c:
+            safe, _ = _tier_c(db)
+            for g in sorted(safe.values(), key=lambda g: -len(g)):
+                m, r, sp = _merge_group(db, g)
+                merged += m
+                reviews_gone += r
+                supps_gone += sp
+
         print(f"\nMerged away {merged} duplicate records.")
         print(f"Removed {reviews_gone} now-moot reviews and {supps_gone} orphaned suppressions.")
         print(f"Records remaining: {db.query(Startup).count()}")
@@ -167,8 +268,13 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="cap groups touched this run (0 = all)")
     ap.add_argument("--report-tier-b", action="store_true",
                     help="also list same-name/no-website groups, which are NOT merged")
+    ap.add_argument("--clean-source-websites", action="store_true",
+                    help="first clear websites that are really the listing site")
+    ap.add_argument("--tier-c", action="store_true",
+                    help="also merge same-name groups with at most one distinct domain")
     args = ap.parse_args()
-    run(args.apply, args.limit, args.report_tier_b)
+    run(args.apply, args.limit, args.report_tier_b,
+        args.clean_source_websites, args.tier_c)
 
 
 if __name__ == "__main__":
