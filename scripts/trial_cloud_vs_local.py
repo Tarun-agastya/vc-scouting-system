@@ -144,9 +144,19 @@ def check_cloud_key() -> str:
     """
     key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
     if not key:
+        # Fall back to .env, where this project keeps every other secret.
+        try:
+            from config import settings
+            key = (getattr(settings, "anthropic_api_key", None) or "").strip()
+        except Exception:
+            key = ""
+    if not key:
         raise AuthFailure(
-            "ANTHROPIC_API_KEY is not set.\n"
-            "  export ANTHROPIC_API_KEY=sk-ant-...your real key..."
+            "No API key found.\n"
+            "  Either add a line to .env (preferred, already gitignored):\n"
+            "      anthropic_api_key=sk-ant-api03-...\n"
+            "  or export it for this shell:\n"
+            "      export ANTHROPIC_API_KEY=sk-ant-api03-..."
         )
     if not key.startswith("sk-ant-") or len(key) < 20:
         raise AuthFailure(
@@ -252,7 +262,36 @@ def main():
     ap.add_argument("--cloud-model", default=DEFAULT_CLOUD)
     ap.add_argument("--json", default="")
     ap.add_argument("--limit-junk", type=int, default=10)
+    ap.add_argument("--check-cloud", action="store_true",
+                    help="make ONE cheap call to confirm the key and credit work, then stop")
     args = ap.parse_args()
+
+    if args.check_cloud:
+        try:
+            check_cloud_key()
+        except AuthFailure as exc:
+            print(f"Key problem:\n\n  {exc}\n")
+            sys.exit(2)
+        print(f"Key looks valid. Making one test call to {args.cloud_model} …")
+        try:
+            out, el, usage = ask_cloud(
+                "Answer with the tool.",
+                "Record from a startup database:\n\n  name : Kiwigrid\n  website : "
+                "https://www.kiwigrid.com\n  description : energy IoT platform\n  "
+                "industry : Energy\n  city : Dresden\n\nIs this a real operating company?",
+                _SCHEMA_A, args.cloud_model)
+        except AuthFailure as exc:
+            print(f"\n  REJECTED: {exc}")
+            print("  Nothing was charged. Check the key, and that the account has credit.")
+            sys.exit(2)
+        if out is None:
+            print(f"\n  FAILED: {usage.get('error', 'unknown')}")
+            print("  If this mentions credit or billing, add a small balance in the Console.")
+            sys.exit(2)
+        print(f"\n  OK — answered {out.get('answer')!r} in {el:.1f}s")
+        print(f"  tokens in/out: {usage.get('input_tokens', 0)}/{usage.get('output_tokens', 0)}")
+        print("\n  The key works. Run the full trial with --with-cloud.")
+        return
 
     db = SessionLocal()
     try:

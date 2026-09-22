@@ -132,6 +132,10 @@ class Settings(BaseSettings):
     # ingestion/web_search.py's module docstring for the full evaluation).
     # Optional — if unset, ingestion.web_search falls back to SearXNG/DuckDuckGo.
     tavily_api_key: Optional[str] = None
+    # Optional. Only the trial/benchmark scripts read this — no pipeline
+    # path calls a cloud model. Put it in .env like every other secret
+    # here (gitignored) rather than exporting it per shell.
+    anthropic_api_key: Optional[str] = None
 
     # SearXNG (11 Aug 2026) — self-hosted, free web-search fallback used
     # BETWEEN Tavily and the DuckDuckGo scrape. Runs as the `searxng` service
