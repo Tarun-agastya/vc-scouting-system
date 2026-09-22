@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_embed_model: str = "nomic-embed-text"
     ollama_reason_model: str = "qwen3:14b"
+    # Which model adjudicates the duplicate pairs no rule can settle
+    # (processing/dedup_adjudicator.py). Defaults to the local reasoner so
+    # it works with no account; point it elsewhere once a cloud key exists.
+    # Volume is tens of pairs, so this is a cheap first thing to move.
+    adjudicator_model: str = ""
     ollama_extract_model: str = "qwen2.5:7b-instruct"  # hot-path extraction; override via OLLAMA_EXTRACT_MODEL
 
     # Discord
