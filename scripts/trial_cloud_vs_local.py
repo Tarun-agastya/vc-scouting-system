@@ -266,6 +266,10 @@ def main():
                     help="comma-separated record numbers to leave out of the export")
     ap.add_argument("--export-prompt", default="",
                     help="write a paste-ready prompt for a chat UI (no API needed)")
+    ap.add_argument("--local-json", default="",
+                    help="a previous local run's --json, for a like-for-like baseline")
+    ap.add_argument("--key", default="",
+                    help="the *_key.json written beside the prompt (auto-detected if omitted)")
     ap.add_argument("--score-pasted", default="",
                     help="score the JSON array a chat UI gave back")
     ap.add_argument("--check-cloud", action="store_true",
@@ -273,7 +277,16 @@ def main():
     args = ap.parse_args()
 
     if args.score_pasted:
+        import glob as _glob
         import re as _re
+        if not os.path.exists(args.score_pasted):
+            print(f"Can't find '{args.score_pasted}'.\n")
+            print("That file is something YOU create: paste the model's reply into it.")
+            print("  1. copy everything the model answered")
+            print(f"  2. save it as {args.score_pasted} in this folder")
+            print("  3. re-run this command")
+            print("\nPasting the surrounding prose is fine — only the [ ... ] block is read.")
+            sys.exit(2)
         raw = open(args.score_pasted, encoding="utf-8").read()
         m = _re.search(r"\[.*\]", raw, _re.S)      # tolerate chat chatter around the JSON
         if not m:
@@ -281,10 +294,25 @@ def main():
             print("surrounding prose is fine, but the [ ... ] block must be there.")
             sys.exit(2)
         answers = {int(a["n"]): a for a in json.loads(m.group(0))}
-        keyfile = args.score_pasted.rsplit(".", 1)[0] + "_key.json"
+        # The key belongs to the PROMPT, not to the reply file. Getting this
+        # wrong scores answers against the wrong labels and yields a confident,
+        # meaningless number — so resolve it explicitly and say which one was
+        # used, rather than falling back to a stale file in /tmp.
+        keyfile = args.key
+        if not keyfile:
+            candidates = sorted(_glob.glob("*_key.json"), key=os.path.getmtime, reverse=True)
+            if not candidates:
+                print("No answer key found. It is written next to the prompt, e.g.")
+                print("  prompt.txt -> prompt_key.json")
+                print("Pass it explicitly with --key prompt_key.json")
+                sys.exit(2)
+            keyfile = candidates[0]
         if not os.path.exists(keyfile):
-            keyfile = "/tmp/chatgpt_prompt_key.json"
+            print(f"Answer key '{keyfile}' not found.")
+            sys.exit(2)
         key = json.load(open(keyfile, encoding="utf-8"))
+        print(f"Scoring '{args.score_pasted}' against key '{keyfile}' "
+              f"({len(key)} records)\n")
 
         correct = graded = missing = 0
         amb_resolved = amb_total = 0
@@ -310,12 +338,40 @@ def main():
         print("-" * 70)
         acc = correct / graded if graded else 0
         print(f"  accuracy on known answers : {correct}/{graded} = {acc:.0%}")
-        print(f"  ambiguous resolved        : {amb_resolved}/{amb_total}"
-              f"   (local resolved 5/12)")
+        print(f"  ambiguous resolved        : {amb_resolved}/{amb_total}")
         if missing:
             print(f"  !! {missing} records got no answer — ask it to complete the list")
-        print()
-        print("  Local baseline for comparison: 86% (19/22), 5 of 12 ambiguous resolved.")
+
+        # Like-for-like local baseline, computed on EXACTLY these records.
+        # Quoting the headline "5 of 12" here would be wrong whenever --drop
+        # was used: the dropped records are not a random sample, and the four
+        # person-names excluded above happen to be four the local model got
+        # right — so the honest comparison is far lower than the headline.
+        local_path = args.local_json or "/tmp/trial_local.json"
+        if os.path.exists(local_path):
+            try:
+                loc = {r["name"]: r for r in json.load(open(local_path, encoding="utf-8"))["results"]
+                       if r["provider"] == "local"}
+                names = {k["name"] for k in key}
+                l_graded = [k for k in key if k["label"] and k["name"] in loc]
+                l_correct = sum(1 for k in l_graded if loc[k["name"]]["answer"] == k["label"])
+                l_amb = [k for k in key if not k["label"] and k["name"] in loc]
+                l_res = sum(1 for k in l_amb
+                            if loc[k["name"]]["answer"] in ("company", "not_company"))
+                print()
+                print(f"  LOCAL, on these same records:")
+                print(f"    accuracy on known answers : {l_correct}/{len(l_graded)}"
+                      f" = {l_correct/max(len(l_graded),1):.0%}")
+                print(f"    ambiguous resolved        : {l_res}/{len(l_amb)}")
+                if amb_total and len(l_amb):
+                    print()
+                    print(f"  => the paid model resolved {amb_resolved - l_res:+d} more of the"
+                          f" {amb_total} records a person would otherwise open.")
+            except Exception as exc:
+                print(f"\n  (could not read local baseline from {local_path}: {exc})")
+        else:
+            print(f"\n  No local run found at {local_path} — run without --with-cloud first")
+            print("  to get a like-for-like baseline on exactly these records.")
         return
 
     if args.export_prompt:
@@ -388,10 +444,15 @@ def main():
             print("  Personal data should not go into a chat tool without a documented")
             print("  legal basis — that is your workspace's rule, and it applies at least")
             print("  as strongly to a personal account, which no company agreement covers.")
-            print("  Re-run with --drop to exclude them by number, e.g.")
-            print("      --drop " + ",".join(str(i) for i, (r, lab) in enumerate(cases, 1)
-                                             if lab is None
-                                             and _TWO_WORD_RE.match((r.name or '').strip()))[:60])
+            if drop:
+                print("  (Records were renumbered after --drop, so the numbers above are")
+                print("   the NEW ones. Add them to your existing --drop list, adjusting")
+                print("   for the shift, or start from the undropped export.)")
+            else:
+                print("  Re-run with --drop to exclude them by number, e.g.")
+                print("      --drop " + ",".join(
+                    str(i) for i, (r, lab) in enumerate(cases, 1)
+                    if lab is None and _TWO_WORD_RE.match((r.name or '').strip())))
             print("  The labelled records alone still give a valid accuracy figure.")
         return
 
