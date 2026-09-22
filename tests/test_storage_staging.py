@@ -177,3 +177,37 @@ def test_low_confidence_empty_duplicate_still_goes_to_a_human(make, db):
     r2, s2 = make("Foxtrot Data")
     assert s2 != "auto_merged_empty_duplicate"
     assert s2 == "staged_duplicate"
+
+
+def test_a_source_site_is_never_stored_as_the_company_website():
+    """
+    22 Sep 2026: 183 records carried the listing site they were found on as
+    their own website — Isar Aerospace pointing at a munich-startup.de
+    article, Avanera at tha.de. Wrong as data, and it breaks identity: the
+    fingerprint is name+domain, so the same company picked up from two
+    different articles gets two different fingerprints and never dedups.
+    A visible share of the 362 same-name-different-domain duplicates left
+    after the September merge came from this.
+    """
+    from processing.storage import clean_company_website
+
+    for bad in (
+        "https://www.munich-startup.de/news/isar-aerospace-raises",
+        "https://www.tha.de/tha-funkenwerk/avanera.html",
+        "https://startupsucht.com/startup-liste-verzeichnis-dresden",
+        "https://www.uni-augsburg.de/en/forschung/einrichtungen",
+    ):
+        assert clean_company_website(bad, "X") == "", f"{bad} is a source site, not a company site"
+
+
+def test_a_real_company_website_survives_the_check():
+    """
+    The guard only knows registered crawl sources and known aggregators, so it
+    cannot suppress a genuine homepage. If this ever fails, the source list has
+    grown to include something that is also a portfolio company.
+    """
+    from processing.storage import clean_company_website
+
+    for good in ("https://isaraerospace.com", "https://www.kiwigrid.com",
+                 "https://beeoled.com", "https://api.echobot.de"):
+        assert clean_company_website(good, "X") == good

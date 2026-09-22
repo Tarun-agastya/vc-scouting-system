@@ -125,7 +125,7 @@ def upsert_startup(
     if not name or len(name) < 2:
         return None, None
 
-    website = startup.get("website") or ""
+    website = clean_company_website(startup.get("website") or "", name)
     domain = extract_domain(website)
     # A fingerprint is only reliable identity with a real domain. No-website
     # records store NULL (repeated NULLs are allowed under UNIQUE) and rely on
@@ -289,6 +289,69 @@ def upsert_startup(
 
 
 # ── Insert / score / index a new master ───────────────────────────────────────
+
+_SOURCE_DOMAIN_CACHE: Optional[set] = None
+
+
+def _registered_source_domains() -> set:
+    """
+    Registrable domains of every site we crawl, cached per process.
+
+    Used to reject a "website" that is really the listing site we found the
+    company ON. Accelerator, university and news domains are never a portfolio
+    company's own homepage, so this cannot suppress a legitimate value.
+    """
+    global _SOURCE_DOMAIN_CACHE
+    if _SOURCE_DOMAIN_CACHE is not None:
+        return _SOURCE_DOMAIN_CACHE
+    from processing.deduplicator import extract_domain
+    domains = set()
+    try:
+        import yaml
+        with open("config/sources.yaml", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        for entry in (data.get("web_sources") or []):
+            d = extract_domain(entry.get("primary_url") or "")
+            if d:
+                domains.add(d)
+    except Exception as exc:  # never let config trouble break an ingest
+        logger.warning(f"[Storage] Could not load source domains: {exc}")
+    # Aggregators that appear as source_url via RSS rather than as a
+    # registered crawl source.
+    domains |= {"munich-startup.de", "deutsche-startups.de", "businessinsider.de",
+                "tech.eu", "sifted.eu", "gruenderszene.de", "startupsucht.com"}
+    _SOURCE_DOMAIN_CACHE = domains
+    return domains
+
+
+def clean_company_website(website: str, name: str = "") -> str:
+    """
+    Drop a "website" that is actually the site we found the company on.
+
+    Measured 22 Sep 2026: 183 records carried a listing site as their website —
+    Isar Aerospace pointing at a munich-startup.de article, Avanera at tha.de,
+    "Centre for Advanced Analytics" at uni-augsburg.de. That is wrong as data,
+    and it actively breaks identity: the fingerprint is name+domain, so the
+    same company picked up from two different articles gets two different
+    fingerprints and never dedups. It is a visible share of the 362
+    same-name-different-domain duplicates left after the September merge.
+
+    Returns "" for a rejected value rather than guessing, so the record is
+    honestly website-less and the nightly web-verify can fill it properly.
+    """
+    from processing.deduplicator import extract_domain
+
+    domain = extract_domain(website or "")
+    if not domain:
+        return website or ""
+    if domain in _registered_source_domains():
+        logger.info(
+            f"[Storage] Rejecting source-site URL as website for "
+            f"'{name or '?'}': {website}"
+        )
+        return ""
+    return website or ""
+
 
 def refresh_identity_fingerprint(master, flag_modified=None) -> bool:
     """
