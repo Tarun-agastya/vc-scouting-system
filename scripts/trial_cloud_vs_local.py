@@ -262,9 +262,128 @@ def main():
     ap.add_argument("--cloud-model", default=DEFAULT_CLOUD)
     ap.add_argument("--json", default="")
     ap.add_argument("--limit-junk", type=int, default=10)
+    ap.add_argument("--export-prompt", default="",
+                    help="write a paste-ready prompt for a chat UI (no API needed)")
+    ap.add_argument("--score-pasted", default="",
+                    help="score the JSON array a chat UI gave back")
     ap.add_argument("--check-cloud", action="store_true",
                     help="make ONE cheap call to confirm the key and credit work, then stop")
     args = ap.parse_args()
+
+    if args.score_pasted:
+        import re as _re
+        raw = open(args.score_pasted, encoding="utf-8").read()
+        m = _re.search(r"\[.*\]", raw, _re.S)      # tolerate chat chatter around the JSON
+        if not m:
+            print("No JSON array found in that file. Paste the model's reply verbatim;")
+            print("surrounding prose is fine, but the [ ... ] block must be there.")
+            sys.exit(2)
+        answers = {int(a["n"]): a for a in json.loads(m.group(0))}
+        keyfile = args.score_pasted.rsplit(".", 1)[0] + "_key.json"
+        if not os.path.exists(keyfile):
+            keyfile = "/tmp/chatgpt_prompt_key.json"
+        key = json.load(open(keyfile, encoding="utf-8"))
+
+        correct = graded = missing = 0
+        amb_resolved = amb_total = 0
+        print(f"{'#':>3}  {'record':34} {'answer':13} {'expected':13}")
+        print("-" * 70)
+        for k in key:
+            a = answers.get(k["n"])
+            ans = (a or {}).get("answer", "—")
+            if a is None:
+                missing += 1
+            if k["label"]:
+                graded += 1
+                ok = ans == k["label"]
+                correct += ok
+                mark = "" if ok else "   <-- miss"
+                print(f"{k['n']:>3}  {k['name'][:32]:34} {ans:13} {k['label']:13}{mark}")
+            else:
+                amb_total += 1
+                if ans in ("company", "not_company"):
+                    amb_resolved += 1
+                print(f"{k['n']:>3}  {k['name'][:32]:34} {ans:13} {'(ambiguous)':13}")
+
+        print("-" * 70)
+        acc = correct / graded if graded else 0
+        print(f"  accuracy on known answers : {correct}/{graded} = {acc:.0%}")
+        print(f"  ambiguous resolved        : {amb_resolved}/{amb_total}"
+              f"   (local resolved 5/12)")
+        if missing:
+            print(f"  !! {missing} records got no answer — ask it to complete the list")
+        print()
+        print("  Local baseline for comparison: 86% (19/22), 5 of 12 ambiguous resolved.")
+        return
+
+    if args.export_prompt:
+        db2 = SessionLocal()
+        try:
+            _lj, real, amb = build_set(db2)
+            junk = (_lj + _fixture_cases())[:args.limit_junk]
+            cases = ([(r, "not_company") for r in junk]
+                     + [(r, "company") for r in real]
+                     + [(r, None) for r in amb])
+        finally:
+            db2.close()
+
+        import unicodedata
+        person_like = [r.name for r, lab in cases
+                       if lab is None and _TWO_WORD_RE.match((r.name or "").strip())]
+
+        lines = [
+            "You are auditing a startup database. For EACH numbered record below,",
+            "say whether it describes a real operating COMPANY.",
+            "",
+            "  company     = a real business (including one-person businesses and",
+            "                companies named after their founder)",
+            "  not_company = an event or conference, an award, a funding programme,",
+            "                a topic heading or category, a person's name from a",
+            "                byline or staff list, or a listing-page label",
+            "  unsure      = genuinely cannot tell from the fields shown",
+            "",
+            "Judge ONLY from the fields shown. Do not use outside knowledge about",
+            "the names. Answer for every record.",
+            "",
+            "Reply with ONLY a JSON array, no other text:",
+            '[{"n": 1, "answer": "company", "reason": "one short sentence"}, ...]',
+            "",
+            "--- RECORDS ---",
+        ]
+        for i, (r, _lab) in enumerate(cases, 1):
+            f = _fields(r)
+            lines.append(f"\n{i}. name: {f['name']}")
+            lines.append(f"   website: {f['website']}")
+            lines.append(f"   description: {f['description']}")
+            lines.append(f"   industry: {f['industry']}   city: {f['city']}")
+
+        prompt = "\n".join(lines)
+        out = args.export_prompt
+        with open(out, "w", encoding="utf-8") as fh:
+            fh.write(prompt + "\n")
+
+        key = [{"n": i, "name": r.name, "label": lab} for i, (r, lab) in enumerate(cases, 1)]
+        keyfile = out.rsplit(".", 1)[0] + "_key.json"
+        with open(keyfile, "w", encoding="utf-8") as fh:
+            json.dump(key, fh, indent=2, ensure_ascii=False)
+
+        print(f"Wrote {out}  ({len(cases)} records, ~{len(prompt)//4} tokens)")
+        print(f"Wrote {keyfile}  (the answer key — keep this, don't paste it)")
+        print()
+        print("Paste the contents of the prompt file into ChatGPT as ONE message.")
+        print("One message for all records, not one per record — that is the whole")
+        print("point, and it matches the 'avoid repeated full analyses' guidance.")
+        print("Use the LOWEST effort setting; this is classification, not reasoning.")
+        if person_like:
+            print()
+            print(f"  !! {len(person_like)} of these look like NAMES OF REAL PEOPLE:")
+            for n in person_like:
+                print(f"       {n}")
+            print("  Your workspace notice forbids entering personal data without a")
+            print("  documented legal basis. Check before pasting, or delete those")
+            print("  numbered entries from the file first — the other records still")
+            print("  give you a valid accuracy measurement.")
+        return
 
     if args.check_cloud:
         try:
