@@ -262,6 +262,8 @@ def main():
     ap.add_argument("--cloud-model", default=DEFAULT_CLOUD)
     ap.add_argument("--json", default="")
     ap.add_argument("--limit-junk", type=int, default=10)
+    ap.add_argument("--drop", default="",
+                    help="comma-separated record numbers to leave out of the export")
     ap.add_argument("--export-prompt", default="",
                     help="write a paste-ready prompt for a chat UI (no API needed)")
     ap.add_argument("--score-pasted", default="",
@@ -327,7 +329,11 @@ def main():
         finally:
             db2.close()
 
-        import unicodedata
+        drop = {int(x) for x in args.drop.split(",") if x.strip().isdigit()}
+        if drop:
+            cases = [c for i, c in enumerate(cases, 1) if i not in drop]
+            print(f"Dropped {len(drop)} record(s) at your request: {sorted(drop)}\n")
+
         person_like = [r.name for r, lab in cases
                        if lab is None and _TWO_WORD_RE.match((r.name or "").strip())]
 
@@ -379,10 +385,14 @@ def main():
             print(f"  !! {len(person_like)} of these look like NAMES OF REAL PEOPLE:")
             for n in person_like:
                 print(f"       {n}")
-            print("  Your workspace notice forbids entering personal data without a")
-            print("  documented legal basis. Check before pasting, or delete those")
-            print("  numbered entries from the file first — the other records still")
-            print("  give you a valid accuracy measurement.")
+            print("  Personal data should not go into a chat tool without a documented")
+            print("  legal basis — that is your workspace's rule, and it applies at least")
+            print("  as strongly to a personal account, which no company agreement covers.")
+            print("  Re-run with --drop to exclude them by number, e.g.")
+            print("      --drop " + ",".join(str(i) for i, (r, lab) in enumerate(cases, 1)
+                                             if lab is None
+                                             and _TWO_WORD_RE.match((r.name or '').strip()))[:60])
+            print("  The labelled records alone still give a valid accuracy figure.")
         return
 
     if args.check_cloud:
