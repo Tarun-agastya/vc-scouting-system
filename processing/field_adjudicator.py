@@ -61,10 +61,23 @@ _SCHEMA = {
     "required": ["verdict", "confidence", "reasoning"],
 }
 
+# Rewritten 23 Sep after a full run exposed the flaw in the first version.
+# It told the model that replacing a correct value with a worse one is the
+# thing to avoid, which quietly presumes the STORED value is correct. On this
+# field it frequently is not: Smartbax, a company whose own description says
+# it is "developing new antibiotics", had sub_industry "Fintech - Payments",
+# and the model kept it while writing "the stored value is unrelated to the
+# company's description" as its reasoning. It contradicted itself because the
+# instruction left it no way to say the stored value was the wrong one.
+#
+# So the question is no longer "is the proposal an improvement" but "which of
+# these labels describes this company", with the stored value competing on
+# merit like any other candidate.
 _SYSTEM = (
-    "You check whether a proposed change to a company database record is an "
-    "improvement. You are conservative: replacing a correct value with a "
-    "vaguer or wrong one is far worse than leaving a slightly stale value."
+    "You pick the label that best describes a company, judging every option "
+    "on its merits against the company's own description. The value currently "
+    "stored has no special standing — it is frequently wrong, and keeping a "
+    "label the description contradicts is the worst outcome."
 )
 
 _PROMPT = """A crawl proposes changing one field on this company.
@@ -178,33 +191,40 @@ def _group_schema(options: list) -> dict:
     return {
         "type": "object",
         "properties": {
-            "choice": {"type": "string", "enum": ["current", *options]},
+            "choice": {"type": "string", "enum": ["current", "none", *options]},
             "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
             "reasoning": {"type": "string"},
         },
         "required": ["choice", "confidence", "reasoning"],
     }
 
-_GROUP_PROMPT = """Several crawls propose different values for one field on this company.
+_GROUP_PROMPT = """Pick the best label for this company's {field}.
 
   company     : {name}
   description : {description}
   industry    : {industry}
 
-  field       : {field}
-  stored now  : {current}
+  currently stored : {current}
 
-  proposed:
+  other candidates:
 {options}
 
-Which single value is the most accurate for this company?
+Which single option best describes THIS company, according to its description?
 
-Reply with the exact text of the winning option, or the word "current" if the
-stored value is as good as or better than all of them.
+The stored value is just one of the candidates — it is often wrong. If the
+description contradicts it, do not choose it. Reply "current" only when the
+stored value genuinely describes the company at least as well as every
+alternative.
 
-Judge only from the description and industry shown. Do not use outside
-knowledge. A more specific label beats a broader one when both are true.
-Give one sentence of reasoning citing the description."""
+Judge only from the description and industry shown, not outside knowledge.
+A more specific label beats a broader one when both are true.
+
+Reply "none" if no option fits — including the stored one. That is a real
+answer here: both sides are often wrong, and picking the least bad label is
+worse than admitting none of them describes the company.
+
+Give one sentence of reasoning citing the description. If you choose
+"current", your reasoning must say what in the description supports it."""
 
 
 def adjudicate_field_group(record, field: str, current, candidates: list,
@@ -255,6 +275,19 @@ def adjudicate_field_group(record, field: str, current, candidates: list,
 
     choice = (data.get("choice") or "").strip()
     winner = None
+    if choice.lower() == "none":
+        # Added after a full run showed the model picking a candidate it had
+        # just argued against — "B2B SaaS - Marine" for a drone company, with
+        # reasoning saying drones "are not directly related to marine". Forced
+        # to choose between a wrong stored value and a wrong proposal, it
+        # produced a confident wrong answer. Letting it decline is the honest
+        # option, and these go to a human untouched.
+        return {
+            "winner": None, "none_fit": True,
+            "confidence": (data.get("confidence") or "low").strip(),
+            "reasoning": (data.get("reasoning") or "").strip()[:800],
+            "considered": uniq, "model": model,
+        }
     if choice and choice.lower() != "current":
         match = next((c for c in uniq if c.casefold() == choice.casefold()), None)
         if match is None:
@@ -267,6 +300,7 @@ def adjudicate_field_group(record, field: str, current, candidates: list,
 
     return {
         "winner": winner,                  # None means keep what is stored
+        "none_fit": False,
         "confidence": (data.get("confidence") or "low").strip(),
         "reasoning": (data.get("reasoning") or "").strip()[:800],
         "considered": uniq,
@@ -282,5 +316,7 @@ def group_may_auto_apply(result: dict, field: str) -> bool:
     """
     if not result or field in IDENTITY_FIELDS:
         return False
+    if result.get("none_fit"):
+        return False        # "nothing here is right" is a human's problem
     return result["winner"] is None and result["confidence"] == "high"
 

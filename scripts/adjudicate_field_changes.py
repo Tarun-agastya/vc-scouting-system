@@ -114,8 +114,10 @@ def run(limit: int, apply: bool, only_field: str) -> None:
                 continue
 
             keeps = group_may_auto_apply(res, field)
-            counts[("keep current" if res["winner"] is None else "prefers a proposal")
-                   + f" ({res['confidence']})"] += 1
+            label = ("none of them fit" if res.get("none_fit")
+                     else "keep current" if res["winner"] is None
+                     else "prefers a proposal")
+            counts[f"{label} ({res['confidence']})"] += 1
             mark = "->CLOSE" if (apply and keeps) else "       "
             n = f"[{len(items)} proposals]" if len(items) > 1 else ""
             print(f"  {mark} {(master.name or '?')[:22]:24} {field:13} {n}")
@@ -123,7 +125,9 @@ def run(limit: int, apply: bool, only_field: str) -> None:
             for c in res["considered"]:
                 flag = "  <- picked" if c == res["winner"] else ""
                 print(f"           cand  : {str(c)[:58]}{flag}")
-            if res["winner"] is None:
+            if res.get("none_fit"):
+                print(f"           NONE of these describe the company — left for a person")
+            elif res["winner"] is None:
                 print(f"           keeps the stored value")
             print(f"           {res['reasoning'][:92]}")
 
