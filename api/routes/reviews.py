@@ -628,6 +628,35 @@ async def undo_merge(review_id: str, db: Session = Depends(get_db)):
     older restores come back "unverified, no excerpt on file", same as any
     pre-H-1 legacy record.
     """
+    # A field-level merge (Phase 3) CAN overwrite populated master fields, so
+    # the reasoning above — "nothing to revert on the master" — no longer
+    # holds for one. If this review was resolved that way there is a snapshot
+    # recording exactly which keeper fields changed and what they were, and
+    # only that path can put them back. Delegating is not a convenience here:
+    # falling through would restore the deleted row while silently leaving the
+    # master's overwritten values in place, which is a quieter and worse
+    # failure than refusing.
+    from database.models import MergeSnapshot
+    from processing.field_merge import undo_merge as _undo_field_merge
+
+    snap = (db.query(MergeSnapshot)
+            .filter(MergeSnapshot.review_id == review_id,
+                    MergeSnapshot.undone_at.is_(None))
+            .order_by(MergeSnapshot.created_at.desc()).first())
+    if snap is not None:
+        result = _undo_field_merge(db, snap.id)
+        if result.get("status") == "conflict":
+            raise HTTPException(status_code=409, detail=result["detail"])
+        r = db.query(DuplicateReview).filter(DuplicateReview.id == review_id).first()
+        if r is not None:
+            r.status = "rejected"
+            r.resolved_at = datetime.utcnow()
+            if r.master_id and r.incoming_id:
+                db.add(SuppressedMatch(kind="known_different",
+                                       master_id=r.master_id, other_id=r.incoming_id))
+            db.commit()
+        return {"status": "undone", "via": "field_merge_snapshot", **result}
+
     r = db.query(DuplicateReview).filter(DuplicateReview.id == review_id).first()
     if not r:
         raise HTTPException(status_code=404, detail="Review not found")
@@ -1097,3 +1126,100 @@ async def delete_review_data(
     r.resolved_at = datetime.utcnow()
     db.commit()
     return {"status": "deleted", "review_type": r.review_type, "deleted": deleted}
+
+
+# ── Field-level merge (Phase 3) ───────────────────────────────────────────────
+
+@router.get("/{review_id}/merge-preview")
+async def merge_preview(review_id: str, db: Session = Depends(get_db)):
+    """
+    Field-by-field comparison for a possible_duplicate review.
+
+    `differs` lets the UI collapse the fields where both records agree, so a
+    human only reads the genuine conflicts.
+    """
+    from processing.field_merge import build_merge_preview
+
+    r = db.query(DuplicateReview).filter(DuplicateReview.id == review_id).first()
+    if r is None:
+        raise HTTPException(status_code=404, detail="Review not found")
+    keeper = db.query(Startup).filter(Startup.id == r.master_id).first()
+    loser = db.query(Startup).filter(Startup.id == r.incoming_id).first() if r.incoming_id else None
+    if keeper is None or loser is None:
+        raise HTTPException(status_code=409,
+                            detail="Both records must still exist to merge them")
+    return {
+        "review_id": str(r.id),
+        "keeper": {"id": str(keeper.id), "name": keeper.name,
+                   "created_at": keeper.created_at.isoformat() if keeper.created_at else None},
+        "incoming": {"id": str(loser.id), "name": loser.name,
+                     "created_at": loser.created_at.isoformat() if loser.created_at else None},
+        "fields": build_merge_preview(keeper, loser),
+    }
+
+
+class MergeRequest(BaseModel):
+    choices: dict = {}          # {field: "keeper" | "incoming"}
+
+
+@router.post("/{review_id}/merge")
+async def merge_review(review_id: str, request: MergeRequest, db: Session = Depends(get_db)):
+    """
+    Apply a field-level merge and resolve the review.
+
+    A snapshot is written before anything is touched — see
+    processing/field_merge.py for why that is a precondition rather than a
+    nicety. The response carries the snapshot id so the UI can offer undo
+    immediately.
+    """
+    from processing.field_merge import merge_records
+
+    r = db.query(DuplicateReview).filter(DuplicateReview.id == review_id).first()
+    if r is None:
+        raise HTTPException(status_code=404, detail="Review not found")
+    if r.status != "pending":
+        raise HTTPException(status_code=409, detail=f"Review already {r.status}")
+    keeper = db.query(Startup).filter(Startup.id == r.master_id).first()
+    loser = db.query(Startup).filter(Startup.id == r.incoming_id).first() if r.incoming_id else None
+    if keeper is None or loser is None:
+        raise HTTPException(status_code=409,
+                            detail="Both records must still exist to merge them")
+
+    result = merge_records(db, keeper, loser, request.choices or {}, review_id=r.id)
+    r.status = "approved"
+    r.resolved_at = datetime.utcnow()
+    db.commit()
+    _reindex(db, keeper)
+    return {"status": "merged", **result}
+
+
+@router.get("/merges/recent")
+async def recent_merges(limit: int = 30, db: Session = Depends(get_db)):
+    """Recent merges, newest first, with whether each can still be undone."""
+    from database.models import MergeSnapshot
+
+    rows = (db.query(MergeSnapshot)
+            .order_by(MergeSnapshot.created_at.desc())
+            .limit(max(1, min(limit, 200))).all())
+    return {"merges": [{
+        "id": str(m.id),
+        "keeper_name": m.keeper_name,
+        "loser_name": m.loser_name,
+        "fields_taken": sorted(f for f, side in (m.choices or {}).items() if side == "incoming"),
+        "created_at": m.created_at.isoformat() if m.created_at else None,
+        "undone_at": m.undone_at.isoformat() if m.undone_at else None,
+        "can_undo": m.undone_at is None,
+    } for m in rows]}
+
+
+@router.post("/merges/{snapshot_id}/undo")
+async def undo_merge_route(snapshot_id: str, db: Session = Depends(get_db)):
+    """Recreate the merged-away record and roll back the keeper's changed fields."""
+    from processing.field_merge import undo_merge
+
+    result = undo_merge(db, snapshot_id)
+    if result["status"] == "not_found":
+        raise HTTPException(status_code=404, detail="No such merge")
+    if result["status"] == "conflict":
+        raise HTTPException(status_code=409, detail=result["detail"])
+    return result

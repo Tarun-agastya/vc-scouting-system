@@ -291,6 +291,54 @@ class SuppressedMatch(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class MergeSnapshot(Base):
+    """
+    Everything needed to put a merge back the way it was.
+
+    Written BEFORE a merge touches anything, because the alternative is not
+    recoverable: merging deletes the losing record and its Qdrant point, and
+    overwrites fields on the keeper. Nothing in the old fill-blanks merge could
+    be undone at all.
+
+    This exists so field-level merge can be offered safely. Letting a human
+    choose per field which value wins is precisely what removes the old
+    merge's accidental safety — it could only ever fill EMPTY fields, so it
+    could not destroy anything. Replacing a populated value is the whole point
+    of the feature, and it needs a way back.
+
+    loser_row      the deleted record, whole, as a JSON dict — enough to
+                   recreate the row exactly, including its id. Ids here are
+                   derived from name+website rather than random, so a restored
+                   record comes back with the SAME id and every reference to
+                   it still resolves.
+    keeper_before  only the keeper fields the merge actually changed, with
+                   their prior values. Storing just the diff keeps undo honest:
+                   restoring cannot clobber an edit made to some unrelated
+                   field after the merge.
+    choices        {field: "keeper" | "incoming"} as decided, kept for the
+                   audit trail and so the UI can show what was picked.
+
+    Pruned after settings.merge_undo_days; undone_at marks one already
+    reversed, which is never offered again.
+    """
+    __tablename__ = "merge_snapshots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    keeper_id = Column(UUID(as_uuid=True), index=True)
+    loser_id  = Column(UUID(as_uuid=True), index=True)
+    keeper_name = Column(String(300))
+    loser_name  = Column(String(300))
+
+    loser_row     = Column(JSON, default=dict)
+    keeper_before = Column(JSON, default=dict)
+    choices       = Column(JSON, default=dict)
+
+    review_id  = Column(UUID(as_uuid=True), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    undone_at  = Column(DateTime, nullable=True)
+
+
 class SiteProfile(Base):
     """
     Learned per-source extraction strategy (Phase R-2, 31 Jul — self-adapting
