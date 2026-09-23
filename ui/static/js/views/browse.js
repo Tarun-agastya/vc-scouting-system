@@ -690,7 +690,10 @@ export default {
             `).join("")}
           </tbody>
         </table>`;
-      resultsRegion.insertBefore(buildColumnBar(), wrap);
+      // Append in order. insertBefore(bar, wrap) was wrong: wrap is created
+      // above but not added to resultsRegion until the next line, so there was
+      // no child to insert before and the whole render threw.
+      resultsRegion.appendChild(buildColumnBar());
       resultsRegion.appendChild(wrap);
 
       // Detail/edit panel: a sibling of .table-wrap, not a colspan row inside
