@@ -194,6 +194,57 @@ def better_freetext(old, new) -> Optional[str]:
     return old_s
 
 
+# Tags harvested from newsletters arrive as hashtags — "#Finanzierung",
+# "#Instagram", "#Moverloop". 158 of them were sitting in the pending queue on
+# 23 Sep. The bare word is worth keeping; the hash is formatting from another
+# medium and makes "#Biotech" and "Biotech" look like different tags.
+_HASHTAG_RE = re.compile(r"^#+")
+
+
+def clean_tag(tag) -> str:
+    """Strip hashtag formatting and surrounding whitespace. '' if nothing left."""
+    return _HASHTAG_RE.sub("", str(tag or "").strip()).strip()
+
+
+def merge_list_field(old, new) -> Optional[list]:
+    """
+    Union two list-valued fields, or None when there is nothing to change.
+
+    Measured on the live queue (23 Sep): of 517 pending list-field reviews —
+    462 tags and 55 founders — **every single one was lossless**. 295 filled a
+    field that was empty; 222 added entries to an existing list. Not one
+    proposed dropping a value, so not one of them was a decision. A human
+    clicking approve 517 times was performing a union by hand.
+
+    So list fields get the same treatment `better_freetext` already gives
+    description: merge deterministically, and only involve a person when
+    something would actually be LOST.
+
+    Order is preserved — existing entries first, new ones appended — and
+    matching is case-insensitive after hashtag stripping, so "#Biotech",
+    "Biotech" and "biotech" collapse to one. Returns None when the union
+    equals what is already stored, so an unchanged re-crawl stages nothing.
+    """
+    old_list = safe_string_list(old)
+    new_list = safe_string_list(new)
+
+    merged, seen = [], set()
+    for item in list(old_list) + list(new_list):
+        cleaned = clean_tag(item)
+        if not cleaned:
+            continue
+        k = cleaned.casefold()
+        if k in seen:
+            continue
+        seen.add(k)
+        merged.append(cleaned)
+
+    current = [clean_tag(i) for i in old_list if clean_tag(i)]
+    if [i.casefold() for i in merged] == [i.casefold() for i in current]:
+        return None          # nothing new — don't stage, don't rewrite
+    return merged
+
+
 def safe_string_list(value) -> list:
     """
     Coerce a tags/founders-shaped value into a proper list[str] — never

@@ -194,3 +194,54 @@ def test_safe_string_list_treats_a_plain_string_as_one_tag_not_characters():
     individual characters."""
     assert safe_string_list("München") == ["München"]
     assert safe_string_list("brandneu") == ["brandneu"]
+
+
+def test_list_fields_merge_instead_of_asking_a_human():
+    """
+    23 Sep 2026. 517 of 569 pending field_update reviews were tags or
+    founders, and every one of them was lossless: 295 filled an empty field,
+    222 added to an existing list, and NOT ONE proposed dropping a value.
+    None of them was a decision — a person was performing a set union by
+    hand, 517 times, and every sweep refilled the queue because nothing
+    merged lists automatically.
+    """
+    from processing.field_policy import merge_list_field
+
+    # the empty-field case (295 of them)
+    assert merge_list_field([], ["AI", "Journalism"]) == ["AI", "Journalism"]
+
+    # the pure-addition case (222 of them) — order preserved, old first
+    assert merge_list_field(["Biotech"], ["Biotech", "pharma"]) == ["Biotech", "pharma"]
+
+    # nothing new: must return None so an unchanged re-crawl stages nothing.
+    # This is the half that stops the queue refilling.
+    assert merge_list_field(["Biotech", "SPRIND"], ["biotech", "SPRIND"]) is None
+
+
+def test_a_list_merge_never_drops_a_value():
+    """
+    The guarantee, checked directly rather than inferred. No measurement of
+    today's data can promise anything about tomorrow's, so the union must be
+    incapable of losing an entry even when the incoming list is shorter.
+    """
+    from processing.field_policy import merge_list_field
+
+    merged = merge_list_field(["Biotech", "SPRIND", "Förderung"], ["Biotech"])
+    # Incoming is a strict subset, so there is nothing to add and nothing to lose.
+    assert merged is None
+
+    merged = merge_list_field(["Biotech", "SPRIND"], ["pharma"])
+    assert set(merged) == {"Biotech", "SPRIND", "pharma"}
+
+
+def test_hashtags_are_stripped_and_deduped_against_bare_words():
+    """
+    158 tags arrived from newsletters as "#Finanzierung", "#Instagram".
+    Without stripping, "#Biotech" and "Biotech" are two different tags and
+    the union grows forever.
+    """
+    from processing.field_policy import clean_tag, merge_list_field
+
+    assert clean_tag("#Moverloop") == "Moverloop"
+    assert clean_tag("  ##Energytech ") == "Energytech"
+    assert merge_list_field(["#Biotech"], ["Biotech", "AI"]) == ["Biotech", "AI"]

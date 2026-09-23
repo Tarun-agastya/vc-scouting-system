@@ -688,6 +688,10 @@ _DIFF_FIELDS = {
 }
 # Free-text fields where trivial rewording should NOT count as a change.
 _TEXT_FIELDS = {"short_description", "description"}
+# List-valued fields, merged by union rather than adjudicated — see the
+# _diff_fields branch and field_policy.merge_list_field for the measurement
+# that motivated it.
+_LIST_FIELDS = {"tags", "founders"}
 
 
 def _norm(v) -> str:
@@ -731,7 +735,8 @@ def _diff_fields(master, incoming: dict, source: str, extracted_at_iso: str, db)
     wording is better" adds nothing a length-based rule can't — so this
     now resolves deterministically and never reaches the Review Inbox.
     """
-    from processing.field_policy import better_freetext, norm_value, safe_string_list
+    from processing.field_policy import (better_freetext, merge_list_field,
+                                         norm_value, safe_string_list)
 
     proposed = {}
     auto_apply = {}
@@ -749,6 +754,20 @@ def _diff_fields(master, incoming: dict, source: str, extracted_at_iso: str, db)
             if winner is None or winner == old_s:
                 continue  # no meaningful change, or old is already the richer value
             auto_apply[attr] = winner
+            continue
+
+        if attr in _LIST_FIELDS:
+            # Union instead of staging (23 Sep 2026). Measured on the live
+            # queue first: all 517 pending list-field reviews — 462 tags, 55
+            # founders — were lossless. 295 filled an empty field, 222 added
+            # to an existing list, and not one proposed dropping a value.
+            # None of them was a decision; a human was performing a union by
+            # hand, 517 times. merge_list_field returns None when nothing new
+            # arrived, so an unchanged re-crawl stages nothing at all — which
+            # is what was re-flooding the queue after every sweep.
+            merged = merge_list_field(old_val, new_val)
+            if merged is not None:
+                auto_apply[attr] = merged
             continue
 
         # norm_value (Phase Z-2) folds diacritics/casing and a small explicit
