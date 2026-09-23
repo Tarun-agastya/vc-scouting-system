@@ -16,6 +16,19 @@ engine = create_engine(
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Per-record change history. Installed here, on the sessionmaker, so EVERY
+# session in the process is covered — the API, the pipeline and any script run
+# from the command line. A bulk merge run from a terminal should land in the
+# same timeline as a click in the dashboard, and attaching per-caller would
+# eventually miss one. Import is deferred to avoid a cycle: change_log reads
+# the models, which this module has already imported.
+try:
+    from processing.change_log import install as _install_change_log
+
+    _install_change_log(SessionLocal)
+except Exception as exc:  # never let history capture stop the app booting
+    logger.warning(f"Change-log capture not installed: {exc}")
+
 
 def get_db():
     """FastAPI dependency: yields a database session."""

@@ -64,6 +64,9 @@ export const api = {
   /** Phase Q3: bulk Interested/Not Interested marking. status: "interested" | "not_interested" | null (clears back to unset). */
   markInterest: (ids, status) => post("/scout/mark-interest", { ids, status }),
   deleteStartup: (id) => del(`/scout/startup/${id}`, { confirm: "true" }),
+  /* Phase 2: what CHANGED about a record, as opposed to source_history's
+     record of where it was seen. */
+  startupHistory: (id, limit = 60) => get(`/scout/startup/${id}/history`, { limit }),
   /**
    * Semantic (vector) search — different endpoint + shape from listStartups.
    * Its synthesis step queues on the SAME gpu_mutex as ingestion (see

@@ -471,6 +471,24 @@ async def mark_interest(request: MarkInterestRequest, db: Session = Depends(get_
     return {"status": "ok", "updated": len(rows), "missing": missing}
 
 
+@router.get("/startup/{startup_id}/history")
+async def startup_history(startup_id: str, limit: int = 60, db: Session = Depends(get_db)):
+    """
+    What changed about this record, newest first.
+
+    Distinct from `source_history`, which says where the record was SEEN.
+    This says what was altered, when, and by what — a crawl, an approved
+    review, a merge, an undo. Empty for anything that has not changed since
+    the change log shipped; there is no backfill, because the information to
+    backfill it with was never kept.
+    """
+    from processing.change_log import history_for
+
+    if not db.query(Startup).filter(Startup.id == startup_id).first():
+        raise HTTPException(status_code=404, detail="Startup not found")
+    return {"startup_id": startup_id, "history": history_for(db, startup_id, limit)}
+
+
 @router.delete("/startup/{startup_id}")
 async def delete_startup(startup_id: str, confirm: bool = False, db: Session = Depends(get_db)):
     """

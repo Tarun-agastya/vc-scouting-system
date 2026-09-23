@@ -69,6 +69,51 @@ function attachRowTooltip(wrap) {
   wrap.addEventListener("scroll", hide, { passive: true });
 }
 
+/* The change timeline (Phase 2).
+   Fetched separately from the record itself: it is the one part of the panel
+   that can be slow on a much-recrawled company, and nobody should wait on it
+   to read the profile. An empty history is stated plainly rather than hidden,
+   because "nothing has changed" and "we weren't recording yet" look identical
+   in an empty list and mean different things. */
+const CHANGE_SOURCE_LABEL = {
+  crawl: "crawl", newsletter: "newsletter", rss: "RSS", review: "approved review",
+  merge: "merge", undo: "undo", manual: "manual edit", web_verify: "web check",
+  system: "unattributed",
+};
+
+async function loadHistory(cell, id) {
+  const body = cell.querySelector("#history-body");
+  if (!body) return;
+  let rows;
+  try { rows = (await api.startupHistory(id, 60)).history; }
+  catch (err) { body.innerHTML = `<div class="dim" style="font-size:12px">Couldn't load history (${esc(err.message)})</div>`; return; }
+
+  if (!rows.length) {
+    body.innerHTML = `<div class="dim" style="font-size:12px">
+      No changes recorded. Field history started on 23 Sep 2026 — anything before that
+      wasn't kept, so an older record shows nothing here until it next changes.</div>`;
+    return;
+  }
+
+  body.innerHTML = `<div class="stack" style="gap:9px">
+    ${rows.map((h) => `
+      <div style="font-size:12px;border-left:2px solid var(--border);padding-left:9px">
+        <div class="row" style="gap:6px;align-items:baseline">
+          <strong style="font-size:11.5px">${esc(h.field.replace(/_/g, " "))}</strong>
+          <span class="dim" style="font-size:11px">${esc(CHANGE_SOURCE_LABEL[h.source] || h.source)}</span>
+          <span class="grow"></span>
+          <span class="dim" style="font-size:11px">${fmt.dateTime(h.changed_at)}</span>
+        </div>
+        <div style="margin-top:2px;line-height:1.5">
+          ${h.old ? `<span class="dim" style="text-decoration:line-through">${esc(h.old)}</span> ` : `<span class="dim">(empty)</span> `}
+          <span style="color:var(--text-dim)">→</span>
+          ${h.new ? ` ${esc(h.new)}` : ` <span class="dim">(cleared)</span>`}
+        </div>
+        ${h.detail ? `<div class="dim truncate" style="font-size:10.5px;margin-top:2px">${esc(h.detail)}</div>` : ""}
+      </div>`).join("")}
+  </div>`;
+}
+
 function sourceLabel(sourceUrl, source) {
   if (sourceUrl) {
     try {
@@ -762,6 +807,14 @@ export default {
             </div>
           </div>
 
+          <div class="card" id="history-card">
+            <div class="card__head">
+              <span class="card__title">History</span>
+              <span class="dim" style="margin-left:auto;font-size:12px">what changed, newest first</span>
+            </div>
+            <div id="history-body"><div class="dim" style="font-size:12px">Loading…</div></div>
+          </div>
+
           <div class="card">
             <div class="card__head">
               <span class="card__title">Provenance</span>
@@ -870,6 +923,8 @@ export default {
           toast(`Mark failed: ${err.message}`, "error");
         }
       };
+      loadHistory(cell, id);
+
       cell.querySelector("#mark-interested-btn").addEventListener("click", () => markOne("interested"));
       cell.querySelector("#mark-not-interested-btn").addEventListener("click", () => markOne("not_interested"));
       cell.querySelector("#mark-clear-btn")?.addEventListener("click", () => markOne(null));

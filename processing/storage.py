@@ -183,15 +183,19 @@ def upsert_startup(
                         auto_apply[attr] = p["new"]
                 proposed = conflicts
 
-                for attr, val in auto_apply.items():
-                    ok, cleaned = _sanitize_for_column(attr, val)
-                    if ok:
-                        setattr(master, attr, cleaned)
-                    else:
-                        logger.warning(
-                            f"[Storage] Skipping auto-apply of '{attr}' for "
-                            f"'{master.name}': value doesn't fit the column ({val!r})"
-                        )
+                from processing.change_log import changes_from
+
+                with changes_from(source or "crawl", detail=source_url or None):
+                    for attr, val in auto_apply.items():
+                        ok, cleaned = _sanitize_for_column(attr, val)
+                        if ok:
+                            setattr(master, attr, cleaned)
+                        else:
+                            logger.warning(
+                                f"[Storage] Skipping auto-apply of '{attr}' for "
+                                f"'{master.name}': value doesn't fit the column ({val!r})"
+                            )
+                    db.flush()      # inside the block, so the change is attributed
 
                 # A website may have just been filled in above; without this
                 # the record stays invisible to exact-match dedup forever.

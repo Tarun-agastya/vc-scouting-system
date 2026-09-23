@@ -111,9 +111,12 @@ def _apply_field_updates(db, master: Startup, proposed: dict) -> None:
     human from applying every OTHER, perfectly good field in the same
     review too.
     """
+    from processing.change_log import changes_from
     from processing.field_policy import safe_string_list
 
     touched: set = set()
+    _ctx = changes_from("review", detail=f"approved review for '{master.name}'")
+    _ctx.__enter__()
     for field, change in (proposed or {}).items():
         new_val = change.get("new")
         if field == "founders":
@@ -144,6 +147,8 @@ def _apply_field_updates(db, master: Startup, proposed: dict) -> None:
 
     master.extracted_at = datetime.utcnow()
     master.updated_at = datetime.utcnow()
+    db.flush()                      # inside the block, so the change is attributed
+    _ctx.__exit__(None, None, None)
 
 
 def _merge_records(db, keeper: Startup, loser: Startup, incoming_data: dict) -> None:

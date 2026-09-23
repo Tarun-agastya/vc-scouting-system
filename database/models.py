@@ -291,6 +291,43 @@ class SuppressedMatch(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class FieldChange(Base):
+    """
+    One row per field that actually changed on a startup.
+
+    `source_history` records WHERE a record was seen; this records WHAT
+    changed about it. Nothing kept that before — the detail panel could show
+    a value but never how it got there, which is the first question anyone
+    asks when a value looks wrong.
+
+    Captured by a single SQLAlchemy flush hook rather than by instrumenting
+    each writer (see processing/change_log.py). Adding a logging call to every
+    place that writes a field guarantees that one day someone adds a writer
+    and forgets, and the gap is invisible — the history just quietly stops
+    being complete.
+
+    Values are stored as text, JSON-encoded when the field holds a list or a
+    dict, and truncated. This is a human-readable audit trail, not a backup:
+    restoring a record is MergeSnapshot's job.
+    """
+    __tablename__ = "field_changes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    startup_id = Column(UUID(as_uuid=True), index=True)
+
+    field     = Column(String(80), index=True)
+    old_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=True)
+
+    # What caused it: crawl | newsletter | review | merge | undo | manual |
+    # web_verify | system. Free text rather than an enum so a new caller can
+    # attribute itself without a migration.
+    source = Column(String(40), index=True)
+    detail = Column(Text, nullable=True)        # source url, review id, run id
+
+    changed_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class MergeSnapshot(Base):
     """
     Everything needed to put a merge back the way it was.

@@ -134,10 +134,19 @@ def merge_records(db, keeper, loser, choices: dict, review_id=None) -> dict:
     db.add(snapshot)
     db.flush()          # fail here, before anything is destroyed
 
-    for field, value in applied.items():
-        setattr(keeper, field, value)
-        if isinstance(value, (list, dict)):
-            flag_modified(keeper, field)
+    from processing.change_log import changes_from
+
+    with changes_from("merge", detail=f"merged from '{loser.name}'"):
+        for field, value in applied.items():
+            setattr(keeper, field, value)
+            if isinstance(value, (list, dict)):
+                flag_modified(keeper, field)
+        # Flush INSIDE the block. The change-log hook runs at flush time and
+        # reads the attribution contextvar then — a commit after the block has
+        # exited records the change correctly but labels it "system", which is
+        # worse than useless in a timeline whose whole purpose is saying what
+        # caused something.
+        db.flush()
 
     hist = list(keeper.source_history or [])
     known = {e.get("url") for e in hist}
@@ -196,15 +205,19 @@ def undo_merge(db, snapshot_id) -> dict:
         payload[k] = v
     db.add(Startup(**payload))
 
+    from processing.change_log import changes_from
+
     keeper = db.query(Startup).filter(Startup.id == snap.keeper_id).first()
     reverted = []
     if keeper is not None:
-        for field, old in (snap.keeper_before or {}).items():
-            setattr(keeper, field, old)
-            if isinstance(old, (list, dict)):
-                flag_modified(keeper, field)
-            reverted.append(field)
-        keeper.updated_at = datetime.utcnow()
+        with changes_from("undo", detail=f"undo of merge with '{snap.loser_name}'"):
+            for field, old in (snap.keeper_before or {}).items():
+                setattr(keeper, field, old)
+                if isinstance(old, (list, dict)):
+                    flag_modified(keeper, field)
+                reverted.append(field)
+            keeper.updated_at = datetime.utcnow()
+            db.flush()          # inside the block — see merge_records
 
     snap.undone_at = datetime.utcnow()
     db.commit()
