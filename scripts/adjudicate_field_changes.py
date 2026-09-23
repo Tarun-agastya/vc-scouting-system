@@ -53,7 +53,7 @@ import argparse
 import json
 import os
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -62,7 +62,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from database.connection import SessionLocal
 from database.models import DuplicateReview, Startup, SuppressedMatch
-from processing.field_adjudicator import adjudicate_field_change, may_auto_apply
+from processing.field_adjudicator import adjudicate_field_group, group_may_auto_apply
 
 
 def _proposed(review) -> dict:
@@ -84,84 +84,85 @@ def run(limit: int, apply: bool, only_field: str) -> None:
                    .order_by(DuplicateReview.created_at.asc())
                    .all())
 
-        counts, applied = Counter(), 0
-        seen = 0
+        # Group by (record, field) BEFORE judging anything. Several reviews
+        # frequently propose different values for the same field — 30 of the
+        # 65 companies with a sub_industry review had more than one — and
+        # judging them one at a time produced contradictory verdicts for the
+        # same company. Grouping is also cheaper: one call instead of three.
+        groups = defaultdict(list)
         for r in pending:
-            if seen >= limit:
-                break
             prop = _proposed(r)
-            fields = [f for f in prop if not only_field or f == only_field]
-            if not fields:
-                continue
-            master = db.query(Startup).filter(Startup.id == r.master_id).first()
+            for field, change in prop.items():
+                if only_field and field != only_field:
+                    continue
+                if isinstance(change, dict):
+                    groups[(r.master_id, field)].append((r, change))
+
+        counts, applied, suppressed = Counter(), 0, 0
+        for i, ((master_id, field), items) in enumerate(groups.items()):
+            if i >= limit:
+                break
+            master = db.query(Startup).filter(Startup.id == master_id).first()
             if master is None:
                 continue
 
-            # One review can carry several fields; judge each, and only
-            # resolve the review when every field agrees on keep_old —
-            # otherwise a half-applied review would silently drop the fields
-            # nobody ruled on.
-            verdicts = {}
-            for field in fields:
-                change = prop[field]
-                if not isinstance(change, dict):
-                    continue
-                res = adjudicate_field_change(master, field,
-                                              change.get("old"), change.get("new"))
-                if not res:
-                    counts["model unavailable"] += 1
-                    continue
-                verdicts[field] = res
-                counts[f"{res['verdict']} ({res['confidence']})"] += 1
-
-            if not verdicts:
+            current = getattr(master, field, None)
+            candidates = [c.get("new") for _r, c in items]
+            res = adjudicate_field_group(master, field, current, candidates)
+            if not res:
+                counts["model unavailable"] += 1
                 continue
-            seen += 1
-            all_keep = all(may_auto_apply(v, f) for f, v in verdicts.items())
-            mark = "->CLOSE" if (apply and all_keep) else "       "
-            head = next(iter(verdicts))
-            print(f"  {mark} {(master.name or '?')[:22]:24} {head:14} "
-                  f"{verdicts[head]['verdict']:9} {verdicts[head]['confidence']}")
-            print(f"           {verdicts[head]['reasoning'][:94]}")
 
-            # Record the reasoning either way — that is most of the value even
-            # when nothing is auto-applied, because the next human to open it
-            # has the answer already.
-            ev = dict(r.evidence or {})
-            ev["field_adjudication"] = {
-                f: {**v, "at": datetime.utcnow().isoformat(timespec="seconds")}
-                for f, v in verdicts.items()}
-            r.evidence = ev
-            flag_modified(r, "evidence")
-            first = verdicts[head]
-            r.llm_explanation = f"[{first['verdict']} / {first['confidence']}] {first['reasoning']}"[:2000]
+            keeps = group_may_auto_apply(res, field)
+            counts[("keep current" if res["winner"] is None else "prefers a proposal")
+                   + f" ({res['confidence']})"] += 1
+            mark = "->CLOSE" if (apply and keeps) else "       "
+            n = f"[{len(items)} proposals]" if len(items) > 1 else ""
+            print(f"  {mark} {(master.name or '?')[:22]:24} {field:13} {n}")
+            print(f"           stored: {str(current)[:58]}")
+            for c in res["considered"]:
+                flag = "  <- picked" if c == res["winner"] else ""
+                print(f"           cand  : {str(c)[:58]}{flag}")
+            if res["winner"] is None:
+                print(f"           keeps the stored value")
+            print(f"           {res['reasoning'][:92]}")
 
-            if apply and all_keep:
-                for field in verdicts:
-                    change = prop.get(field) or {}
-                    db.add(SuppressedMatch(kind="rejected_value", master_id=r.master_id,
+            for r, _c in items:
+                ev = dict(r.evidence or {})
+                ev["field_adjudication"] = {
+                    **res, "at": datetime.utcnow().isoformat(timespec="seconds")}
+                r.evidence = ev
+                flag_modified(r, "evidence")
+                r.llm_explanation = (
+                    f"[{'keep stored' if res['winner'] is None else 'prefers: ' + str(res['winner'])}"
+                    f" / {res['confidence']}] {res['reasoning']}")[:2000]
+
+            if apply and keeps:
+                for r, change in items:
+                    db.add(SuppressedMatch(kind="rejected_value", master_id=master_id,
                                            field=field, value=str(change.get("new"))))
-                r.status = "rejected"
-                r.resolved_at = datetime.utcnow()
+                    r.status = "rejected"
+                    r.resolved_at = datetime.utcnow()
+                    suppressed += 1
                 applied += 1
 
         db.commit()
 
         print("\n" + "=" * 64)
         for k, v in counts.most_common():
-            print(f"  {k:28} {v}")
+            print(f"  {k:34} {v}")
         print("=" * 64)
         if apply:
             left = db.query(DuplicateReview).filter(
                 DuplicateReview.status == "pending").count()
-            print(f"\nClosed {applied} reviews as 'keep what we have'. Still pending: {left}")
+            print(f"\nClosed {suppressed} reviews across {applied} records. Still pending: {left}")
         else:
-            print("\nReport only — verdicts written onto the reviews, nothing resolved.")
-            print("The Review Inbox now shows the reasoning. Re-run with --apply to close")
-            print("the confident keep_old ones.")
-        print("\n'take_new' is never auto-applied: it overwrites a stored value, and")
-        print("over-writing a correct value with a worse one is the failure this")
-        print("database has actually suffered.")
+            print("\nReport only — reasoning written onto every review, nothing resolved.")
+            print("Re-run with --apply to close the ones where the stored value wins.")
+        print("\nA proposal that WINS is never applied automatically: it overwrites a")
+        print("stored value, and over-writing a correct value with a worse one is the")
+        print("failure this database has actually suffered. Those stay for a person,")
+        print("with the model's pick and reasoning already attached.")
     finally:
         db.close()
 
