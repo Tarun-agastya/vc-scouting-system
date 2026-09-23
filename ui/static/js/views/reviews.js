@@ -292,6 +292,147 @@ export default {
       renderBulkToolbar();
     }
 
+
+    /* ── Field-level merge screen (Phase 3) ──────────────────────────────
+       Side by side, one radio per field. Fields where both records already
+       agree are collapsed behind a toggle: on a real pair most fields match,
+       and showing thirty identical rows buries the three that need a
+       decision.
+
+       Every merge is reversible — the backend snapshots before touching
+       anything — so the toast offers Undo directly rather than making
+       someone hunt for it. */
+    async function openMergeScreen(reviewId) {
+      const host = detailEl;
+      const prev = host.innerHTML;
+      host.innerHTML = `<div class="row" style="padding:40px;justify-content:center"><span class="spinner"></span></div>`;
+
+      let pv;
+      try { pv = await api.mergePreview(reviewId); }
+      catch (err) {
+        host.innerHTML = `<div class="empty" style="padding:30px"><div class="empty__title">Can't merge these</div><div>${esc(err.message)}</div></div>`;
+        return;
+      }
+
+      const choices = {};
+      pv.fields.forEach((f) => { choices[f.field] = f.default; });
+      let showSame = false;
+
+      const fmtVal = (v) => {
+        if (v === null || v === undefined || v === "") return '<span class="dim">—</span>';
+        if (Array.isArray(v)) return v.length ? v.map((x) => `<span class="chip">${esc(x)}</span>`).join(" ") : '<span class="dim">—</span>';
+        return esc(String(v));
+      };
+
+      function draw() {
+        const differing = pv.fields.filter((f) => f.differs);
+        const same = pv.fields.filter((f) => !f.differs);
+        const rowsFor = (list) => list.map((f) => `
+          <tr data-field="${esc(f.field)}">
+            <td class="dim" style="white-space:nowrap;font-size:11px;text-transform:uppercase;letter-spacing:.05em;vertical-align:top;padding-top:11px">${esc(f.field.replace(/_/g, " "))}</td>
+            <td style="vertical-align:top">
+              <label class="row" style="gap:7px;align-items:flex-start;cursor:pointer">
+                <input type="radio" name="m-${esc(f.field)}" value="keeper" ${choices[f.field] === "keeper" ? "checked" : ""} style="margin-top:3px;flex:none">
+                <span style="font-size:12.5px;line-height:1.45">${fmtVal(f.keeper)}</span>
+              </label>
+            </td>
+            <td style="vertical-align:top">
+              <label class="row" style="gap:7px;align-items:flex-start;cursor:pointer">
+                <input type="radio" name="m-${esc(f.field)}" value="incoming" ${choices[f.field] === "incoming" ? "checked" : ""} style="margin-top:3px;flex:none">
+                <span style="font-size:12.5px;line-height:1.45">${fmtVal(f.incoming)}</span>
+              </label>
+            </td>
+          </tr>`).join("");
+
+        host.innerHTML = `
+          <div class="stack" style="gap:14px">
+            <div class="row" style="gap:10px;align-items:center">
+              <strong style="font-size:15px">Merge field by field</strong>
+              <span class="grow"></span>
+              <button class="btn btn--ghost btn--sm" id="m-cancel">Cancel</button>
+            </div>
+            <div class="dim" style="font-size:12px">
+              Pick which value survives on each row. The record on the right is deleted
+              afterwards — and every merge can be undone.
+            </div>
+            <div class="table-wrap">
+              <table class="table">
+                <thead><tr>
+                  <th style="width:120px">Field</th>
+                  <th>Keep — <strong>${esc(pv.keeper.name)}</strong><div class="dim" style="font-weight:400;font-size:11px">survives</div></th>
+                  <th>Merged away — <strong>${esc(pv.incoming.name)}</strong><div class="dim" style="font-weight:400;font-size:11px">deleted after merge</div></th>
+                </tr></thead>
+                <tbody>
+                  ${differing.length ? rowsFor(differing) : `<tr><td colspan="3" class="dim" style="padding:14px">Nothing differs between these two.</td></tr>`}
+                  ${same.length && showSame ? rowsFor(same) : ""}
+                </tbody>
+              </table>
+            </div>
+            ${same.length ? `<button class="btn btn--ghost btn--sm" id="m-toggle-same" style="align-self:flex-start">
+                ${showSame ? "Hide" : "Show"} ${same.length} field${same.length === 1 ? "" : "s"} that already match
+              </button>` : ""}
+            <div class="row" style="gap:10px">
+              <button class="btn btn--primary" id="m-go">⚖️ Merge these ${differing.length} decision${differing.length === 1 ? "" : "s"}</button>
+              <span class="dim" style="font-size:11px;align-self:center">Reversible — an Undo button appears afterwards</span>
+            </div>
+          </div>`;
+
+        host.querySelectorAll('input[type="radio"]').forEach((el) =>
+          el.addEventListener("change", (e) => {
+            const field = e.target.closest("tr").dataset.field;
+            choices[field] = e.target.value;
+          }));
+        host.querySelector("#m-cancel")?.addEventListener("click", () => { host.innerHTML = prev; renderDetail(); });
+        host.querySelector("#m-toggle-same")?.addEventListener("click", () => { showSame = !showSame; draw(); });
+        host.querySelector("#m-go")?.addEventListener("click", doMerge);
+      }
+
+      async function doMerge() {
+        const btn = host.querySelector("#m-go");
+        btn.disabled = true;
+        btn.textContent = "Merging…";
+        try {
+          const res = await api.mergeReview(reviewId, choices);
+          const took = res.fields_changed || [];
+          toast(took.length
+            ? `Merged — took ${took.length} value${took.length === 1 ? "" : "s"} from ${pv.incoming.name}`
+            : `Merged — kept every value from ${pv.keeper.name}`);
+          offerUndo(res.snapshot_id, pv);
+          await loadCounts();
+          await loadList();
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = "⚖️ Merge";
+          toast(`Merge failed: ${err.message}`, "error");
+        }
+      }
+    }
+
+    /* A persistent undo affordance, not a toast that vanishes in 4 seconds.
+       Someone who merges the wrong way usually realises a moment later. */
+    function offerUndo(snapshotId, pv) {
+      const bar = document.createElement("div");
+      bar.className = "row";
+      bar.style.cssText = "gap:10px;align-items:center;padding:10px 12px;margin-bottom:12px;" +
+        "border:1px solid var(--border);border-left:3px solid var(--brand-lime);" +
+        "background:var(--surface-2);border-radius:var(--radius-sm)";
+      bar.innerHTML = `<span style="font-size:12.5px">Merged <strong>${esc(pv.incoming.name)}</strong> into <strong>${esc(pv.keeper.name)}</strong></span>
+        <span class="grow"></span>
+        <button class="btn btn--sm" id="undo-now">↩ Undo</button>
+        <button class="btn btn--ghost btn--sm" id="undo-dismiss">✕</button>`;
+      detailEl.parentElement.insertBefore(bar, detailEl);
+      bar.querySelector("#undo-dismiss").addEventListener("click", () => bar.remove());
+      bar.querySelector("#undo-now").addEventListener("click", async () => {
+        try {
+          const r = await api.undoFieldMerge(snapshotId);
+          toast(`Undone — ${esc(r.restored)} restored`);
+          bar.remove();
+          await loadCounts();
+          await loadList();
+        } catch (err) { toast(`Undo failed: ${err.message}`, "error"); }
+      });
+    }
+
     /* ── Phase Z-4: pagination past the first PAGE_SIZE rows ────────────── */
     function renderPagination() {
       const total = state.primaryTotal;
@@ -650,6 +791,10 @@ export default {
               <button class="btn btn--danger" id="reject-btn">
                 ✋ Keep separate — different
               </button>
+              ${rv.review_type === "possible_duplicate" && rv.incoming_id ? `
+                <button class="btn" id="merge-fields-btn" title="Choose field by field which value survives. Reversible.">
+                  ⚖️ Merge field by field…
+                </button>` : ""}
             </div>` : `
             <div class="row wrap" style="gap:10px;align-items:center">
               <span class="chip">Already ${esc(rv.status)}</span>
@@ -660,6 +805,7 @@ export default {
             </div>`}
         </div>`;
 
+      detailEl.querySelector("#merge-fields-btn")?.addEventListener("click", () => openMergeScreen(entry.id));
       detailEl.querySelector("#approve-btn")?.addEventListener("click", () => act("approve", entry.id));
       detailEl.querySelector("#reject-btn")?.addEventListener("click", () => act("reject", entry.id));
       detailEl.querySelector("#delete-master-btn")?.addEventListener("click", () =>
