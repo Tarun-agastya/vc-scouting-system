@@ -9,19 +9,20 @@
 import { api, fmt, esc } from "../api.js";
 import { toast, confirmAction, navigate, recordBatch } from "../router.js";
 
+/* Rebuilt 23 Sep 2026 for scanning.
+   The old grid had twelve columns — industry, cluster, city, country, stage,
+   employees, tier, score, verified, interest, source — and still never showed
+   what a company DOES. You could read every column and not know. So the row is
+   now two lines: identity on top, the one-liner underneath with location and
+   industry folded in. `short_description` was already in the API response the
+   whole time; it was simply never rendered.
+   Only keys the backend can actually order by are marked sortable. */
 const COLUMNS = [
-  ["name", "Name", true],
+  ["name", "Company", true],
+  ["city", "Location", true],
   ["industry", "Industry", true],
-  ["tech_cluster", "Cluster", true],
-  ["city", "City", true],
-  ["country", "Country", true],
-  ["funding_stage", "Stage", true],
-  ["employee_count", "Employees", false],
-  ["score_tier", "Tier", true],
   ["enrichment_score", "Score", true],
-  ["verification_status", "Verified", false],
-  ["interest_status", "Interest", false],
-  ["source_url", "Source", false],
+  ["verification_status", "State", true],
 ];
 
 /* Phase V-3: only shown while a thesis is selected — relevance sort takes
@@ -462,21 +463,18 @@ export default {
             ${rows.map((s) => `
               <tr data-id="${esc(s.id)}">
                 <td><input type="checkbox" class="row-select" data-id="${esc(s.id)}" ${state.selectedIds.has(s.id) ? "checked" : ""}></td>
-                <td>${s.priority_match ? `<span title="Matches a priority thesis (e.g. SÜDPACK's flexible/foil + medical packaging focus)">⭐</span> ` : ""}${s.business_model === "B2B" ? `<span title="B2B — the stated scouting priority">🤝</span> ` : ""}${s.is_gmbh ? `<span title="GmbH — the stated scouting priority">🏢</span> ` : ""}<strong>${esc(s.name)}</strong></td>
+                <td class="cell-company">
+                  <div class="co-name">
+                    ${s.priority_match ? `<span title="Matches a priority thesis">⭐</span>` : ""}${s.business_model === "B2B" ? `<span title="B2B">🤝</span>` : ""}${s.is_gmbh ? `<span title="GmbH">🏢</span>` : ""}
+                    <strong>${esc(s.name)}</strong>
+                  </div>
+                  <div class="co-sub">${esc(s.short_description, "—")}</div>
+                </td>
                 ${thesisActive ? `<td class="mono" title="${esc((s.matched_signals || []).join('; '), 'semantic match only')}">${s.relevance_score?.toFixed(2) ?? "—"}</td>` : ""}
-                <td class="dim">${esc(s.industry, "—")}</td>
-                <td class="dim">${esc(s.tech_cluster, "—")}</td>
-                <td class="dim">${esc(s.city, "—")}</td>
-                <td class="dim">${esc(s.country, "—")}</td>
-                <td class="dim">${esc(s.funding_stage, "—")}</td>
-                <td class="dim">${esc(s.employee_count, "—")}</td>
-                <td>${s.score_tier ? `<span class="chip ${tierChipClass(s.score_tier)}">${esc(s.score_tier.replace(/_/g, " "))}</span>` : "—"}</td>
-                <td class="mono">${s.enrichment_score ?? "—"}</td>
-                <td>${verificationBadge(s.verification_status)}</td>
-                <td>${interestBadge(s.interest_status)}</td>
-                <td class="dim truncate" style="max-width:160px">${s.source_url
-                  ? `<a href="${esc(s.source_url)}" target="_blank" rel="noopener" title="${esc(s.source_url)}" onclick="event.stopPropagation()">${esc(sourceLabel(s.source_url, s.source))}</a>`
-                  : esc(sourceLabel(s.source_url, s.source))}</td>
+                <td class="dim nowrap">${esc(s.city, "—")}${s.country ? `<div class="co-sub">${esc(s.country)}</div>` : ""}</td>
+                <td class="dim">${esc(s.industry, "—")}${s.tech_cluster ? `<div class="co-sub">${esc(s.tech_cluster)}</div>` : ""}</td>
+                <td class="nowrap"><span class="mono score-n">${s.enrichment_score ?? "—"}</span>${s.score_tier ? `<div class="co-sub">${esc(s.score_tier.replace(/_/g, " ").toLowerCase())}</div>` : ""}</td>
+                <td class="nowrap">${verificationBadge(s.verification_status)}${s.interest_status ? `<div style="margin-top:3px">${interestBadge(s.interest_status)}</div>` : ""}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -673,20 +671,43 @@ export default {
             <button class="btn btn--sm" id="mark-not-interested-btn">👎 Not interested</button>
             ${s.interest_status ? `<button class="btn btn--ghost btn--sm" id="mark-clear-btn">— Clear</button>` : ""}
           </div>
-          <div class="grid-2">
-            <div class="card">
-              <div class="card__head"><span class="card__title">Profile</span></div>
-              <div class="stack" style="gap:6px;font-size:13px">
-                <div><span class="dim">Website:</span> ${s.website ? `<a href="${esc(s.website)}" target="_blank" rel="noopener">${esc(s.website)}</a>` : "—"}</div>
-                <div><span class="dim">One-liner:</span> ${esc(s.short_description, "—")}</div>
-                <div><span class="dim">Description:</span> ${esc(s.description, "—")}</div>
-                <div><span class="dim">Location:</span> ${esc(s.city, "—")}, ${esc(s.country, "—")}</div>
-                <div><span class="dim">Founded:</span> ${esc(s.founded_year, "—")} · <span class="dim">Employees:</span> ${esc(s.employee_count, "—")}</div>
-                <div><span class="dim">Stage:</span> ${esc(s.funding_stage, "—")}</div>
-                <div><span class="dim">Contact:</span> ${esc(s.contact_info, "—")}</div>
-                <div><span class="dim">Tags:</span> ${(s.tags || []).map((t) => `<span class="chip" style="margin-right:4px">${esc(t)}</span>`).join("") || "—"}</div>
+          <div class="card">
+            <div class="dt-head" style="margin-bottom:14px">
+              <div class="stack" style="gap:3px;min-width:0">
+                <span class="dt-title">${esc(s.name)}</span>
+                ${s.website ? `<a href="${esc(s.website)}" target="_blank" rel="noopener" style="font-size:12.5px">${esc(s.website.replace(/^https?:\/\//, ""))}</a>` : `<span class="dim" style="font-size:12.5px">no website</span>`}
+              </div>
+              <span class="grow"></span>
+              <div class="row" style="gap:6px;flex-wrap:wrap">
+                ${verificationBadge(s.verification_status)}
+                ${s.score_tier ? `<span class="chip ${tierChipClass(s.score_tier)}">${esc(s.score_tier.replace(/_/g, " ").toLowerCase())}</span>` : ""}
               </div>
             </div>
+
+            ${s.short_description ? `<div class="dt-prose" style="margin-bottom:13px"><strong>${esc(s.short_description)}</strong></div>` : ""}
+            ${s.description ? `<div class="dt-prose dim" style="margin-bottom:15px">${esc(s.description)}</div>` : ""}
+
+            <div class="dt-grid">
+              <div class="dt-field"><span class="dt-label">Location</span><span class="dt-value">${esc([s.city, s.country].filter(Boolean).join(", "), "\u2014")}</span></div>
+              <div class="dt-field"><span class="dt-label">Industry</span><span class="dt-value">${esc(s.industry, "\u2014")}</span></div>
+              <div class="dt-field"><span class="dt-label">Cluster</span><span class="dt-value">${esc(s.tech_cluster, "\u2014")}</span></div>
+              <div class="dt-field"><span class="dt-label">Founded</span><span class="dt-value">${esc(s.founded_year, "\u2014")}</span></div>
+              <div class="dt-field"><span class="dt-label">Employees</span><span class="dt-value">${esc(s.employee_count, "\u2014")}</span></div>
+              <div class="dt-field"><span class="dt-label">Stage</span><span class="dt-value">${esc(s.funding_stage, "\u2014")}</span></div>
+              <div class="dt-field"><span class="dt-label">Model</span><span class="dt-value">${esc(s.business_model, "\u2014")}${s.is_gmbh ? " \u00b7 GmbH" : ""}</span></div>
+              <div class="dt-field"><span class="dt-label">Contact</span><span class="dt-value">${esc(s.contact_info, "\u2014")}</span></div>
+            </div>
+
+            ${(s.tags || []).length ? `
+              <div class="dt-field" style="margin-top:15px">
+                <span class="dt-label" style="margin-bottom:5px">Tags</span>
+                <div class="row" style="gap:5px;flex-wrap:wrap">
+                  ${(s.tags || []).map((t) => `<span class="chip">${esc(t)}</span>`).join("")}
+                </div>
+              </div>` : ""}
+          </div>
+
+          <div class="grid-2">
             <div class="card">
               <div class="card__head"><span class="card__title">Score breakdown</span></div>
               <div class="stack" style="gap:8px">

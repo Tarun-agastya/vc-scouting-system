@@ -733,11 +733,33 @@ async def list_startups(
             .offset(offset).limit(limit).all()
         )
     else:
+        # Every column the Browse header offers must be listed here. It used
+        # to hold four keys while the UI made eight headers clickable, and an
+        # unknown key fell back to created_at — so clicking "Score", "City" or
+        # "Industry" put a sort arrow on that column and silently ordered by
+        # date instead. Verified 23 Sep: sort=enrichment_score, sort=city and
+        # sort=industry returned byte-identical pages. `enrichment_score` is
+        # kept as an alias because that is the field name the API returns, and
+        # sending it back as the sort key is the obvious thing for a caller to
+        # do.
         sort_col = {
             "created_at": Startup.created_at,
             "extracted_at": Startup.extracted_at,
             "name": Startup.name,
             "score": Startup.enrichment_score,
+            "enrichment_score": Startup.enrichment_score,
+            "city": Startup.city,
+            "country": Startup.country,
+            "industry": Startup.industry,
+            "sub_industry": Startup.sub_industry,
+            "tech_cluster": Startup.tech_cluster,
+            "funding_stage": Startup.funding_stage,
+            "employee_count": Startup.employee_count,
+            "founded_year": Startup.founded_year,
+            "score_tier": Startup.score_tier,
+            "verification_status": Startup.verification_status,
+            "interest_status": Startup.interest_status,
+            "business_model": Startup.business_model,
         }.get(sort, Startup.created_at)
         sort_col = sort_col.asc() if order == "asc" else sort_col.desc()
         startups = query.order_by(sort_col, Startup.id).offset(offset).limit(limit).all()

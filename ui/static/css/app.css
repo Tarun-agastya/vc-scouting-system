@@ -264,3 +264,47 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .grid-2, .inbox-grid { grid-template-columns: 1fr; }
   .hidden-mobile { display: none; }
 }
+
+/* ── Browse: scanning rows (23 Sep 2026) ──────────────────────────────────
+   Two lines per row instead of twelve columns. The old grid showed industry,
+   cluster, city, country, stage, employees, tier, score, verified, interest
+   and source — and still never said what the company did, which is the one
+   thing you scan for. Identity on the first line, the one-liner underneath. */
+.table td.cell-company { max-width: 420px; }
+.co-name { display: flex; align-items: baseline; gap: 5px; font-size: 13.5px; line-height: 1.35; }
+.co-name strong { font-weight: 620; }
+.co-sub {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;          /* two lines of the one-liner, then fade */
+  -webkit-box-orient: vertical;
+}
+.table td { vertical-align: top; padding-top: 9px; padding-bottom: 9px; }
+.table .nowrap { white-space: nowrap; }
+.score-n { font-size: 13px; font-weight: 600; }
+
+/* ── Browse: detail panel ─────────────────────────────────────────────────
+   A label/value grid rather than "Label: value" run together inline, so the
+   eye can travel down the values without re-reading the labels each time. */
+.dt-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.dt-title { font-size: 19px; font-weight: 650; line-height: 1.2; }
+.dt-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 13px 20px;
+}
+.dt-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dt-label {
+  font-size: 10.5px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: 650;
+}
+.dt-value { font-size: 13px; line-height: 1.45; word-break: break-word; }
+.dt-prose { font-size: 13px; line-height: 1.6; max-width: 72ch; }
