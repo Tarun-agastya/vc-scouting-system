@@ -9,21 +9,86 @@
 import { api, fmt, esc } from "../api.js";
 import { toast, confirmAction, navigate, recordBatch } from "../router.js";
 
-/* Rebuilt 23 Sep 2026 for scanning.
-   The old grid had twelve columns — industry, cluster, city, country, stage,
-   employees, tier, score, verified, interest, source — and still never showed
-   what a company DOES. You could read every column and not know. So the row is
-   now two lines: identity on top, the one-liner underneath with location and
-   industry folded in. `short_description` was already in the API response the
-   whole time; it was simply never rendered.
-   Only keys the backend can actually order by are marked sortable. */
-const COLUMNS = [
-  ["name", "Company", true],
-  ["city", "Location", true],
-  ["industry", "Industry", true],
-  ["enrichment_score", "Score", true],
-  ["verification_status", "State", true],
+/* The column catalogue (Phase 1, 23 Sep 2026).
+   Every column the list endpoint can fill, with the ones shown by default
+   flagged. Name is not listed because it is always first and never optional —
+   a row you cannot identify is not a row.
+
+   `sortable` is true only where the BACKEND can order by that key. Marking a
+   column sortable that the API does not understand puts an arrow on the header
+   and silently sorts by date, which is exactly the bug fixed earlier today. */
+const ALL_COLUMNS = [
+  ["short_description", "What they do", false, false],
+  ["city",              "Location",     true,  true],
+  ["industry",          "Industry",     true,  true],
+  ["sub_industry",      "Sub-industry", true,  false],
+  ["tech_cluster",      "Cluster",      true,  false],
+  ["enrichment_score",  "Score",        true,  true],
+  ["verification_status", "State",      true,  true],
+  ["interest_status",   "Interest",     true,  false],
+  ["funding_stage",     "Stage",        true,  false],
+  ["employee_count",    "Employees",    true,  false],
+  ["founded_year",      "Founded",      true,  false],
+  ["business_model",    "Model",        true,  false],
+  ["total_funding_usd", "Funding",      false, false],
+  ["tags",              "Tags",         false, false],
+  ["website",           "Website",      false, false],
+  ["source_url",        "Source",       false, false],
 ];
+
+const COLUMN_STORAGE_KEY = "browse.columns.v1";
+
+function defaultColumnKeys() {
+  return ALL_COLUMNS.filter(([, , , on]) => on).map(([k]) => k);
+}
+
+function loadColumnKeys() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(COLUMN_STORAGE_KEY) || "null");
+    if (!Array.isArray(saved) || !saved.length) return defaultColumnKeys();
+    // Drop anything no longer in the catalogue, so removing a column in code
+    // cannot leave a saved preference rendering a blank stripe forever.
+    const known = new Set(ALL_COLUMNS.map(([k]) => k));
+    const kept = saved.filter((k) => known.has(k));
+    return kept.length ? kept : defaultColumnKeys();
+  } catch { return defaultColumnKeys(); }
+}
+
+function saveColumnKeys(keys) {
+  try { localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(keys)); } catch { /* private mode */ }
+}
+
+/* One renderer per column. Keeping them here rather than inline in the row
+   template is what makes the set configurable at all — the row builds itself
+   from whichever keys are active. */
+const CELL = {
+  short_description: (s) => `<span class="dim">${esc(s.short_description, "—")}</span>`,
+  city:              (s) => `<span class="dim">${esc([s.city, s.country].filter(Boolean).join(", "), "—")}</span>`,
+  industry:          (s) => `<span class="dim">${esc(s.industry, "—")}</span>`,
+  sub_industry:      (s) => `<span class="dim">${esc(s.sub_industry, "—")}</span>`,
+  tech_cluster:      (s) => `<span class="dim">${esc(s.tech_cluster, "—")}</span>`,
+  enrichment_score:  (s) => `<span class="mono score-n">${s.enrichment_score ?? "—"}</span>${s.score_tier ? ` <span class="chip ${tierChipClass(s.score_tier)}">${esc(s.score_tier.replace(/_/g, " ").toLowerCase())}</span>` : ""}`,
+  verification_status: (s) => verificationBadge(s.verification_status),
+  interest_status:   (s) => s.interest_status ? interestBadge(s.interest_status) : `<span class="dim">—</span>`,
+  funding_stage:     (s) => `<span class="dim">${esc(s.funding_stage, "—")}</span>`,
+  employee_count:    (s) => `<span class="dim">${esc(s.employee_count, "—")}</span>`,
+  founded_year:      (s) => `<span class="dim">${esc(s.founded_year, "—")}</span>`,
+  business_model:    (s) => `<span class="dim">${esc(s.business_model, "—")}${s.is_gmbh ? " · GmbH" : ""}</span>`,
+  // fmt has no money helper, and adding one for a single column is more
+  // surface than it earns. Compact and local to the renderer.
+  total_funding_usd: (s) => {
+    const v = s.total_funding_usd;
+    if (!v) return `<span class="dim">—</span>`;
+    const m = v >= 1e9 ? `${(v / 1e9).toFixed(1)}B` : v >= 1e6 ? `${(v / 1e6).toFixed(1)}M`
+            : v >= 1e3 ? `${(v / 1e3).toFixed(0)}k` : String(v);
+    return `<span class="mono dim">$${m}</span>`;
+  },
+  tags:              (s) => (s.tags || []).length ? (s.tags || []).slice(0, 3).map((t) => `<span class="chip">${esc(t)}</span>`).join(" ") : `<span class="dim">—</span>`,
+  website:           (s) => s.website ? `<a href="${esc(s.website)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${esc(s.website.replace(/^https?:\/\/(www\.)?/, ""))}</a>` : `<span class="dim">—</span>`,
+  source_url:        (s) => s.source_url
+    ? `<a href="${esc(s.source_url)}" target="_blank" rel="noopener" title="${esc(s.source_url)}" onclick="event.stopPropagation()">${esc(sourceLabel(s.source_url, s.source))}</a>`
+    : `<span class="dim">${esc(sourceLabel(s.source_url, s.source))}</span>`,
+};
 
 /* Phase V-3: only shown while a thesis is selected — relevance sort takes
    over from the normal `sort`/`order` columns, so it's not clickable-sortable
@@ -189,6 +254,7 @@ export default {
   mount(el) {
     const state = {
       mode: "keyword",           // "keyword" | "semantic"
+      columns: loadColumnKeys(),  // Phase 1: which columns are shown, per browser
       q: "",
       filters: { industry: "", country: "", city: "", tech_cluster: "", funding_stage: "", score_tier: "", employee_count: "", verification_status: "", source_url: "", interest_status: "", business_model: "", is_gmbh: "" },
       thesis: "",           // Phase V-3: selected thesis id — "" means normal sort/order browsing
@@ -497,6 +563,70 @@ export default {
       }
     }
 
+
+    /* Column picker (Phase 1).
+       Checkboxes only — no drag-to-reorder. Columns render in catalogue order
+       whatever order they were ticked, which keeps the layout stable and
+       predictable; adding and removing is what people actually want, and
+       reordering is a much larger interaction for much less benefit.
+
+       Name is deliberately absent from the list: it is always first and never
+       optional, because a row you cannot identify is not a row. */
+    function buildColumnBar() {
+      const bar = document.createElement("div");
+      bar.className = "row";
+      bar.style.cssText = "gap:8px;align-items:center;margin-bottom:8px";
+      const chosen = new Set(state.columns);
+      bar.innerHTML = `
+        <span class="grow"></span>
+        <div style="position:relative">
+          <button class="btn btn--ghost btn--sm" id="col-toggle">⚙ Columns (${chosen.size})</button>
+          <div id="col-menu" class="card hidden"
+               style="position:absolute;right:0;top:calc(100% + 5px);z-index:40;min-width:230px;
+                      padding:10px;max-height:340px;overflow:auto;box-shadow:0 8px 26px rgba(0,0,0,.35)">
+            <div class="stack" style="gap:5px">
+              ${ALL_COLUMNS.map(([key, label]) => `
+                <label class="row" style="gap:7px;cursor:pointer;font-size:12.5px">
+                  <input type="checkbox" data-col="${esc(key)}" ${chosen.has(key) ? "checked" : ""}>
+                  <span>${esc(label)}</span>
+                </label>`).join("")}
+            </div>
+            <div class="row" style="gap:6px;margin-top:9px;padding-top:9px;border-top:1px solid var(--border)">
+              <button class="btn btn--ghost btn--sm" id="col-reset">Reset to default</button>
+            </div>
+          </div>
+        </div>`;
+
+      const menu = bar.querySelector("#col-menu");
+      bar.querySelector("#col-toggle").addEventListener("click", (e) => {
+        e.stopPropagation();
+        menu.classList.toggle("hidden");
+      });
+      menu.addEventListener("click", (e) => e.stopPropagation());
+      // Close on an outside click, once — re-registered each render, so it is
+      // removed with the element rather than accumulating listeners.
+      document.addEventListener("click", () => menu.classList.add("hidden"), { once: true });
+
+      menu.querySelectorAll("input[data-col]").forEach((cb) =>
+        cb.addEventListener("change", () => {
+          const keys = [...menu.querySelectorAll("input[data-col]:checked")].map((x) => x.dataset.col);
+          if (!keys.length) {
+            toast("Keep at least one column besides the name", "error");
+            cb.checked = true;
+            return;
+          }
+          state.columns = keys;
+          saveColumnKeys(keys);
+          renderResults();
+        }));
+      menu.querySelector("#col-reset").addEventListener("click", () => {
+        state.columns = defaultColumnKeys();
+        saveColumnKeys(state.columns);
+        renderResults();
+      });
+      return bar;
+    }
+
     function renderResults() {
       resultsRegion.innerHTML = "";
 
@@ -522,7 +652,12 @@ export default {
       // always-"—" column showing once the user switches to semantic search.
       const thesisActive = Boolean(state.thesis) && state.mode === "keyword";
       const sortLocked = thesisActive || state.priorityFirst; // both override the clickable-column sort with their own ordering
-      const cols = thesisActive ? [COLUMNS[0], RELEVANCE_COLUMN, ...COLUMNS.slice(1)] : COLUMNS;
+      // Name is always first and never optional. Everything after it comes
+      // from the saved selection, in catalogue order so the layout stays
+      // stable however the boxes were ticked.
+      const chosen = new Set(state.columns);
+      const active = ALL_COLUMNS.filter(([k]) => chosen.has(k));
+      const cols = [["name", "Company", true], ...(thesisActive ? [RELEVANCE_COLUMN] : []), ...active];
 
       // Phase Q2/Q3: a checkbox column, not part of `cols` (which drives the
       // sortable-header logic) — prepended directly in the markup, +1 on
@@ -550,14 +685,12 @@ export default {
                   ${s.priority_match ? `<span title="Matches a priority thesis">⭐</span>` : ""}${s.business_model === "B2B" ? `<span title="B2B">🤝</span>` : ""}${s.is_gmbh ? `<span title="GmbH">🏢</span>` : ""}<strong>${esc(s.name)}</strong>
                 </td>
                 ${thesisActive ? `<td class="mono" title="${esc((s.matched_signals || []).join('; '), 'semantic match only')}">${s.relevance_score?.toFixed(2) ?? "—"}</td>` : ""}
-                <td class="dim nowrap">${esc([s.city, s.country].filter(Boolean).join(", "), "—")}</td>
-                <td class="dim">${esc(s.industry, "—")}${s.tech_cluster ? ` <span class="co-faint">· ${esc(s.tech_cluster)}</span>` : ""}</td>
-                <td class="nowrap"><span class="mono score-n">${s.enrichment_score ?? "—"}</span>${s.score_tier ? ` <span class="chip ${tierChipClass(s.score_tier)}">${esc(s.score_tier.replace(/_/g, " ").toLowerCase())}</span>` : ""}</td>
-                <td class="nowrap">${verificationBadge(s.verification_status)}${s.interest_status ? ` ${interestBadge(s.interest_status)}` : ""}</td>
+                ${active.map(([key]) => `<td class="${key === "short_description" || key === "tags" ? "" : "nowrap"}">${(CELL[key] || (() => "—"))(s)}</td>`).join("")}
               </tr>
             `).join("")}
           </tbody>
         </table>`;
+      resultsRegion.insertBefore(buildColumnBar(), wrap);
       resultsRegion.appendChild(wrap);
 
       // Detail/edit panel: a sibling of .table-wrap, not a colspan row inside

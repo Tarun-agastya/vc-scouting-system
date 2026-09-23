@@ -701,6 +701,15 @@ async def list_startups(
                 "interest_status": s.interest_status,
                 "business_model": s.business_model,
                 "is_gmbh": s.is_gmbh,
+                # Added for the column picker: a column the caller can choose
+                # but the API never sends renders as an empty stripe, which
+                # looks like missing data rather than a missing field.
+                "sub_industry": s.sub_industry,
+                "founded_year": s.founded_year,
+                "website": s.website,
+                "tags": s.tags or [],
+                "total_funding_usd": s.total_funding_usd,
+                "linkedin": s.linkedin,
                 "vector": vectors.get(str(s.id)),
             }
             for s in matched
@@ -808,6 +817,15 @@ async def list_startups(
                 "interest_status": s.interest_status,
                 "business_model": s.business_model,
                 "is_gmbh": s.is_gmbh,
+                # Added for the column picker: a column the caller can choose
+                # but the API never sends renders as an empty stripe, which
+                # looks like missing data rather than a missing field.
+                "sub_industry": s.sub_industry,
+                "founded_year": s.founded_year,
+                "website": s.website,
+                "tags": s.tags or [],
+                "total_funding_usd": s.total_funding_usd,
+                "linkedin": s.linkedin,
             }
             for s in startups
         ],
