@@ -31,6 +31,44 @@ const COLUMNS = [
 const RELEVANCE_COLUMN = ["relevance_score", "Relevant to", false];
 
 /** "https://www.munich-startup.de/en/x" -> "munich-startup.de" (falls back to the coarse source type). */
+/* One-liner on hover (23 Sep 2026).
+   Rows are single-height so the eye can run down the column without the
+   rhythm breaking; what a company does lives in a tooltip instead.
+
+   The tooltip is ONE element on <body>, moved on hover, not one per row.
+   .table-wrap sets overflow-x:auto, which makes overflow-y compute to auto
+   too — a tooltip positioned inside it would be clipped exactly at the row
+   edge where it needs to appear. pointer-events:none so it can never swallow
+   the row click that opens the detail panel. */
+let _rowTip = null;
+
+function attachRowTooltip(wrap) {
+  if (!_rowTip) {
+    _rowTip = document.createElement("div");
+    _rowTip.className = "row-tip";
+    document.body.appendChild(_rowTip);
+  }
+  const hide = () => _rowTip.classList.remove("is-on");
+
+  wrap.querySelectorAll("tbody tr[data-tip]").forEach((tr) => {
+    const text = tr.dataset.tip;
+    if (!text) return;
+    tr.addEventListener("mouseenter", () => {
+      _rowTip.textContent = text;
+      _rowTip.classList.add("is-on");
+      const r = tr.getBoundingClientRect();
+      // Measure after showing, so a long one-liner flips above the row
+      // instead of running off the bottom of the window.
+      const h = _rowTip.offsetHeight;
+      const below = r.bottom + 6;
+      _rowTip.style.top = (below + h > window.innerHeight ? r.top - h - 6 : below) + "px";
+      _rowTip.style.left = Math.min(r.left + 34, window.innerWidth - _rowTip.offsetWidth - 14) + "px";
+    });
+    tr.addEventListener("mouseleave", hide);
+  });
+  wrap.addEventListener("scroll", hide, { passive: true });
+}
+
 function sourceLabel(sourceUrl, source) {
   if (sourceUrl) {
     try {
@@ -461,20 +499,16 @@ export default {
           </tr></thead>
           <tbody>
             ${rows.map((s) => `
-              <tr data-id="${esc(s.id)}">
+              <tr data-id="${esc(s.id)}" data-tip="${esc(s.short_description, "")}">
                 <td><input type="checkbox" class="row-select" data-id="${esc(s.id)}" ${state.selectedIds.has(s.id) ? "checked" : ""}></td>
                 <td class="cell-company">
-                  <div class="co-name">
-                    ${s.priority_match ? `<span title="Matches a priority thesis">⭐</span>` : ""}${s.business_model === "B2B" ? `<span title="B2B">🤝</span>` : ""}${s.is_gmbh ? `<span title="GmbH">🏢</span>` : ""}
-                    <strong>${esc(s.name)}</strong>
-                  </div>
-                  <div class="co-sub">${esc(s.short_description, "—")}</div>
+                  ${s.priority_match ? `<span title="Matches a priority thesis">⭐</span>` : ""}${s.business_model === "B2B" ? `<span title="B2B">🤝</span>` : ""}${s.is_gmbh ? `<span title="GmbH">🏢</span>` : ""}<strong>${esc(s.name)}</strong>
                 </td>
                 ${thesisActive ? `<td class="mono" title="${esc((s.matched_signals || []).join('; '), 'semantic match only')}">${s.relevance_score?.toFixed(2) ?? "—"}</td>` : ""}
-                <td class="dim nowrap">${esc(s.city, "—")}${s.country ? `<div class="co-sub">${esc(s.country)}</div>` : ""}</td>
-                <td class="dim">${esc(s.industry, "—")}${s.tech_cluster ? `<div class="co-sub">${esc(s.tech_cluster)}</div>` : ""}</td>
-                <td class="nowrap"><span class="mono score-n">${s.enrichment_score ?? "—"}</span>${s.score_tier ? `<div class="co-sub">${esc(s.score_tier.replace(/_/g, " ").toLowerCase())}</div>` : ""}</td>
-                <td class="nowrap">${verificationBadge(s.verification_status)}${s.interest_status ? `<div style="margin-top:3px">${interestBadge(s.interest_status)}</div>` : ""}</td>
+                <td class="dim nowrap">${esc([s.city, s.country].filter(Boolean).join(", "), "—")}</td>
+                <td class="dim">${esc(s.industry, "—")}${s.tech_cluster ? ` <span class="co-faint">· ${esc(s.tech_cluster)}</span>` : ""}</td>
+                <td class="nowrap"><span class="mono score-n">${s.enrichment_score ?? "—"}</span>${s.score_tier ? ` <span class="chip ${tierChipClass(s.score_tier)}">${esc(s.score_tier.replace(/_/g, " ").toLowerCase())}</span>` : ""}</td>
+                <td class="nowrap">${verificationBadge(s.verification_status)}${s.interest_status ? ` ${interestBadge(s.interest_status)}` : ""}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -541,6 +575,8 @@ export default {
         else { state.sort = key; state.order = "desc"; }
         if (state.mode === "keyword") load(); else renderResults();
       }));
+
+      attachRowTooltip(wrap);
 
       wrap.querySelectorAll("tbody tr[data-id]").forEach((tr) => tr.addEventListener("click", () => {
         const id = tr.dataset.id;
