@@ -74,6 +74,32 @@ async def lifespan(app: FastAPI):
                 return
             await scout_controller.run_newsletters_then_recheck(max_messages=50)
 
+        async def _scheduled_review_resolve():
+            """
+            Nightly (Phase 2, plans/REVIEW_INBOX_AUTONOMY_PLAN.md): the local
+            model judges pending field_update and possible_duplicate reviews
+            and closes the reversible direction only — a confident "the
+            stored value is right" or "these are different companies". It
+            never overwrites a field or merges a record, at any confidence.
+
+            Gated on settings.resolver_enabled (default OFF) — nothing runs
+            unattended here until scripts/resolve_reviews.py has been run by
+            hand and its output checked against real records. Runs BEFORE
+            the 02:00 explain job so that job only spends GPU time on
+            whatever the resolver left pending.
+            """
+            from config import settings
+            if not settings.resolver_enabled:
+                logger.debug("[Resolver] resolver_enabled is False — skipping scheduled run")
+                return
+            from datetime import datetime as _dt
+            from processing.review_resolver import resolve_pending
+            from processing.review_actions import record_resolver_run
+            started = _dt.utcnow()
+            stats = await resolve_pending(limit=settings.resolver_nightly_limit, apply=True)
+            record_resolver_run("resolve", stats, started)
+            logger.info(f"[Resolver] nightly run: {stats}")
+
         async def _scheduled_llm_explain():
             """
             Nightly: the local 14B model writes a plain-language explanation for
@@ -153,6 +179,16 @@ async def lifespan(app: FastAPI):
             replace_existing=True,
         )
 
+        # Review resolver: nightly at 01:00, ahead of the 02:00 explain job —
+        # see _scheduled_review_resolve's docstring. No-ops unless
+        # settings.resolver_enabled is True.
+        scheduler.add_job(
+            func=_scheduled_review_resolve,
+            trigger=CronTrigger(hour=1, minute=0),
+            id="review_resolve",
+            replace_existing=True,
+        )
+
         # LLM review explanations: nightly at 02:00 (quiet hours, no sweep then).
         scheduler.add_job(
             func=_scheduled_llm_explain,
@@ -195,7 +231,8 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         app.state.scheduler = scheduler
         logger.info(
-            "Background scheduler started (full sweep Mon+Thu 05:00, Gmail top-up daily 13:00, "
+            "Background scheduler started (review resolver nightly 01:00 [off unless "
+            "resolver_enabled], full sweep Mon+Thu 05:00, Gmail top-up daily 13:00, "
             "LLM review explanations nightly 02:00, verification recheck nightly 03:00, "
             "web verification nightly 04:00, reclassify safety-net nightly 04:30). "
             "The press monitor is a fully separate launchd service (com.gthub.pressmonitor, "

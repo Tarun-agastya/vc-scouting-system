@@ -47,6 +47,21 @@ def browser():
         b.close()
 
 
+def _fresh_page(browser):
+    """
+    A page with its own empty HTTP cache.
+
+    The browser fixture is module-scoped, so pages share a cache — and the
+    dashboard's ES modules are cached aggressively. After editing a .js file
+    a test could keep exercising the PREVIOUS version and pass (or, worse,
+    fail against code that is already fixed on disk). A fresh context per
+    test removes that whole class of false result. Caller must close the
+    returned context.
+    """
+    ctx = browser.new_context()
+    return ctx, ctx.new_page()
+
+
 def _load(browser, route):
     page = browser.new_page()
     errors = []
@@ -82,3 +97,99 @@ def test_browse_renders_rows_and_the_column_picker(browser):
     page.close()
     assert rows > 0, "Browse rendered no rows"
     assert picker == 1, "the Columns button is missing"
+
+
+def test_per_field_controls_render_and_history_loads(browser):
+    """
+    Per-field resolve: each field in a grouped review gets its own Apply /
+    Reject and an expandable history. Clicking into a group and opening the
+    history panel is the part `node --check` cannot see — the toggle fetches
+    and renders on demand, so a bad selector or a bad response shape only
+    shows up here.
+
+    Skips rather than fails when the queue has no grouped field_update rows
+    left: an empty inbox is a good outcome, not a broken dashboard.
+    """
+    ctx, page = _fresh_page(browser)
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.on("console", lambda m: errors.append(f"console.error: {m.text}")
+            if m.type == "error" else None)
+
+    page.goto(f"{BASE}/dashboard/#/reviews", wait_until="networkidle", timeout=45000)
+    page.wait_for_timeout(3000)
+
+    # Grouped (field_update) rows only — singles have no per-field controls.
+    page.select_option("#f-type", "field_update")
+    page.wait_for_timeout(3000)
+
+    rows = page.locator("#review-list .row-item, #review-list [data-entry-id]")
+    if rows.count() == 0:
+        ctx.close()
+        pytest.skip("no pending grouped field_update reviews to exercise")
+
+    rows.first.click()
+    page.wait_for_timeout(1800)
+
+    apply_btns = page.locator("[data-apply-field]").count()
+    reject_btns = page.locator("[data-reject-field]").count()
+    toggles = page.locator("[data-history-toggle]")
+
+    assert apply_btns > 0, "no per-field Apply button rendered"
+    assert reject_btns == apply_btns, "Apply/Reject buttons are not paired per field"
+
+    # Open the history panel — the on-demand fetch + render path.
+    toggles.first.click()
+    page.wait_for_timeout(2000)
+    panel_text = page.locator("[data-history-panel]").first.inner_text()
+
+    ctx.close()
+    assert not errors, f"per-field controls raised: {errors[:3]}"
+    assert "loading…" not in panel_text, "history panel never resolved"
+    assert "Couldn't load history" not in panel_text, f"history fetch failed: {panel_text[:120]}"
+
+
+def test_merge_field_by_field_actually_renders(browser):
+    """
+    The reported bug: clicking "Merge field by field…" showed a spinner
+    forever. draw() was defined and then only re-entered from its own
+    show-matching-fields toggle, so it was never called once — the preview
+    request succeeded and nothing consumed it. Zero JS errors, zero syntax
+    errors, permanently blank screen.
+
+    So this clicks the button and asserts the table is really on screen.
+    """
+    ctx, page = _fresh_page(browser)
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.on("console", lambda m: errors.append(f"console.error: {m.text}")
+            if m.type == "error" else None)
+
+    page.goto(f"{BASE}/dashboard/#/reviews", wait_until="networkidle", timeout=45000)
+    page.wait_for_timeout(3000)
+    page.select_option("#f-type", "possible_duplicate")
+    page.wait_for_timeout(3000)
+
+    rows = page.locator("#review-list [data-entry-id]")
+    merge_btn = None
+    for i in range(min(rows.count(), 8)):
+        rows.nth(i).click()
+        page.wait_for_timeout(1200)
+        if page.locator("#merge-fields-btn").count():
+            merge_btn = page.locator("#merge-fields-btn")
+            break
+    if merge_btn is None:
+        ctx.close()
+        pytest.skip("no pending duplicate with an incoming record to merge")
+
+    merge_btn.click()
+    page.wait_for_timeout(2500)
+
+    body = page.inner_text("body")
+    has_table = page.locator("#m-go").count()      # the merge submit button
+    ctx.close()
+
+    assert not errors, f"merge screen raised: {errors[:3]}"
+    assert has_table == 1, "merge screen never rendered past the spinner"
+    assert "Merge field by field" in body, "merge screen heading missing"
+    assert "NaN" not in body, "a NaN% bar rendered in the evidence panel"

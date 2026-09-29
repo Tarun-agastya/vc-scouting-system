@@ -187,6 +187,15 @@ def upsert_startup(
 
                 with changes_from(source or "crawl", detail=source_url or None):
                     for attr, val in auto_apply.items():
+                        if attr == "founders":
+                            # Not a plain column — see _diff_fields' comment
+                            # on why founders is carried through auto_apply
+                            # but can't go through the generic setattr below.
+                            raw = dict(master.raw_data or {})
+                            raw["founders"] = val
+                            master.raw_data = raw
+                            flag_modified(master, "raw_data")
+                            continue
                         ok, cleaned = _sanitize_for_column(attr, val)
                         if ok:
                             setattr(master, attr, cleaned)
@@ -689,12 +698,21 @@ _DIFF_FIELDS = {
     "funding_stage": "funding_stage",
     "employee_count": "employee_count",
     "contact_info": "contact_info",
+    # 29 Sep fix: added so the _LIST_FIELDS branch below actually runs.
+    # `tags` was previously absent here, which made that branch unreachable
+    # dead code — the legacy block further down staged every tags change as
+    # a review regardless, creating 74 reviews in a single day that were all
+    # lossless supersets. `tags` is a real ARRAY(String) column, so the
+    # generic setattr loop in the caller applies it unmodified.
+    "tags": "tags",
 }
 # Free-text fields where trivial rewording should NOT count as a change.
 _TEXT_FIELDS = {"short_description", "description"}
-# List-valued fields, merged by union rather than adjudicated — see the
-# _diff_fields branch and field_policy.merge_list_field for the measurement
-# that motivated it.
+# `tags` — a real column, so it's also in _DIFF_FIELDS above and goes
+# through the generic loop's _LIST_FIELDS branch below. `founders` is NOT in
+# _DIFF_FIELDS (it isn't a plain column — see the comment further down) and
+# is handled in its own block; it's listed here only because it's the same
+# union policy, documented in one place via field_policy.merge_list_field.
 _LIST_FIELDS = {"tags", "founders"}
 
 
@@ -778,7 +796,7 @@ def _diff_fields(master, incoming: dict, source: str, extracted_at_iso: str, db)
         # DE/EN synonym map (Germany/Deutschland, Munich/München, ...) so a
         # pure locale variant is never mistaken for new information — it was
         # re-staging on every single re-crawl before this.
-        changed = norm_value(old_val) != norm_value(new_val)
+        changed = norm_value(old_val, field=attr) != norm_value(new_val, field=attr)
         if not changed:
             continue
         if _is_value_suppressed(db, master.id, attr, str(new_val)):
@@ -791,24 +809,20 @@ def _diff_fields(master, incoming: dict, source: str, extracted_at_iso: str, db)
         if old_val not in (None, "", []):
             high_risk = True
 
-    # founders / tags — additive enrichment (new names not already present)
+    # founders — same union-not-staging rule as _LIST_FIELDS above, but
+    # handled separately because `Startup.founders` is a relationship to the
+    # Founder table, not a plain column: `getattr(master, "founders")` would
+    # return ORM objects, not strings, and a blind `setattr` in the caller
+    # would corrupt the relationship. The list actually lives in
+    # `raw_data["founders"]`, so the merged result is carried through
+    # `auto_apply["founders"]` and the caller special-cases it (mirroring
+    # reviews._apply_field_updates and drain_list_field_reviews.py).
     inc_founders = safe_string_list(incoming.get("founders"))
-    cur_founders = safe_string_list((master.raw_data or {}).get("founders"))
-    new_founders = [f for f in inc_founders if f.strip().lower() not in {c.strip().lower() for c in cur_founders}]
-    if new_founders:
-        proposed["founders"] = {
-            "old": cur_founders, "new": cur_founders + new_founders,
-            "incoming_source": source, "incoming_extracted_at": extracted_at_iso,
-        }
-
-    inc_tags = safe_string_list(incoming.get("tags"))
-    cur_tags = safe_string_list(master.tags)
-    new_tags = [t for t in inc_tags if t.strip().lower() not in {c.strip().lower() for c in cur_tags}]
-    if new_tags:
-        proposed["tags"] = {
-            "old": cur_tags, "new": cur_tags + new_tags,
-            "incoming_source": source, "incoming_extracted_at": extracted_at_iso,
-        }
+    if inc_founders:
+        cur_founders = safe_string_list((master.raw_data or {}).get("founders"))
+        merged_founders = merge_list_field(cur_founders, inc_founders)
+        if merged_founders is not None:
+            auto_apply["founders"] = merged_founders
 
     return proposed, auto_apply, ("high" if high_risk else "low")
 

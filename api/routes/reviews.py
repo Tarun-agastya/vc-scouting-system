@@ -24,7 +24,7 @@ Nothing in the master DB changes except through an explicit approve here.
 """
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func
@@ -320,6 +320,35 @@ async def review_counts(status: str = Query("pending"), db: Session = Depends(ge
     return {"total": sum(by_risk.values()), "by_risk_level": by_risk}
 
 
+@router.get("/resolver/last-run")
+async def resolver_last_run(db: Session = Depends(get_db)):
+    """
+    The most recent ResolverRun of each kind — Phase 4, plans/
+    REVIEW_INBOX_AUTONOMY_PLAN.md. Feeds the Review Inbox's "last night"
+    card. `settings.resolver_enabled` isn't checked here: if it's off there
+    simply are no rows, and the card renders its own empty state for that.
+    """
+    from database.models import ResolverRun
+
+    out = {}
+    for kind in ("resolve", "research"):
+        row = (db.query(ResolverRun)
+               .filter(ResolverRun.kind == kind)
+               .order_by(ResolverRun.started_at.desc()).first())
+        if row:
+            out[kind] = {
+                "started_at": row.started_at.isoformat() if row.started_at else None,
+                "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+                "judged": row.judged,
+                "auto_closed": row.auto_closed,
+                "left_pending": row.left_pending,
+                "unavailable": row.unavailable,
+                "searches_used": row.searches_used,
+                "error": row.error,
+            }
+    return out
+
+
 # NOTE: this route MUST stay declared BEFORE @router.get("/{review_id}") —
 # FastAPI matches in declaration order, so a later /grouped would be swallowed
 # by the path-param route and 404 as "review 'grouped' not found".
@@ -378,7 +407,14 @@ async def list_reviews_grouped(
         # collapses for free, while `count`/`review_ids` keep it auditable.
         fields = defaultdict(dict)
         for r in members:                      # already newest-first
+            # A review stays pending while it still has undecided fields, so
+            # skip the ones already settled by a per-field resolve — otherwise
+            # a decided field keeps reappearing as a live choice and a second
+            # decision would re-suppress candidates already suppressed.
+            already_decided = set((r.evidence or {}).get("resolved_fields") or {})
             for field, change in (r.proposed_changes or {}).items():
+                if field in already_decided:
+                    continue
                 value = change.get("new")
                 key = str(value)
                 cand = fields[field].get(key)
@@ -399,6 +435,12 @@ async def list_reviews_grouped(
                         "source": change.get("incoming_source"),
                         "at": change.get("incoming_extracted_at"),
                     })
+
+        # Every field already settled per-field — nothing left to show. Can
+        # only happen transiently (a review closes once all its fields are
+        # decided), but an empty card in the queue would be confusing.
+        if not fields:
+            continue
 
         # `current` comes from the LIVE master row, never from any review's
         # stored `old`. Siblings hold `old` snapshots taken at different
@@ -538,6 +580,139 @@ async def resolve_grouped_reviews(master_id: str, request: GroupResolveRequest, 
         "applied_fields": list(to_apply.keys()),
         "approved_review_ids": approved_ids,
         "rejected_review_ids": rejected_ids,
+    }
+
+
+class FieldResolveRequest(BaseModel):
+    value: Optional[Any] = None   # the candidate to apply
+    reject: bool = False          # true = keep the current value, suppress every candidate
+
+
+def _decided_fields(review) -> dict:
+    """Fields of this review already settled by a per-field decision."""
+    return dict((review.evidence or {}).get("resolved_fields") or {})
+
+
+@router.post("/grouped/{master_id}/field/{field}/resolve")
+async def resolve_single_field(master_id: str, field: str,
+                               request: FieldResolveRequest,
+                               db: Session = Depends(get_db)):
+    """
+    Settle ONE field across a startup's pending field_update reviews, and
+    leave every other field of those reviews pending.
+
+    Why this exists alongside the grouped resolve above: that endpoint is
+    all-or-nothing — it decides every field at once and closes all of the
+    startup's reviews. A reviewer who is sure about `city` but wants to
+    think about `sub_industry` had no way to bank the first decision.
+
+    The bookkeeping problem this solves: a single review row can propose
+    several fields, so deciding one of them must NOT close the row. Each
+    decision is recorded in evidence["resolved_fields"][field]; a review is
+    only closed once every field it proposed appears there. Its
+    proposed_changes is never mutated, so the audit trail of what was
+    originally proposed stays intact.
+
+    Suppression is per-field and matches the rest of the codebase's reject
+    contract (a rejected_value row per rejected candidate) — deliberately
+    NOT processing.review_actions.record_rejection, which suppresses every
+    field of a review and would over-suppress fields this call never looked
+    at. Same reasoning as scripts/adjudicate_field_changes.py; see
+    review_actions.py's docstring.
+    """
+    master = db.query(Startup).filter(Startup.id == master_id).first()
+    if not master:
+        raise HTTPException(status_code=404, detail="Startup not found")
+
+    members = [
+        r for r in db.query(DuplicateReview).filter(
+            DuplicateReview.master_id == master_id,
+            DuplicateReview.review_type == "field_update",
+            DuplicateReview.status == "pending",
+        ).all()
+        if field in (r.proposed_changes or {})
+    ]
+    if not members:
+        raise HTTPException(status_code=404,
+                            detail=f"No pending review proposes '{field}' for this startup")
+
+    applied = False
+    if not request.reject and request.value is not None:
+        source_meta = None
+        for r in members:
+            change = (r.proposed_changes or {}).get(field)
+            if change is not None and change.get("new") == request.value:
+                source_meta = change
+                break
+        # Re-read the live value here, never a review's frozen `old` — the
+        # same rule the resolver follows, for the same reason (12 Aug).
+        _apply_field_updates(db, master, {field: {
+            "old": getattr(master, field, None),
+            "new": request.value,
+            "incoming_source": (source_meta or {}).get("incoming_source"),
+            "incoming_extracted_at": (source_meta or {}).get("incoming_extracted_at"),
+        }})
+        db.commit()
+        _reindex(db, master)   # commits internally
+        applied = True
+
+    now = datetime.utcnow()
+    closed_approved, closed_rejected, still_open = [], [], []
+
+    for r in members:
+        change = (r.proposed_changes or {}).get(field) or {}
+        candidate = change.get("new")
+        picked = applied and candidate == request.value
+
+        # Suppress every candidate that did NOT win, so a re-crawl doesn't
+        # re-propose it. A rejected field suppresses all of its candidates.
+        if not picked:
+            db.add(SuppressedMatch(
+                kind="rejected_value", master_id=master_id,
+                field=field, value=str(candidate),
+            ))
+
+        ev = dict(r.evidence or {})
+        decided = dict(ev.get("resolved_fields") or {})
+        decided[field] = {
+            "decision": "applied" if picked else "rejected",
+            "value": request.value if picked else None,
+            "at": now.isoformat(timespec="seconds"),
+        }
+        ev["resolved_fields"] = decided
+        r.evidence = ev
+        flag_modified(r, "evidence")
+
+        proposed_fields = set(r.proposed_changes or {})
+        if proposed_fields <= set(decided):
+            # Every field this review proposed has now been decided. Approved
+            # only if ALL of them were applied — the same whole-review rule
+            # the grouped resolve uses, so a review isn't recorded as approved
+            # on the strength of one field out of three.
+            all_applied = all(d.get("decision") == "applied" for d in decided.values())
+            r.status = "approved" if all_applied else "rejected"
+            r.resolved_at = now
+            (closed_approved if all_applied else closed_rejected).append(str(r.id))
+        else:
+            still_open.append(str(r.id))
+
+    db.commit()
+
+    logger.info(
+        f"[Reviews] Per-field resolve '{field}' for '{master.name}' ({master_id}): "
+        f"{'applied' if applied else 'rejected'}; "
+        f"{len(closed_approved)} approved, {len(closed_rejected)} rejected, "
+        f"{len(still_open)} review(s) still pending other fields"
+    )
+    return {
+        "status": "resolved",
+        "master_id": master_id,
+        "field": field,
+        "applied": applied,
+        "value": request.value if applied else None,
+        "approved_review_ids": closed_approved,
+        "rejected_review_ids": closed_rejected,
+        "still_pending_review_ids": still_open,
     }
 
 
@@ -747,26 +922,17 @@ def _do_reject(db, r: DuplicateReview) -> dict:
     remember the decision so the same thing is not re-flagged:
       field_update       → suppress each (master_id, field, rejected value)
       duplicate/anomaly  → record the (master_id, incoming_id) known-different pair
+
+    The status check stays here (not in the shared contract) because only
+    an API caller can turn it into the right HTTP response — see
+    processing/review_actions.record_rejection's docstring for why it
+    doesn't raise on this itself.
     """
     if r.status != "pending":
         raise HTTPException(status_code=409, detail=f"Review already {r.status}")
 
-    if r.review_type == "field_update":
-        for field, change in (r.proposed_changes or {}).items():
-            db.add(SuppressedMatch(
-                kind="rejected_value", master_id=r.master_id,
-                field=field, value=str(change.get("new")),
-            ))
-    else:
-        if r.master_id and r.incoming_id:
-            db.add(SuppressedMatch(
-                kind="known_different", master_id=r.master_id, other_id=r.incoming_id,
-            ))
-
-    r.status = "rejected"
-    r.resolved_at = datetime.utcnow()
-    db.commit()
-    return {"status": "rejected", "review_type": r.review_type}
+    from processing.review_actions import record_rejection
+    return record_rejection(db, r)
 
 
 @router.post("/{review_id}/reject")

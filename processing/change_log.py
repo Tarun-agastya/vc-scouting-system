@@ -122,13 +122,21 @@ def install(session_factory) -> None:
     logger.info("[ChangeLog] field-change capture installed")
 
 
-def history_for(db, startup_id, limit: int = 60) -> list:
-    """Newest first. Used by the detail panel's timeline."""
+def history_for(db, startup_id, limit: int = 60, field: str = None) -> list:
+    """
+    Newest first. Used by the detail panel's timeline.
+
+    `field` narrows it to one column's own past — what the Review Inbox
+    shows when you expand a field you're deciding on, so "what has this
+    value already been, and what changed it" is answerable without leaving
+    the review screen.
+    """
     from database.models import FieldChange
 
-    rows = (db.query(FieldChange)
-            .filter(FieldChange.startup_id == startup_id)
-            .order_by(FieldChange.changed_at.desc())
+    q = db.query(FieldChange).filter(FieldChange.startup_id == startup_id)
+    if field:
+        q = q.filter(FieldChange.field == field)
+    rows = (q.order_by(FieldChange.changed_at.desc())
             .limit(max(1, min(limit, 500))).all())
     return [{
         "field": r.field,

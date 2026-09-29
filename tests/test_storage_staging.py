@@ -39,6 +39,65 @@ def test_blank_fill_auto_applies_directly(make, db):
     assert rev is None
 
 
+def test_tags_union_auto_applies_not_staged(make, db):
+    """
+    Regression for the 29 Sep bug: `tags` was missing from _DIFF_FIELDS, so
+    the _LIST_FIELDS union branch in _diff_fields was unreachable dead code
+    and every tags re-crawl was staged as a review by a legacy block instead
+    — 74 in a single day, all lossless supersets. A pure-function test on
+    merge_list_field alone can't catch an unreachable branch; this is the
+    end-to-end test that would have.
+    """
+    rid, _ = make("Stage Tags", website="pytest-stage-tags.com", city="Munich",
+                  description="widget maker", tags=["fintech"])
+    rid2, status2 = make("Stage Tags", website="pytest-stage-tags.com", city="Munich",
+                         description="widget maker", tags=["fintech", "payments"])
+    assert rid2 == rid
+    assert status2 == "no_op"  # union applied directly, nothing for a human
+    assert set(_get(db, rid).tags) == {"fintech", "payments"}
+
+    rev = db.query(DuplicateReview).filter(DuplicateReview.master_id == rid,
+                                           DuplicateReview.review_type == "field_update").first()
+    assert rev is None
+
+
+def test_founders_union_auto_applies_not_staged(make, db):
+    """
+    Same bug, the founders half. `Startup.founders` is a relationship to the
+    Founder table, not a plain column — a naive fix that added "founders" to
+    _DIFF_FIELDS would have `setattr`'d a list of strings onto it and
+    corrupted the relationship. Founders lives in raw_data["founders"] and
+    is unioned there instead.
+    """
+    rid, _ = make("Stage Founders", website="pytest-stage-founders.com", city="Munich",
+                  description="widget maker", founders=["Anna Muster"])
+    rid2, status2 = make("Stage Founders", website="pytest-stage-founders.com", city="Munich",
+                         description="widget maker", founders=["Anna Muster", "Ben Beispiel"])
+    assert rid2 == rid
+    assert status2 == "no_op"
+    assert set(_get(db, rid).raw_data.get("founders", [])) == {"Anna Muster", "Ben Beispiel"}
+
+    rev = db.query(DuplicateReview).filter(DuplicateReview.master_id == rid,
+                                           DuplicateReview.review_type == "field_update").first()
+    assert rev is None
+
+
+def test_funding_stage_hyphen_formatting_not_staged(make, db):
+    """
+    Phase 1 addendum (29 Sep): most pending funding_stage reviews sampled
+    were pure hyphen-vs-space formatting ("Series-C" -> "Series C"), not a
+    real disagreement. norm_value(field="funding_stage") folds that; make
+    sure it doesn't also collapse genuinely different stages.
+    """
+    rid, _ = make("Stage Funding", website="pytest-stage-funding.com", city="Munich",
+                  description="widget maker", funding_stage="Series-C")
+    rid2, status2 = make("Stage Funding", website="pytest-stage-funding.com", city="Munich",
+                         description="widget maker", funding_stage="Series C")
+    assert rid2 == rid
+    assert status2 == "no_op"  # same stage, different punctuation — not a change
+    assert _get(db, rid).funding_stage == "Series-C"  # stored spelling untouched
+
+
 def test_conflicting_pending_fill_blocks_auto_apply(make, db):
     """
     Multi-candidate safety guard (Phase Z, 12 Aug) — see

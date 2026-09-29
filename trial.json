@@ -1,0 +1,568 @@
+{
+  "scores": {
+    "local": {
+      "accuracy": 0.8636363636363636,
+      "correct": 19,
+      "graded": 22,
+      "total_seconds": 203.0,
+      "mean_seconds": 5.97,
+      "tokens_in": 0,
+      "tokens_out": 0
+    },
+    "cloud": {
+      "accuracy": 0.0,
+      "correct": 0,
+      "graded": 22,
+      "total_seconds": 7.0,
+      "mean_seconds": 0.2,
+      "tokens_in": 0,
+      "tokens_out": 0
+    }
+  },
+  "results": [
+    {
+      "provider": "local",
+      "name": "Gitex Europe 2026",
+      "label": "not_company",
+      "answer": "not_company",
+      "reason": "The name 'Gitex Europe 2026' includes a year, which is characteristic of an event or conference.",
+      "seconds": 6.76
+    },
+    {
+      "provider": "local",
+      "name": "Munich Startup Festival 2024",
+      "label": "not_company",
+      "answer": "not_company",
+      "reason": "The name 'Munich Startup Festival 2024' indicates an event, as it includes a year and the word 'Festival'.",
+      "seconds": 5.81
+    },
+    {
+      "provider": "local",
+      "name": "Digital Health Summit 2026",
+      "label": "not_company",
+      "answer": "not_company",
+      "reason": "The name 'Digital Health Summit 2026' indicates an event or conference, as it includes the word 'Summit' and a year.",
+      "seconds": 5.83
+    },
+    {
+      "provider": "local",
+      "name": "Exportpreis Bayern 2026",
+      "label": "not_company",
+      "answer": "not_company",
+      "reason": "The name 'Exportpreis Bayern 2026' suggests an award or competition, likely related to exports in Bavaria, as indicated by the year and the word 'Preis' (meaning prize or price).",
+      "seconds": 7.13
+    },
+    {
+      "provider": "local",
+      "name": "Robotik-Startups",
+      "label": "not_company",
+      "answer": "not_company",
+      "reason": "The name 'Robotik-Startups' appears to be a topic heading or category, as indicated by the description mentioning 'Münchner Robotik-Startups und ihre Lösungen' (Munich robotics startups and their solutions), which suggests it is a label or grouping rather than a specific company.",
+      "seconds": 8.75
+    },
+    {
+      "provider": "local",
+      "name": "Traveltech-Startups",
+      "label": "not_company",
+      "answer": "not_company",
+      "reason": "The description field refers to 'Traveltech companies addressing various developments in the sector,' indicating it is a category or topic heading rather than a specific company.",
+      "seconds": 5.82
+    },
+    {
+      "provider": "local",
+      "name": "Deutsche Startup-Landschaft",
+      "label": "not_company",
+      "answer": "not_company",
+      "reason": "The name 'Deutsche Startup-Landschaft' refers to a general description or category of startups in Germany, not a specific operating company, as indicated by the lack of specific details in the 'description' and 'industry' fields.",
+      "seconds": 7.25
+    },
+    {
+      "provider": "local",
+      "name": "Unternehmen",
+      "label": "not_company",
+      "answer": "unsure",
+      "reason": "The record lacks sufficient information; the name 'Unternehmen' is generic and not specific to a company, and the website, description, and city fields are all empty.",
+      "seconds": 6.19
+    },
+    {
+      "provider": "local",
+      "name": "exist-Women",
+      "label": "not_company",
+      "answer": "unsure",
+      "reason": "The record lacks sufficient information in the 'website', 'description', and 'city' fields to determine if exist-Women is a real operating company.",
+      "seconds": 5.65
+    },
+    {
+      "provider": "local",
+      "name": "Betriebswirtsch. Unternehmensberatung",
+      "label": "not_company",
+      "answer": "not_company",
+      "reason": "The name 'Betriebswirtsch. Unternehmensberatung' appears to be a generic business service title rather than a specific company name, and the other fields are either missing or too vague to confirm it as a real operating company.",
+      "seconds": 7.61
+    },
+    {
+      "provider": "local",
+      "name": "36ZERO Vision",
+      "label": "company",
+      "answer": "company",
+      "reason": "The record includes a name, website, description of a product or service, and industry, which are typical characteristics of a real operating company.",
+      "seconds": 5.65
+    },
+    {
+      "provider": "local",
+      "name": "5U AI",
+      "label": "company",
+      "answer": "company",
+      "reason": "The record includes a company name, a website link, a description of its operations, and an industry, which are all indicative of a real operating company.",
+      "seconds": 6.21
+    },
+    {
+      "provider": "local",
+      "name": "7Travel",
+      "label": "company",
+      "answer": "company",
+      "reason": "The record includes a name, website, description of business activity, industry, and city, which are all indicative of a real operating company.",
+      "seconds": 5.66
+    },
+    {
+      "provider": "local",
+      "name": "8pm Social",
+      "label": "company",
+      "answer": "company",
+      "reason": "The record includes a name, website, description, industry, and city, which are typical fields for a real operating company.",
+      "seconds": 5.37
+    },
+    {
+      "provider": "local",
+      "name": "9flats.com",
+      "label": "company",
+      "answer": "company",
+      "reason": "The record includes a name, website, description mentioning a founder, industry, and city, which are typical fields for a real operating company.",
+      "seconds": 5.66
+    },
+    {
+      "provider": "local",
+      "name": "ADVA Optical Networking",
+      "label": "company",
+      "answer": "company",
+      "reason": "The record includes a website, a specific industry, and a city, which are typical fields for a real operating company.",
+      "seconds": 5.28
+    },
+    {
+      "provider": "local",
+      "name": "AEREUS",
+      "label": "company",
+      "answer": "company",
+      "reason": "The record includes a name, website, and description that indicate a business offering a specific service, which aligns with the definition of a company.",
+      "seconds": 5.74
+    },
+    {
+      "provider": "local",
+      "name": "AI Product Champions",
+      "label": "company",
+      "answer": "not_company",
+      "reason": "The record describes an educational program ('Provides strategic upskilling in AI product development') and lists a website from a university-affiliated institution, indicating it is not a company but an academic offering.",
+      "seconds": 6.76
+    },
+    {
+      "provider": "local",
+      "name": "AICA",
+      "label": "company",
+      "answer": "company",
+      "reason": "The record includes a name, website, description, and industry, which are typical fields for a real operating company.",
+      "seconds": 4.92
+    },
+    {
+      "provider": "local",
+      "name": "AICORN",
+      "label": "company",
+      "answer": "company",
+      "reason": "The record includes a name, website, description of business activities, industry, and city, which are typical fields for a real operating company.",
+      "seconds": 5.39
+    },
+    {
+      "provider": "local",
+      "name": "AICU",
+      "label": "company",
+      "answer": "company",
+      "reason": "The record includes a name, website, description, and industry, which are typical fields for a real operating company.",
+      "seconds": 4.92
+    },
+    {
+      "provider": "local",
+      "name": "AIRMO",
+      "label": "company",
+      "answer": "company",
+      "reason": "The record includes a name, website, description of a product or service, industry, and city, which are typical fields for a real operating company.",
+      "seconds": 5.84
+    },
+    {
+      "provider": "local",
+      "name": "Ai Butler",
+      "label": null,
+      "answer": "unsure",
+      "reason": "The record lacks sufficient information in the 'website', 'description', and 'city' fields to determine if Ai Butler is a real operating company.",
+      "seconds": 5.58
+    },
+    {
+      "provider": "local",
+      "name": "Alexander Beßler",
+      "label": null,
+      "answer": "not_company",
+      "reason": "The record lists a person's name in the 'name' field, which indicates it is an individual rather than a company.",
+      "seconds": 5.2
+    },
+    {
+      "provider": "local",
+      "name": "Antonia Widmer",
+      "label": null,
+      "answer": "not_company",
+      "reason": "The record lists a person's name in the 'name' field, which indicates it is an individual rather than a company.",
+      "seconds": 5.2
+    },
+    {
+      "provider": "local",
+      "name": "Astra Labs",
+      "label": null,
+      "answer": "unsure",
+      "reason": "The record lacks sufficient information in the 'website', 'description', and 'city' fields to determine if Astra Labs is a real operating company.",
+      "seconds": 5.66
+    },
+    {
+      "provider": "local",
+      "name": "Bloom Partners",
+      "label": null,
+      "answer": "unsure",
+      "reason": "The record lacks sufficient information to determine if Bloom Partners is a real operating company, as the website, description, and city fields are all empty.",
+      "seconds": 5.57
+    },
+    {
+      "provider": "local",
+      "name": "Christian Willert",
+      "label": null,
+      "answer": "not_company",
+      "reason": "The record lists a person's name in the 'name' field, which indicates it is an individual rather than a company.",
+      "seconds": 5.19
+    },
+    {
+      "provider": "local",
+      "name": "Christoph Baumeister",
+      "label": null,
+      "answer": "not_company",
+      "reason": "The record lists a person's name in the 'name' field, which indicates it is an individual rather than a company.",
+      "seconds": 5.2
+    },
+    {
+      "provider": "local",
+      "name": "Cometa Kempten",
+      "label": null,
+      "answer": "unsure",
+      "reason": "The record lacks sufficient information; the name 'Cometa Kempten' could be a company, but without a website, city, or description, it is not possible to determine if it is a real operating company.",
+      "seconds": 6.98
+    },
+    {
+      "provider": "local",
+      "name": "Dallara Automobili",
+      "label": null,
+      "answer": "company",
+      "reason": "The name 'Dallara Automobili' is likely a real operating company as it fits the format of a business name in the 'Mobility & Automotive' industry, though the lack of website and city information makes it somewhat uncertain.",
+      "seconds": 7.16
+    },
+    {
+      "provider": "local",
+      "name": "Denkfabrik Allgäu",
+      "label": null,
+      "answer": "unsure",
+      "reason": "The record lacks sufficient information in the 'description' and 'website' fields to determine if Denkfabrik Allgäu is a real operating company.",
+      "seconds": 5.77
+    },
+    {
+      "provider": "local",
+      "name": "Der Ort",
+      "label": null,
+      "answer": "unsure",
+      "reason": "The record lacks sufficient information in the 'description' and 'website' fields to determine if 'Der Ort' is a real operating company.",
+      "seconds": 5.5
+    },
+    {
+      "provider": "local",
+      "name": "Digitalschmiede Bayern",
+      "label": null,
+      "answer": "unsure",
+      "reason": "The record lacks sufficient information in the 'website' and 'city' fields to confirm whether Digitalschmiede Bayern is a real operating company.",
+      "seconds": 5.79
+    },
+    {
+      "provider": "cloud",
+      "name": "Gitex Europe 2026",
+      "label": "not_company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.2
+    },
+    {
+      "provider": "cloud",
+      "name": "Munich Startup Festival 2024",
+      "label": "not_company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "Digital Health Summit 2026",
+      "label": "not_company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.2
+    },
+    {
+      "provider": "cloud",
+      "name": "Exportpreis Bayern 2026",
+      "label": "not_company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "Robotik-Startups",
+      "label": "not_company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.22
+    },
+    {
+      "provider": "cloud",
+      "name": "Traveltech-Startups",
+      "label": "not_company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "Deutsche Startup-Landschaft",
+      "label": "not_company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "Unternehmen",
+      "label": "not_company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "exist-Women",
+      "label": "not_company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "Betriebswirtsch. Unternehmensberatung",
+      "label": "not_company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.22
+    },
+    {
+      "provider": "cloud",
+      "name": "36ZERO Vision",
+      "label": "company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.22
+    },
+    {
+      "provider": "cloud",
+      "name": "5U AI",
+      "label": "company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.22
+    },
+    {
+      "provider": "cloud",
+      "name": "7Travel",
+      "label": "company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "8pm Social",
+      "label": "company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.22
+    },
+    {
+      "provider": "cloud",
+      "name": "9flats.com",
+      "label": "company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "ADVA Optical Networking",
+      "label": "company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.19
+    },
+    {
+      "provider": "cloud",
+      "name": "AEREUS",
+      "label": "company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "AI Product Champions",
+      "label": "company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "AICA",
+      "label": "company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.22
+    },
+    {
+      "provider": "cloud",
+      "name": "AICORN",
+      "label": "company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "AICU",
+      "label": "company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.16
+    },
+    {
+      "provider": "cloud",
+      "name": "AIRMO",
+      "label": "company",
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.2
+    },
+    {
+      "provider": "cloud",
+      "name": "Ai Butler",
+      "label": null,
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.2
+    },
+    {
+      "provider": "cloud",
+      "name": "Alexander Beßler",
+      "label": null,
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "Antonia Widmer",
+      "label": null,
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.2
+    },
+    {
+      "provider": "cloud",
+      "name": "Astra Labs",
+      "label": null,
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.22
+    },
+    {
+      "provider": "cloud",
+      "name": "Bloom Partners",
+      "label": null,
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.17
+    },
+    {
+      "provider": "cloud",
+      "name": "Christian Willert",
+      "label": null,
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.18
+    },
+    {
+      "provider": "cloud",
+      "name": "Christoph Baumeister",
+      "label": null,
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "Cometa Kempten",
+      "label": null,
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "Dallara Automobili",
+      "label": null,
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.2
+    },
+    {
+      "provider": "cloud",
+      "name": "Denkfabrik Allgäu",
+      "label": null,
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    },
+    {
+      "provider": "cloud",
+      "name": "Der Ort",
+      "label": null,
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.16
+    },
+    {
+      "provider": "cloud",
+      "name": "Digitalschmiede Bayern",
+      "label": null,
+      "answer": "ERROR",
+      "reason": null,
+      "seconds": 0.21
+    }
+  ]
+}

@@ -260,6 +260,24 @@ class Settings(BaseSettings):
     # backlog drain; this chain exists for freshness, not throughput.
     web_verify_chain_limit: int = 25
 
+    # ── Review resolver (Phase 2, plans/REVIEW_INBOX_AUTONOMY_PLAN.md) ───────
+    # Default OFF: same staged-rollout requirement as ig_enabled above.
+    # Nothing runs unattended until scripts/resolve_reviews.py has been run
+    # by hand, its output checked against real records, and the owner has
+    # explicitly turned this on. Also the kill switch — set False to stop
+    # the nightly job without removing it from the scheduler.
+    resolver_enabled: bool = False
+    # Max field_update GROUPS and max possible_duplicate reviews judged per
+    # scheduled run (independent budgets). ~6s/call measured locally: 120
+    # duplicate reviews is ~12 min, comfortably inside the 01:00-02:00
+    # window ahead of the explain job.
+    resolver_nightly_limit: int = 120
+    # Phase 3 (research loop). There is no quota accounting for Tavily
+    # anywhere in this codebase — this hard per-run cap is the only cost
+    # control that will exist, same "blunt cap" pattern as
+    # web_verify_chain_limit and ig_max_calls_per_run above.
+    resolver_max_searches: int = 40
+
     # Pattern-decision thresholds (evidence patterns, not a single linear gate)
     dedup_strong_signal: float = 0.80     # a per-signal value >= this counts as "strong"
     dedup_anomaly_gap: float = 0.30       # domain strong but best other signal below this -> anomaly

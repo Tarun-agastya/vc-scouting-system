@@ -125,7 +125,7 @@ def split_proposal(proposed: dict) -> tuple:
     return fills, conflicts
 
 
-def norm_value(v) -> str:
+def norm_value(v, *, field: str = None) -> str:
     """
     Comparison form for non-free-text fields: NFKD diacritic-fold, lowercase,
     collapse whitespace, then map known locale synonyms. Used so a pure
@@ -134,11 +134,21 @@ def norm_value(v) -> str:
 
     Comparison only — never write this back to a record. The stored value
     keeps its real spelling.
+
+    `field="funding_stage"` additionally folds hyphens to spaces ("Series-C"
+    vs "Series C", "Series-A2" vs "Series A2") — most of the pending
+    funding_stage reviews sampled (29 Sep) were this exact formatting
+    difference. Deliberately scoped to this one field rather than applied
+    everywhere: address and contact_info both use hyphens meaningfully
+    ("12-14", a phone number), and collapsing them there would hide a real
+    difference rather than a formatting one.
     """
     if v is None:
         return ""
     s = unicodedata.normalize("NFKD", str(v).strip().lower())
     s = "".join(c for c in s if not unicodedata.combining(c))
+    if field == "funding_stage":
+        s = s.replace("-", " ")
     s = " ".join(s.split())
     return _SYNONYMS.get(s, s)
 

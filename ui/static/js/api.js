@@ -109,6 +109,18 @@ export const api = {
   listReviewsGrouped: (filters) => get("/reviews/grouped", filters),
   resolveGroupedReviews: (masterId, selections) =>
     post(`/reviews/grouped/${masterId}/resolve`, { selections }),
+  /**
+   * Settle ONE field and leave the rest of a startup's reviews pending.
+   * `value` applies that candidate; `reject:true` keeps the current value
+   * and suppresses every candidate for that field. A review only closes
+   * once every field it proposed has been decided.
+   */
+  resolveSingleField: (masterId, field, { value = null, reject = false } = {}) =>
+    post(`/reviews/grouped/${masterId}/field/${encodeURIComponent(field)}/resolve`,
+         { value, reject }),
+  /** That field's own past, for the per-field history toggle. */
+  fieldHistory: (startupId, field, limit = 12) =>
+    get(`/scout/startup/${startupId}/history`, { field, limit }),
   approveReview: (id) => post(`/reviews/${id}/approve`),
   rejectReview: (id) => post(`/reviews/${id}/reject`),
   /** Reverses an approved possible_duplicate/anomaly merge — reinserts the deleted row, leaves the master untouched. */
@@ -129,6 +141,11 @@ export const api = {
   /** Exact SQL-aggregated risk-level breakdown (Phase Z-4) — never disagrees
    *  with the Pending KPI tile the way a capped client-side sample could. */
   reviewCounts: (status = "pending") => get("/reviews/counts", { status }),
+  /** Phase 4 (autonomy plan): the nightly resolver's last run, for the
+   *  Review Inbox's "last night" card. Empty object if it has never run
+   *  (resolver_enabled is off, or scripts/resolve_reviews.py hasn't been
+   *  used yet). */
+  resolverLastRun: () => get("/reviews/resolver/last-run"),
   /**
    * Phase Z-4 (12 Aug): act on EVERY review matching a filter, not just a
    * loaded page — the queue-clearing endpoints. Both re-embed/re-score per

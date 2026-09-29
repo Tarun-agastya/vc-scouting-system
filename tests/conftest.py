@@ -18,9 +18,10 @@ PREFIX = "PYTEST"
 
 def _purge():
     """Delete every PYTEST-namespaced startup + its dependent review/suppression
-    rows + Qdrant points. Safe: only touches PYTEST-prefixed data."""
+    /change-log rows + Qdrant points. Safe: only touches PYTEST-prefixed data."""
     from database.connection import SessionLocal
-    from database.models import Startup, DuplicateReview, SuppressedMatch
+    from database.models import (DuplicateReview, FieldChange, Startup,
+                                 SuppressedMatch)
     from vector_db.qdrant_store import qdrant_store
 
     db = SessionLocal()
@@ -36,6 +37,14 @@ def _purge():
         db.query(SuppressedMatch).filter(
             (SuppressedMatch.master_id.in_(ids)) | (SuppressedMatch.other_id.in_(ids))
         ).delete(synchronize_session=False)
+        # Change-log rows too (added 29 Sep). Ids here are derived from
+        # name+website (deterministic uuid5), so a test that re-creates the
+        # same PYTEST company gets the SAME id — and without this, history
+        # rows from previous runs accumulated under it. That made a test
+        # asserting "this field changed once" pass alone and fail in the
+        # full suite, and quietly leaked test rows into a real audit table.
+        db.query(FieldChange).filter(FieldChange.startup_id.in_(ids)).delete(
+            synchronize_session=False)
         for sid in ids:
             db.query(Startup).filter(Startup.id == sid).delete(synchronize_session=False)
         db.commit()

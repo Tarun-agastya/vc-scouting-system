@@ -376,6 +376,51 @@ class MergeSnapshot(Base):
     undone_at  = Column(DateTime, nullable=True)
 
 
+class ResolverRun(Base):
+    """
+    One row per nightly resolver/researcher run (Phase 4, plans/
+    REVIEW_INBOX_AUTONOMY_PLAN.md).
+
+    Why this exists: ScoutController keeps its run history in an in-memory
+    OrderedDict (processing/scout_controller.py), and the API runs under
+    launchd with KeepAlive=true — so a crash-restart silently erases the
+    record of what an unattended decider actually did. That is tolerable for
+    ingestion, which is idempotent and re-runs on its own schedule; it is not
+    tolerable for something closing review rows, where "what happened last
+    night" needs to survive the process that ran it. Every individual
+    auto-close is already independently traceable through SuppressedMatch
+    and FieldChange — this table makes the RUN itself reconstructable too,
+    which is what the dashboard card and the press-digest heartbeat read.
+
+    kind: "resolve" (Phase 2, field/duplicate adjudication) or "research"
+    (Phase 3, the web-search loop) — the two jobs run on different triggers
+    and it matters which one a row describes.
+
+    stats holds the full breakdown dict resolve_pending()/research_pending()
+    already return (keep_current, prefers_proposal, none_fit, unavailable,
+    budget_exhausted, ...) — named columns below cover only the handful of
+    numbers the dashboard/heartbeat actually surface; stats is the complete
+    record for anyone digging further.
+    """
+    __tablename__ = "resolver_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    kind = Column(String(20), index=True)          # "resolve" | "research"
+
+    started_at  = Column(DateTime, default=datetime.utcnow, index=True)
+    finished_at = Column(DateTime, nullable=True)
+
+    judged        = Column(Integer, default=0)     # groups/reviews the model actually judged
+    auto_closed   = Column(Integer, default=0)
+    left_pending  = Column(Integer, default=0)      # judged but not closed (winner/same_company/none_fit/low-conf)
+    unavailable   = Column(Integer, default=0)      # model call failed or gave an unusable response
+    searches_used = Column(Integer, nullable=True)  # research runs only
+
+    model = Column(String(80), nullable=True)
+    error = Column(Text, nullable=True)             # set only if the run stopped early
+    stats = Column(JSON, default=dict)
+
+
 class SiteProfile(Base):
     """
     Learned per-source extraction strategy (Phase R-2, 31 Jul — self-adapting

@@ -472,7 +472,8 @@ async def mark_interest(request: MarkInterestRequest, db: Session = Depends(get_
 
 
 @router.get("/startup/{startup_id}/history")
-async def startup_history(startup_id: str, limit: int = 60, db: Session = Depends(get_db)):
+async def startup_history(startup_id: str, limit: int = 60, field: str = None,
+                          db: Session = Depends(get_db)):
     """
     What changed about this record, newest first.
 
@@ -481,12 +482,17 @@ async def startup_history(startup_id: str, limit: int = 60, db: Session = Depend
     review, a merge, an undo. Empty for anything that has not changed since
     the change log shipped; there is no backfill, because the information to
     backfill it with was never kept.
+
+    `field` narrows it to one column — what the Review Inbox's per-field
+    history toggle reads, so a reviewer can see that field's own past
+    without leaving the review screen.
     """
     from processing.change_log import history_for
 
     if not db.query(Startup).filter(Startup.id == startup_id).first():
         raise HTTPException(status_code=404, detail="Startup not found")
-    return {"startup_id": startup_id, "history": history_for(db, startup_id, limit)}
+    return {"startup_id": startup_id, "field": field,
+            "history": history_for(db, startup_id, limit, field=field)}
 
 
 @router.delete("/startup/{startup_id}")

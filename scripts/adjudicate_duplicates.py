@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy.orm.attributes import flag_modified
 
 from database.connection import SessionLocal
-from database.models import Startup, DuplicateReview, SuppressedMatch
+from database.models import Startup, DuplicateReview
 from processing.dedup_adjudicator import adjudicate_pair, may_auto_apply
 
 
@@ -95,10 +95,8 @@ def run(limit: int, apply: bool, assume_yes: bool) -> None:
             )[:2000]
 
             if apply and may_auto_apply(result) and r.master_id and r.incoming_id:
-                db.add(SuppressedMatch(kind="known_different",
-                                       master_id=r.master_id, other_id=r.incoming_id))
-                r.status = "rejected"
-                r.resolved_at = datetime.utcnow()
+                from processing.review_actions import record_rejection
+                record_rejection(db, r, commit=False)
                 applied += 1
 
         db.commit()

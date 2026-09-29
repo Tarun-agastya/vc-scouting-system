@@ -54,10 +54,14 @@ export default {
       // singles' own total is small enough to sit comfortably on one page —
       // narrow the type filter to page through singles specifically.
       offset: 0, primaryTotal: 0,
+      // True while a sub-screen (the field-by-field merge table) owns the
+      // detail pane, so the background poll's repaint leaves it alone.
+      detailLocked: false,
     };
 
     el.innerHTML = `
       <div class="stack">
+        <div id="resolver-card"></div>
         <div class="kpis" id="counts"></div>
         <div class="card">
           <div class="row wrap" style="gap:8px">
@@ -98,6 +102,7 @@ export default {
         <div class="row" id="pagination" style="gap:8px;justify-content:center"></div>
       </div>`;
 
+    const resolverCardEl = el.querySelector("#resolver-card");
     const countsEl = el.querySelector("#counts");
     const queueActions = el.querySelector("#queue-actions");
     const bulkToolbar = el.querySelector("#bulk-toolbar");
@@ -133,6 +138,36 @@ export default {
       row.querySelector("#f-batch-pick").addEventListener("change", (e) => { state.runId = e.target.value; mountBatchRow(); resetAndLoad(); });
       row.querySelector("#f-batch-id").addEventListener("input", debounce((e) => { state.runId = e.target.value.trim(); resetAndLoad(); }, 300));
       row.querySelector("#f-batch-clear")?.addEventListener("click", () => { state.runId = ""; mountBatchRow(); resetAndLoad(); });
+    }
+
+    // Phase 4 (autonomy plan): "what the resolver did last night" — the
+    // worker's output is worthless if nobody can see it. Silent (no card at
+    // all) if the resolver has never run, rather than an empty/zero card
+    // implying it ran and found nothing.
+    function resolverRunLine(kind, label, run) {
+      if (!run) return "";
+      const when = run.finished_at ? fmt.dateTime(run.finished_at) : "—";
+      const bits = [`${run.judged} judged`, `${run.auto_closed} closed for you`,
+                    `${run.left_pending} left pending`];
+      if (kind === "research" && run.searches_used != null) bits.push(`${run.searches_used} searches`);
+      if (run.unavailable) bits.push(`${run.unavailable} skipped (model unavailable)`);
+      const errBit = run.error ? `<span class="dim" style="color:var(--danger,#c0392b)"> · stopped early: ${esc(run.error)}</span>` : "";
+      return `<div class="row" style="gap:6px;font-size:13px">
+        <strong>${label}</strong>
+        <span class="dim">${when} · ${bits.join(" · ")}</span>${errBit}
+      </div>`;
+    }
+
+    async function loadResolverCard() {
+      try {
+        const runs = await api.resolverLastRun();
+        const lines = [
+          resolverRunLine("resolve", "🌙 Review resolver", runs.resolve),
+          resolverRunLine("research", "🔎 Research loop", runs.research),
+        ].filter(Boolean);
+        resolverCardEl.innerHTML = lines.length
+          ? `<div class="card" style="padding:10px 16px">${lines.join("")}</div>` : "";
+      } catch { /* non-fatal — the card is a convenience */ }
     }
 
     async function loadCounts() {
@@ -267,6 +302,9 @@ export default {
 
       listEl.querySelectorAll("[data-entry-id]").forEach((row) =>
         row.addEventListener("click", () => {
+          // Picking a different row is an explicit "I'm done with whatever
+          // was open" — release the pane so the merge screen can't strand it.
+          state.detailLocked = false;
           state.selectedId = row.dataset.entryId;
           renderList();
           renderDetail();
@@ -305,11 +343,15 @@ export default {
     async function openMergeScreen(reviewId) {
       const host = detailEl;
       const prev = host.innerHTML;
+      // Claim the pane before the first await — the poll can fire while the
+      // preview request is still in flight.
+      state.detailLocked = true;
       host.innerHTML = `<div class="row" style="padding:40px;justify-content:center"><span class="spinner"></span></div>`;
 
       let pv;
       try { pv = await api.mergePreview(reviewId); }
       catch (err) {
+        state.detailLocked = false;
         host.innerHTML = `<div class="empty" style="padding:30px"><div class="empty__title">Can't merge these</div><div>${esc(err.message)}</div></div>`;
         return;
       }
@@ -382,7 +424,11 @@ export default {
             const field = e.target.closest("tr").dataset.field;
             choices[field] = e.target.value;
           }));
-        host.querySelector("#m-cancel")?.addEventListener("click", () => { host.innerHTML = prev; renderDetail(); });
+        host.querySelector("#m-cancel")?.addEventListener("click", () => {
+          state.detailLocked = false;
+          host.innerHTML = prev;
+          renderDetail();
+        });
         host.querySelector("#m-toggle-same")?.addEventListener("click", () => { showSame = !showSame; draw(); });
         host.querySelector("#m-go")?.addEventListener("click", doMerge);
       }
@@ -397,15 +443,25 @@ export default {
           toast(took.length
             ? `Merged — took ${took.length} value${took.length === 1 ? "" : "s"} from ${pv.incoming.name}`
             : `Merged — kept every value from ${pv.keeper.name}`);
+          state.detailLocked = false;   // merge done — hand the pane back
           offerUndo(res.snapshot_id, pv);
           await loadCounts();
           await loadList();
         } catch (err) {
+          state.detailLocked = false;
           btn.disabled = false;
           btn.textContent = "⚖️ Merge";
           toast(`Merge failed: ${err.message}`, "error");
         }
       }
+
+      // Paint it. This call was missing: draw() was defined and then only
+      // ever re-entered from its own "show matching fields" toggle, so the
+      // screen stopped at the loading spinner and never rendered — the
+      // preview request succeeded, nothing consumed it. Another runtime-only
+      // bug `node --check` cannot see; tests/test_dashboard_smoke.py now
+      // clicks this button.
+      draw();
     }
 
     /* A persistent undo affordance, not a toast that vanishes in 4 seconds.
@@ -608,16 +664,21 @@ export default {
 
           ${entry.master_missing ? `<div class="card" style="background:var(--surface-2)"><span class="chip chip--danger">Record no longer exists</span></div>` : ""}
 
-          <div class="dim" style="font-size:12px">Pick the value to keep for each field. Fields left on "Reject" won't change the record.</div>
+          <div class="dim" style="font-size:12px">Decide each field on its own — Apply or Reject settles just that field and leaves the rest pending. Or pick across all of them and use "Apply all selections" at the bottom.</div>
 
           <div class="stack" style="gap:14px">
             ${fieldNames.map((field) => {
               const candidates = entry.fields[field] || [];
               const current = entry.current ? entry.current[field] : undefined;
               return `
-                <div class="card" style="background:var(--surface-2)">
-                  <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">${esc(field)}</div>
+                <div class="card" style="background:var(--surface-2)" data-field-card="${esc(field)}">
+                  <div class="row" style="margin-bottom:6px">
+                    <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">${esc(field)}</div>
+                    <button class="btn btn--ghost btn--sm" data-history-toggle="${esc(field)}"
+                            style="margin-left:auto;font-size:11px;padding:2px 8px">history ▾</button>
+                  </div>
                   <div style="font-size:12px;margin-bottom:8px"><span class="dim">Current:</span> ${esc(String(current ?? ""), "—")}</div>
+                  <div data-history-panel="${esc(field)}" style="display:none;margin-bottom:8px"></div>
                   <div class="stack" style="gap:6px">
                     ${candidates.map((c, i) => `
                       <label class="row" style="gap:8px;align-items:flex-start;font-size:13px">
@@ -633,17 +694,113 @@ export default {
                       <span class="dim">Reject — keep current value</span>
                     </label>
                   </div>
+                  <div class="row" style="gap:8px;margin-top:10px">
+                    <button class="btn btn--sm" data-apply-field="${esc(field)}">Apply this field</button>
+                    <button class="btn btn--ghost btn--sm" data-reject-field="${esc(field)}">Reject</button>
+                    <span class="dim" style="font-size:11px;align-self:center">settles only ${esc(field)}</span>
+                  </div>
                 </div>`;
             }).join("")}
           </div>
 
           <div class="row wrap" style="gap:10px">
-            <button class="btn btn--primary" id="apply-group-btn">✅ Apply selections</button>
-            <span class="dim" style="font-size:12px;align-self:center">Applies picks to the record and closes all ${entry.review_count} pending change${entry.review_count === 1 ? "" : "s"} for this startup.</span>
+            <button class="btn btn--primary" id="apply-group-btn">✅ Apply all selections</button>
+            <span class="dim" style="font-size:12px;align-self:center">Applies every pick above at once and closes all ${entry.review_count} pending change${entry.review_count === 1 ? "" : "s"} for this startup.</span>
           </div>
         </div>`;
 
       detailEl.querySelector("#apply-group-btn").addEventListener("click", () => applyGroupSelections(entry));
+
+      // Touching a picker is unsaved intent. The 10s poll repaints this pane,
+      // which would reset every radio back to its default and throw away
+      // picks made across several fields — the same clobber the merge screen
+      // hit, just less obvious because the pane looks unchanged afterwards.
+      // Cleared once a decision completes, or when another row is selected.
+      detailEl.querySelectorAll('input[type="radio"][name^="field-"]').forEach((el) =>
+        el.addEventListener("change", () => { state.detailLocked = true; }));
+
+      detailEl.querySelectorAll("[data-apply-field]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          const field = btn.getAttribute("data-apply-field");
+          const checked = detailEl.querySelector(`input[name="field-${CSS.escape(field)}"]:checked`);
+          if (!checked || checked.value === "__reject__") {
+            // "Apply" with Reject selected is ambiguous — say so rather than
+            // silently doing one of the two.
+            toast(`Pick a value for "${field}" first, or use Reject.`, "error");
+            return;
+          }
+          const cand = entry.fields[field][parseInt(checked.value, 10)];
+          resolveOneField(entry, field, { value: cand.value });
+        }));
+
+      detailEl.querySelectorAll("[data-reject-field]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          const field = btn.getAttribute("data-reject-field");
+          resolveOneField(entry, field, { reject: true });
+        }));
+
+      detailEl.querySelectorAll("[data-history-toggle]").forEach((btn) =>
+        btn.addEventListener("click", () => toggleFieldHistory(entry, btn)));
+    }
+
+    /* ── Per-field history, loaded on demand ─────────────────────────────── */
+    async function toggleFieldHistory(entry, btn) {
+      const field = btn.getAttribute("data-history-toggle");
+      const panel = detailEl.querySelector(`[data-history-panel="${CSS.escape(field)}"]`);
+      if (!panel) return;
+      if (panel.style.display !== "none") {
+        panel.style.display = "none";
+        btn.textContent = "history ▾";
+        return;
+      }
+      panel.style.display = "";
+      btn.textContent = "history ▴";
+      if (panel.dataset.loaded) return;       // fetch once per open detail
+      panel.innerHTML = `<span class="dim" style="font-size:11px">loading…</span>`;
+      try {
+        const res = await api.fieldHistory(entry.master_id, field);
+        const rows = res.history || [];
+        panel.dataset.loaded = "1";
+        panel.innerHTML = rows.length
+          ? `<div class="stack" style="gap:3px;font-size:11px;border-left:2px solid var(--border);padding-left:8px">
+               ${rows.map((h) => `
+                 <div class="row" style="gap:6px">
+                   <span class="dim" style="min-width:104px">${fmt.dateTime(h.changed_at)}</span>
+                   <span class="chip" style="font-size:10px">${esc(h.source, "system")}</span>
+                   <span>${esc(String(h.old ?? ""), "—")} → <strong>${esc(String(h.new ?? ""), "—")}</strong></span>
+                 </div>`).join("")}
+             </div>`
+          : `<span class="dim" style="font-size:11px">No recorded changes for this field yet. The change log only covers edits made since it shipped — there is no backfill.</span>`;
+      } catch (err) {
+        panel.innerHTML = `<span class="dim" style="font-size:11px">Couldn't load history: ${esc(err.message)}</span>`;
+      }
+    }
+
+    async function resolveOneField(entry, field, { value = null, reject = false }) {
+      if (state.busy) return;
+      const what = reject
+        ? `Reject every proposed value for "${field}" and keep the current one?`
+        : `Apply "${String(value)}" to ${field}?`;
+      if (!confirmAction(`${what}\n\nThis settles only ${field}. Any other pending fields for "${entry.master_name}" stay in the queue.`)) return;
+
+      state.busy = true;
+      try {
+        const res = await api.resolveSingleField(entry.master_id, field, { value, reject });
+        const closed = res.approved_review_ids.length + res.rejected_review_ids.length;
+        toast(
+          `${res.applied ? `Applied ${field}` : `Rejected ${field}`}` +
+          (closed ? ` · closed ${closed} review${closed === 1 ? "" : "s"}` : "") +
+          (res.still_pending_review_ids.length
+            ? ` · ${res.still_pending_review_ids.length} review${res.still_pending_review_ids.length === 1 ? "" : "s"} still have other fields`
+            : "")
+        );
+        await loadCounts();
+        await loadList(true);
+      } catch (err) {
+        toast(`Could not settle ${field}: ${err.message}`, "error");
+      } finally {
+        state.busy = false;
+      }
     }
 
     async function applyGroupSelections(entry) {
@@ -672,6 +829,14 @@ export default {
     }
 
     async function renderDetail() {
+      // The detail pane is repainted by the 10s background poll. When the
+      // user has opened a sub-screen in it (the field-by-field merge table,
+      // mid-decision), that repaint silently destroyed their work-in-progress
+      // — reported as "I click merge field by field, it processes, and
+      // nothing happens": the screen DID render, then the next poll tick
+      // wiped it. Anything that takes over the pane sets state.detailLocked
+      // and is responsible for clearing it again.
+      if (state.detailLocked) return;
       if (!state.selectedId) {
         detailEl.innerHTML = `<div class="empty" style="padding:40px">Select an item from the list</div>`;
         return;
@@ -740,16 +905,36 @@ export default {
               </div>`).join("") : '<div class="dim" style="font-size:12px">No search results recorded</div>'}
           </div>`;
       } else {
-        evidenceRows = Object.entries(rawEvidence)
-          .filter(([k]) => k !== "aggregate_score")
-          .map(([k, v]) => `
+        // Only the numeric match signals are percentage bars. evidence carries
+        // non-numeric entries too — `evidence_level` is the string "minimal"/
+        // "normal", and the resolver writes structured verdict objects
+        // (adjudication / field_adjudications / resolved_fields) — and
+        // multiplying those by 100 rendered a literal "NaN%" bar, reported
+        // from the dashboard. Numbers get a bar, the evidence level gets a
+        // chip, and the verdict objects are skipped: their content is already
+        // shown in the AI-explanation banner below, in prose.
+        const entries = Object.entries(rawEvidence).filter(([k]) => k !== "aggregate_score");
+        const numeric = entries.filter(([, v]) => typeof v === "number" && isFinite(v));
+        const level = rawEvidence.evidence_level;
+
+        evidenceRows = numeric.map(([k, v]) => `
             <div>
               <div class="row" style="font-size:12px"><span class="dim">${esc(k.replace(/_/g, " "))}</span>
                 <span class="mono" style="margin-left:auto">${(v * 100).toFixed(0)}%</span></div>
               <div style="background:var(--surface-2);border-radius:4px;height:6px;overflow:hidden;margin-top:3px">
-                <span style="display:block;height:100%;width:${v * 100}%;background:var(--brand-lime)"></span>
+                <span style="display:block;height:100%;width:${Math.max(0, Math.min(100, v * 100))}%;background:var(--brand-lime)"></span>
               </div>
             </div>`).join("");
+
+        if (level) {
+          evidenceRows += `
+            <div class="row" style="font-size:12px;margin-top:2px">
+              <span class="dim">evidence level</span>
+              <span class="chip ${level === "minimal" ? "chip--warning" : ""}" style="margin-left:auto;font-size:11px">
+                ${esc(level)}${level === "minimal" ? " — both sides are bare stubs" : ""}
+              </span>
+            </div>`;
+        }
       }
 
       // For a web-verification review, llm_explanation is never populated
@@ -872,6 +1057,7 @@ export default {
     document.addEventListener("keydown", onKeydown);
 
     mountBatchRow();
+    loadResolverCard();
     loadCounts();
     loadList();
 

@@ -1,0 +1,167 @@
+You are auditing a startup database. For EACH numbered record below,
+say whether it describes a real operating COMPANY.
+
+  company     = a real business (including one-person businesses and
+                companies named after their founder)
+  not_company = an event or conference, an award, a funding programme,
+                a topic heading or category, a person's name from a
+                byline or staff list, or a listing-page label
+  unsure      = genuinely cannot tell from the fields shown
+
+Judge ONLY from the fields shown. Do not use outside knowledge about
+the names. Answer for every record.
+
+Reply with ONLY a JSON array, no other text:
+[{"n": 1, "answer": "company", "reason": "one short sentence"}, ...]
+
+--- RECORDS ---
+
+1. name: Gitex Europe 2026
+   website: —
+   description: —
+   industry: —   city: —
+
+2. name: Munich Startup Festival 2024
+   website: —
+   description: —
+   industry: Consumer & Lifestyle   city: —
+
+3. name: Digital Health Summit 2026
+   website: —
+   description: —
+   industry: —   city: —
+
+4. name: Exportpreis Bayern 2026
+   website: —
+   description: —
+   industry: —   city: —
+
+5. name: Robotik-Startups
+   website: —
+   description: Münchner Robotik-Startups und ihre Lösungen.
+   industry: Robotics & Hardware   city: —
+
+6. name: Traveltech-Startups
+   website: —
+   description: Traveltech companies addressing various developments in the sector.
+   industry: Logistics & Supply Chain   city: —
+
+7. name: Deutsche Startup-Landschaft
+   website: —
+   description: —
+   industry: —   city: —
+
+8. name: Unternehmen
+   website: —
+   description: —
+   industry: B2B SaaS & Enterprise   city: —
+
+9. name: exist-Women
+   website: —
+   description: —
+   industry: Consumer & Lifestyle   city: —
+
+10. name: Betriebswirtsch. Unternehmensberatung
+   website: —
+   description: —
+   industry: B2B SaaS & Enterprise   city: —
+
+11. name: 36ZERO Vision
+   website: 36zerovision.com
+   description: 36ZERO Vision offers an AI-powered visual inspection system for high-value manufacturing.
+   industry: Manufacturing & Industry 4.0   city: —
+
+12. name: 5U AI
+   website: https://www.munich-startup.de/news/5u-ai-erhaelt-mehr-als-2-komma-7-millionen-euro?category=deals
+   description: 5U AI develops AI-powered digital workers for automating operational tasks in freight forwarding.
+   industry: AI & Machine Learning   city: Munich
+
+13. name: 7Travel
+   website: 7travel.de
+   description: 7Travel, operating under the domain 7travel.de, is a travel platform that curates and offers a variety of package tours and travel deals.
+   industry: Retail & E-Commerce   city: Unterföhring
+
+14. name: 8pm Social
+   website: https://www.8pm.social
+   description: Aims to provide an alternative to addictive social media platforms by offering a different approach to online interaction.
+   industry: Consumer & Lifestyle   city: Munich
+
+15. name: 9flats.com
+   website: www.9flats.com
+   description: 9flats.com, founded by Qype co-founder Stephan Uhrenbacher, enters the startup scene with a new venture.
+   industry: B2B SaaS & Enterprise Software   city: Hamburg
+
+16. name: ADVA Optical Networking
+   website: https://www.adva.com
+   description: Specializes in optical networking products and solutions that enhance data communication capabilities for service providers and enterprises worldwide.
+   industry: Manufacturing & Industry 4.0   city: Munich
+
+17. name: AEREUS
+   website: aereus.de
+   description: AEREUS Where raw data chaos is turned into clear, evolving, and robust scene understanding, for tactical and operational intelligence.
+   industry: AI & Machine Learning   city: —
+
+18. name: AI Product Champions
+   website: https://hpi.de/d-school/bildungsangebot/ai-product-champions/
+   description: Provides strategic upskilling in AI product development.
+   industry: AI & Machine Learning   city: —
+
+19. name: AICA
+   website: www.aica.tech
+   description: AICA simplifies robot programming with cutting-edge software tailored for intricate tasks.
+   industry: Manufacturing & Industry 4.0   city: —
+
+20. name: AICORN
+   website: https://www.aicorn.de
+   description: AICORN develops AI-driven solutions for the financial industry.
+   industry: AI & Machine Learning   city: Karlsruhe
+
+21. name: AICU
+   website: aicuflow.com
+   description: AICU One tool for all data formats to automate processes with ease and create custom AI applications.
+   industry: AI & Machine Learning   city: —
+
+22. name: AIRMO
+   website: https://www.airmo.de
+   description: AIRMO is building a methane-emissions monitoring platform for the energy industry using measurements from drones, aircraft, and satellites.
+   industry: Energy & CleanTech   city: Augsburg
+
+23. name: Ai Butler
+   website: —
+   description: —
+   industry: AI & Machine Learning   city: —
+
+24. name: Astra Labs
+   website: —
+   description: —
+   industry: AI & Machine Learning   city: —
+
+25. name: Bloom Partners
+   website: —
+   description: —
+   industry: B2B SaaS & Enterprise Software   city: —
+
+26. name: Cometa Kempten
+   website: —
+   description: —
+   industry: Manufacturing & Industry 4.0   city: —
+
+27. name: Dallara Automobili
+   website: —
+   description: —
+   industry: Mobility & Automotive   city: —
+
+28. name: Denkfabrik Allgäu
+   website: —
+   description: —
+   industry: B2B SaaS & Enterprise Software   city: —
+
+29. name: Der Ort
+   website: —
+   description: —
+   industry: Mobility & Automotive   city: —
+
+30. name: Digitalschmiede Bayern
+   website: —
+   description: —
+   industry: B2B SaaS & Enterprise Software   city: —
