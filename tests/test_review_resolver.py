@@ -221,6 +221,11 @@ def test_apply_closes_keep_current_high_confidence(make, db, monkeypatch):
 def test_apply_never_overwrites_even_at_high_confidence(make, db, monkeypatch):
     """A winning proposal is never auto-applied. This is the whole point of
     the asymmetric policy — see processing/field_adjudicator.py."""
+    import processing.trust as trust
+    # Independent of the LIVE ledger: once real humans have agreed often
+    # enough, sub_industry legitimately earns auto-apply (A4) — this test is
+    # about the default, un-earned state, so pin it.
+    monkeypatch.setattr(trust, "field_autonomy", lambda db, field: False)
     rid, _ = make("Resolver Winner", website="pytest-resolver-winner.com", city="Munich",
                   description="widget maker", sub_industry="Fintech")
     _stage_field_update(db, rid, "PYTEST Resolver Winner", "sub_industry", "Fintech", "HealthTech")
@@ -356,3 +361,116 @@ def test_consecutive_failures_stop_the_run_without_raising(make, db, monkeypatch
     assert "error" not in stats  # never raises — a None result is expected, handled input
     db.expire_all()
     assert len(_pending(db, rid)) == 1  # untouched, will retry next run
+
+
+def test_mixed_review_has_its_list_part_merged_and_keeps_the_scalar_question(make, db):
+    """34 of 125 pending rows mixed a lossless tags union with a real scalar
+    question, so the all-list-only drain skipped them whole."""
+    from database.models import Startup
+    from processing.list_field_drain import drain_mixed_list_fields
+
+    rid, _ = make("Resolver Split", website="pytest-resolver-split.com", city="Munich",
+                  description="widget maker", tags=["fintech"])
+    r = DuplicateReview(
+        review_type="field_update", master_id=rid, master_name="PYTEST Resolver Split",
+        incoming_name="x", risk_level="low", status="pending", source="pytest",
+        proposed_changes={"city": {"old": "Munich", "new": "Berlin"},
+                          "tags": {"old": ["fintech"], "new": ["fintech", "payments"]}})
+    db.add(r)
+    db.commit()
+    review_id = r.id
+
+    stats = drain_mixed_list_fields(db, apply=True, master_ids=[rid])
+
+    assert stats["lists_merged"] == 1
+    db.expire_all()
+    assert set(db.query(Startup).filter(Startup.id == rid).first().tags) == {"fintech", "payments"}
+    rev = db.query(DuplicateReview).get(review_id)
+    assert rev.status == "pending"                       # the city question is still a human's
+    assert set(rev.proposed_changes) == {"city"}
+
+
+# ── A4: the one place the resolver may overwrite — and only when earned ─────
+
+def _winner_verdict(w="HealthTech"):
+    return {"winner": w, "none_fit": False, "confidence": "high",
+            "reasoning": "test", "considered": [w], "model": "test"}
+
+
+def test_an_earned_field_applies_the_winning_value_and_is_reversible(make, db, monkeypatch):
+    import processing.trust as trust
+    from database.models import DecisionAudit, FieldChange, Startup
+
+    monkeypatch.setattr(trust, "field_autonomy", lambda db, field: True)
+    monkeypatch.setattr(field_adjudicator, "adjudicate_field_group",
+                        lambda *a, **k: _winner_verdict())
+    rid, _ = make("Resolver Earned", website="pytest-resolver-earned.com", city="Munich",
+                  description="widget maker", sub_industry="Fintech")
+    r = _stage_field_update(db, rid, "PYTEST Resolver Earned", "sub_industry", "Fintech", "HealthTech")
+    rival = _stage_field_update(db, rid, "PYTEST Resolver Earned", "sub_industry", "Fintech", "Payments")
+    ids = (r.id, rival.id)
+
+    stats = asyncio.run(resolve_pending(limit=50, apply=True, only_type="field_update",
+                                        master_ids=[rid]))
+
+    assert stats["auto_applied"] == 2
+    db.expire_all()
+    assert db.query(Startup).filter(Startup.id == rid).first().sub_industry == "HealthTech"
+    won, lost = (db.query(DuplicateReview).get(i) for i in ids)
+    assert won.status == "approved" and "auto_applied" in won.evidence
+    assert lost.status == "rejected"                              # the rival is suppressed
+    # Reversible: the old value is in the record's history, attributed to us.
+    ch = db.query(FieldChange).filter(FieldChange.startup_id == rid,
+                                      FieldChange.field == "sub_industry").first()
+    assert ch.source == "resolver" and ch.old_value == "Fintech" and ch.new_value == "HealthTech"
+    # And the model was NOT graded on its own decision.
+    assert db.query(DecisionAudit).filter(DecisionAudit.master_id == rid).count() == 0
+
+
+def test_a_field_that_has_not_earned_it_is_never_overwritten(make, db, monkeypatch):
+    import processing.trust as trust
+    from database.models import Startup
+
+    monkeypatch.setattr(trust, "field_autonomy", lambda db, field: False)
+    monkeypatch.setattr(field_adjudicator, "adjudicate_field_group",
+                        lambda *a, **k: _winner_verdict())
+    rid, _ = make("Resolver Unearned", website="pytest-resolver-unearned.com", city="Munich",
+                  description="widget maker", sub_industry="Fintech")
+    _stage_field_update(db, rid, "PYTEST Resolver Unearned", "sub_industry", "Fintech", "HealthTech")
+
+    stats = asyncio.run(resolve_pending(limit=50, apply=True, only_type="field_update",
+                                        master_ids=[rid]))
+    assert stats.get("auto_applied", 0) == 0
+    db.expire_all()
+    assert db.query(Startup).filter(Startup.id == rid).first().sub_industry == "Fintech"
+    assert len(_pending(db, rid)) == 1
+
+
+def test_earned_never_applies_when_the_review_carries_another_field_too(make, db, monkeypatch):
+    """Approving a multi-field review would approve the OTHER field with it,
+    which the model never judged."""
+    import processing.trust as trust
+    from database.models import Startup
+
+    monkeypatch.setattr(trust, "field_autonomy", lambda db, field: True)
+    monkeypatch.setattr(field_adjudicator, "adjudicate_field_group",
+                        lambda *a, **k: _winner_verdict())
+    rid, _ = make("Resolver EarnedMulti", website="pytest-resolver-earnedmulti.com",
+                  city="Munich", description="widget maker", sub_industry="Fintech")
+    db.add(DuplicateReview(
+        review_type="field_update", master_id=rid, master_name="PYTEST Resolver EarnedMulti",
+        incoming_name="x", risk_level="low", status="pending", source="pytest",
+        proposed_changes={"sub_industry": {"old": "Fintech", "new": "HealthTech"},
+                          "city": {"old": "Munich", "new": "Berlin"}}))
+    db.commit()
+
+    asyncio.run(resolve_pending(limit=50, apply=True, only_type="field_update", master_ids=[rid]))
+    db.expire_all()
+    row = db.query(Startup).filter(Startup.id == rid).first()
+    assert row.sub_industry == "Fintech" and row.city == "Munich"     # neither touched
+
+
+def test_identity_fields_can_never_be_earned(make, db):
+    """The real gate, unpatched: website is excluded whatever the ledger says."""
+    from processing.trust import field_autonomy
+    assert field_autonomy(db, "website") is False and field_autonomy(db, "name") is False

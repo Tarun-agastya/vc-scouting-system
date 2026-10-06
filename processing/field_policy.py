@@ -98,6 +98,25 @@ _SYNONYMS = {
     "koln": "cologne",
     "wien": "vienna",
     "zuerich": "zurich",
+    # Added 30 Sep after the Deduplicate dry run held "Pflegewächter" for a
+    # "conflicting city (Hanover vs Hannover)" — one city, two spellings. Keys
+    # are the diacritic-folded, lowercased form norm_value() produces.
+    "hannover": "hanover",
+    "nuernberg": "nuremberg",
+    "nurnberg": "nuremberg",
+    "braunschweig": "brunswick",
+    "frankfurt am main": "frankfurt",
+    "duesseldorf": "dusseldorf",
+    # countries, German <-> English
+    "oesterreich": "austria",
+    "osterreich": "austria",
+    "schweiz": "switzerland",
+    "niederlande": "netherlands",
+    "vereinigtes koenigreich": "united kingdom",
+    "vereinigtes konigreich": "united kingdom",
+    "uk": "united kingdom",
+    "usa": "united states",
+    "vereinigte staaten": "united states",
 }
 
 
@@ -312,3 +331,35 @@ def safe_string_list(value) -> list:
         return [stripped] if stripped else []
 
     return []
+
+
+def is_noise_change(field: str, old, new) -> bool:
+    """
+    True when a proposed change is not a change anyone should be asked about.
+
+    Measured 30 Sep on the 77 field reviews left in the inbox: 18 were the
+    same website DOMAIN with a different path (one article URL on a listing
+    site vs another) and 4 were one value containing the other ("Munich" vs
+    "Munich, Düsseldorf, Cologne"). None of those is a decision.
+
+      website        same registrable domain. Identity is name + domain, so a
+                     different path leaves the record's identity untouched.
+      city / address one value contains the other after normalising. The
+        / country    stored value is kept — it is the record's own, and the
+                     proposal adds nothing the reviewer could act on.
+
+    Pure, and shared by the ingest diff and the drain script so the two can
+    never disagree about what counts as noise.
+    """
+    o = "" if old is None else str(old).strip()
+    n = "" if new is None else str(new).strip()
+    if not o or not n:
+        return False                       # a fill is handled elsewhere, never noise
+    if field == "website":
+        from processing.deduplicator import extract_domain
+        do, dn = extract_domain(o), extract_domain(n)
+        return bool(do) and do == dn
+    if field in ("city", "address", "country"):
+        no, nn = norm_value(o), norm_value(n)
+        return bool(no and nn) and (no in nn or nn in no)
+    return False

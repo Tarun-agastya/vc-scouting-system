@@ -334,7 +334,8 @@ def _classify(evidence: dict, domain_match: bool) -> tuple:
 
 # ── Public entry point ───────────────────────────────────────────────────────
 
-def build_match_report(startup: dict, db, incoming_vector: Optional[List[float]] = None) -> MatchReport:
+def build_match_report(startup: dict, db, incoming_vector: Optional[List[float]] = None,
+                       source_url: str = "") -> MatchReport:
     """
     Gather evidence and classify the identity relationship of `startup` to the
     existing masters. Never merges. See module docstring for outcomes.
@@ -381,6 +382,35 @@ def build_match_report(startup: dict, db, incoming_vector: Optional[List[float]]
                 _, ev = _score_pair(startup, row, 1.0, domain_match=False)
                 return MatchReport("exact_same_record", str(row.id), row.name, 1.0,
                                    "low", ev, "no-website exact-name identity")
+
+    # ── Same entity by rule (29 Sep, autonomy plan A1) ───────────────────────
+    # The two branches above only catch (a) an exact fingerprint hit and (b)
+    # a no-website incoming against another no-website master. That leaves
+    # two shapes invisible, and both were re-staging a duplicate review on
+    # EVERY re-crawl (DZ.S had three):
+    #   * a websited incoming whose master has fingerprint NULL — the unique
+    #     column can only be held by one of two copies, so neither had it;
+    #   * a no-website incoming for a master that HAS a website — branch (b)
+    #     deliberately never claims a websited master by name alone.
+    # Measured: 261 of 316 pending duplicate reviews were identical-name
+    # pairs. auto_merge.same_entity is the one rule for "identical name, at
+    # most one real domain, nothing conflicting" — the same predicate the
+    # nightly merge uses, so ingest and cleanup can never disagree. Routing
+    # here is non-destructive: it takes the exact_same_record path (fills
+    # applied, conflicts staged as field_update), nothing inserted or deleted.
+    normalized_in = normalize_company_name(name)
+    if normalized_in:
+        from processing.auto_merge import same_entity
+        for row in (db.query(Startup)
+                    .filter(Startup.normalized_name == normalized_in)
+                    .order_by(Startup.created_at.asc()).all()):
+            ok, why = same_entity({**startup, "source_url": source_url}, row)
+            if ok:
+                _, ev = _score_pair(startup, row, 1.0,
+                                    domain_match=bool(idomain) and
+                                    extract_domain(row.website or "") == idomain)
+                return MatchReport("exact_same_record", str(row.id), row.name, 1.0,
+                                   "low", ev, f"same entity by rule: {why}")
 
     # ── Run all layers: block → score every candidate → best ─────────────────
     candidates = _block_candidates(startup, incoming_vector, db)

@@ -266,17 +266,23 @@ export default {
       aiAnalysis: null,
       sourceSites: null,   // [{label, count}] — fetched once, populates the source-website filter
       theses: null,        // [{id, name, kind, summary}] — fetched once, populates the "Relevant to" dropdown
+      // Deduplicate panel. `scope` is "all" or "selected"; `plan` is the last
+      // dry-run for exactly the current scope+options (cleared when either
+      // changes, so a stale preview can never be applied).
+      dedup: { open: false, scope: "all", includeReview: false, plan: null, busy: false, result: null },
       selectedIds: new Set(), // Phase Q2/Q3: row-checkbox selection, shared by bulk verify/recheck + bulk interest marking
     };
 
     el.innerHTML = `
       <div class="stack">
         <div class="card" id="search-card"></div>
+        <div id="dedup-panel"></div>
         <div id="selection-toolbar"></div>
         <div id="results-region"></div>
       </div>`;
 
     const searchCard = el.querySelector("#search-card");
+    const dedupPanel = el.querySelector("#dedup-panel");
     const selectionToolbar = el.querySelector("#selection-toolbar");
     const resultsRegion = el.querySelector("#results-region");
 
@@ -285,6 +291,12 @@ export default {
        verify/recheck buttons slot into the same toolbar. */
     function renderSelectionToolbar() {
       const n = state.selectedIds.size;
+      // The Deduplicate panel shows "Only the N selected", and a preview made
+      // for a different selection must never be the one that gets applied.
+      if (state.dedup.open) {
+        if (state.dedup.scope === "selected") { state.dedup.plan = null; state.dedup.result = null; }
+        if (!state.dedup.busy) renderDedupPanel();
+      }
       if (!n) { selectionToolbar.innerHTML = ""; return; }
       selectionToolbar.innerHTML = `
         <div class="card row wrap" style="gap:10px;align-items:center;background:var(--surface-2)">
@@ -319,6 +331,117 @@ export default {
         state.selectedIds.clear();
         renderResults();
       });
+    }
+
+    /* ── Deduplicate ──────────────────────────────────────────────────────
+       Two steps, never one: Preview (a dry run — writes nothing) and then
+       Merge, which acts on that same plan. Merging deletes records, so the
+       counts and the actual pairs are on screen before the button that does
+       it exists. Every merge is snapshotted and undoable from the Review
+       Inbox → Recent merges, and a fresh backup is taken automatically. */
+    function dedupIds() {
+      return state.dedup.scope === "selected" ? [...state.selectedIds] : null;
+    }
+
+    function renderDedupPanel() {
+      const d = state.dedup;
+      if (!d.open) { dedupPanel.innerHTML = ""; return; }
+      const nSel = state.selectedIds.size;
+      if (d.scope === "selected" && !nSel) d.scope = "all";
+      const p = d.plan;
+      const heldTotal = p ? Object.values(p.held || {}).reduce((a, b) => a + b, 0) : 0;
+
+      const pairRows = (p && p.merge_preview || []).map((m) =>
+        `<div class="row" style="gap:8px;font-size:12.5px"><span>${esc(m.loser)} → <strong>${esc(m.keeper)}</strong></span>
+           <span class="dim">${esc(m.rule)}</span></div>`).join("");
+
+      dedupPanel.innerHTML = `
+        <div class="card" style="border-left:3px solid var(--brand-lime)">
+          <div class="card__head"><span class="card__title">🔗 Deduplicate</span>
+            <button class="btn btn--ghost btn--sm" id="dd-close" style="margin-left:auto">✕</button></div>
+          <div class="stack" style="gap:10px">
+            <div class="row wrap" style="gap:18px">
+              <label class="row" style="gap:6px;cursor:pointer">
+                <input type="radio" name="dd-scope" value="all" ${d.scope === "all" ? "checked" : ""}>
+                <span><strong>All records</strong> <span class="dim">— scan the whole database</span></span></label>
+              <label class="row" style="gap:6px;cursor:${nSel ? "pointer" : "not-allowed"};${nSel ? "" : "opacity:.5"}">
+                <input type="radio" name="dd-scope" value="selected" ${d.scope === "selected" ? "checked" : ""} ${nSel ? "" : "disabled"}>
+                <span><strong>Only the ${nSel} selected</strong>
+                  <span class="dim">— ${nSel ? "duplicates of those records, wherever the other copy is" : "tick rows in the table first"}</span></span></label>
+            </div>
+            <label class="row" style="gap:6px;cursor:pointer;font-size:12.5px">
+              <input type="checkbox" id="dd-review" ${d.includeReview ? "checked" : ""}>
+              <span>Also queue the ones I can't merge automatically for review
+                <span class="dim">(near-name matches, and same-name pairs that conflict — adds to the Review Inbox)</span></span></label>
+
+            <div class="row" style="gap:8px">
+              <button class="btn" id="dd-preview" ${d.busy ? "disabled" : ""}>${d.busy && !p ? "Scanning…" : "Preview"}</button>
+              <span class="dim" style="font-size:11.5px">A preview changes nothing.</span>
+            </div>
+
+            ${p && p.dry_run ? `
+              <div class="stack" style="gap:8px;border-top:1px solid var(--border);padding-top:10px">
+                <div class="row wrap" style="gap:14px;font-size:13px">
+                  <span><strong>${p.merge_count}</strong> safe to merge</span>
+                  <span class="dim">${heldTotal} same-name held back</span>
+                  <span class="dim">${p.near_count} near-name (never merged)</span>
+                  <span class="dim">of ${p.records_total} records</span>
+                </div>
+                ${heldTotal ? `<div class="dim" style="font-size:12px">Held back: ${Object.entries(p.held).map(([k, v]) => `${v} × ${esc(k)}`).join(" · ")}</div>` : ""}
+                ${pairRows ? `<div class="stack" style="gap:3px;max-height:190px;overflow-y:auto">${pairRows}
+                  ${p.merge_count > p.merge_preview.length ? `<div class="dim" style="font-size:12px">…and ${p.merge_count - p.merge_preview.length} more</div>` : ""}</div>` : ""}
+                <div class="row wrap" style="gap:10px;align-items:center">
+                  <button class="btn btn--primary" id="dd-apply" ${d.busy || (!p.merge_count && !(d.includeReview && (p.near_count || heldTotal))) ? "disabled" : ""}>
+                    ${d.busy ? "Working…" : p.merge_count ? `Merge ${Math.min(p.merge_count, 100)} pair${Math.min(p.merge_count, 100) === 1 ? "" : "s"}${d.includeReview ? " + queue the rest" : ""}` : "Queue for review"}</button>
+                  <span class="dim" style="font-size:11.5px">Takes a backup first. Every merge can be undone (Review Inbox → Recent merges).
+                    ${p.merge_count > 100 ? "Up to 100 per click — run it again for the rest." : ""}</span>
+                </div>
+              </div>` : ""}
+
+            ${d.result ? `<div class="row" style="gap:8px;font-size:13px;border-top:1px solid var(--border);padding-top:10px">
+              ${d.result.blocked ? `<span style="color:var(--danger,#c0392b)">Nothing was merged — ${esc(d.result.blocked)}</span>`
+                : `<span>✔ Merged <strong>${d.result.merged || 0}</strong>${d.result.failed ? `, ${d.result.failed} failed` : ""}${d.result.staged_reviews ? `, queued ${d.result.staged_reviews} for review` : ""}${d.result.remaining ? `, ${d.result.remaining} left — run again` : ""}.</span>
+                   <a href="#/reviews" class="dim">Review Inbox → Recent merges to undo</a>`}
+            </div>` : ""}
+          </div>
+        </div>`;
+
+      dedupPanel.querySelector("#dd-close").addEventListener("click", () => {
+        d.open = false; buildSearchCard(); renderDedupPanel();
+      });
+      dedupPanel.querySelectorAll('input[name="dd-scope"]').forEach((r) =>
+        r.addEventListener("change", (e) => { d.scope = e.target.value; d.plan = null; d.result = null; renderDedupPanel(); }));
+      dedupPanel.querySelector("#dd-review").addEventListener("change", (e) => {
+        d.includeReview = e.target.checked; d.plan = null; d.result = null; renderDedupPanel();
+      });
+      dedupPanel.querySelector("#dd-preview").addEventListener("click", () => runDedup(true));
+      dedupPanel.querySelector("#dd-apply")?.addEventListener("click", () => runDedup(false));
+    }
+
+    async function runDedup(dryRun) {
+      const d = state.dedup;
+      if (d.busy) return;
+      const p = d.plan;
+      if (!dryRun && !confirmAction(
+        `Merge ${Math.min(p.merge_count, 100)} duplicate pair${p.merge_count === 1 ? "" : "s"}` +
+        `${d.scope === "selected" ? " (duplicates of your selected records)" : " across the whole database"}?\n\n` +
+        `A backup is taken first and every merge can be undone from the Review Inbox.`)) return;
+      d.busy = true; d.result = null;
+      if (dryRun) d.plan = null;
+      renderDedupPanel();
+      try {
+        const res = await api.dedupRun(dedupIds(), { dryRun, includeReview: d.includeReview });
+        if (dryRun) d.plan = res;
+        else {
+          d.result = res; d.plan = null;
+          if (res.merged) { toast(`Merged ${res.merged} duplicate${res.merged === 1 ? "" : "s"}`); state.selectedIds.clear(); load(); }
+        }
+      } catch (err) {
+        toast(`Deduplicate failed: ${err.message}`, "error");
+      } finally {
+        d.busy = false;
+        renderDedupPanel();
+      }
     }
 
     /* Phase Q2: bulk verify/recheck on the human-selected set. Both trigger
@@ -378,6 +501,8 @@ export default {
             : "Search name, summary, description, tags…"}" value="${esc(state.q)}" style="min-width:240px">
           ${state.mode === "semantic" ? `<button class="btn btn--primary" id="semantic-go">Search</button>` : ""}
           <button class="btn" id="export-csv">⬇ Export CSV</button>
+          <button class="btn ${state.dedup.open ? "btn--primary" : ""}" id="dedup-toggle"
+            title="Find duplicate records and merge the safe ones — on everything, or only on the records you have selected">🔗 Deduplicate</button>
         </div>
         ${state.mode === "keyword" ? `
           <div class="row wrap" style="gap:8px;margin-top:10px">
@@ -449,6 +574,11 @@ export default {
       });
       searchCard.querySelector("#semantic-go")?.addEventListener("click", runSemantic);
       searchCard.querySelector("#export-csv").addEventListener("click", () => downloadCsv(state.lastRows));
+      searchCard.querySelector("#dedup-toggle").addEventListener("click", () => {
+        state.dedup.open = !state.dedup.open;
+        buildSearchCard();
+        renderDedupPanel();
+      });
 
       if (state.mode === "keyword") {
         for (const key of Object.keys(state.filters)) {

@@ -35,6 +35,7 @@ from fastapi import Depends
 from database.connection import get_db
 from database.models import Startup, DuplicateReview, SuppressedMatch
 from processing.storage import _sanitize_for_column
+from processing.trust import not_a_judgement as _not_a_judgement
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -331,7 +332,7 @@ async def resolver_last_run(db: Session = Depends(get_db)):
     from database.models import ResolverRun
 
     out = {}
-    for kind in ("resolve", "research"):
+    for kind in ("resolve", "research", "auto_merge", "backup"):
         row = (db.query(ResolverRun)
                .filter(ResolverRun.kind == kind)
                .order_by(ResolverRun.started_at.desc()).first())
@@ -345,8 +346,31 @@ async def resolver_last_run(db: Session = Depends(get_db)):
                 "unavailable": row.unavailable,
                 "searches_used": row.searches_used,
                 "error": row.error,
+                "stats": row.stats if kind in ("auto_merge", "backup") else None,
             }
     return out
+
+
+@router.get("/autonomy")
+async def autonomy(db: Session = Depends(get_db)):
+    """
+    What is automated, and the evidence for it (A4). Per field: how often
+    humans agreed with the model's high-confidence picks, over how many
+    distinct decisions, and whether that currently earns auto-apply. Empty
+    `fields` means no human has yet settled a review the model judged — the
+    ledger only fills as people work the queue, and nothing is automated
+    until it does.
+    """
+    from config import settings
+    from processing.trust import autonomy_report
+
+    return {
+        "fields": autonomy_report(db),
+        "resolver_enabled": settings.resolver_enabled,
+        "auto_merge_enabled": settings.auto_merge_enabled,
+        "min_decisions": settings.trust_min_decisions,
+        "min_agreement": settings.trust_min_agreement,
+    }
 
 
 # NOTE: this route MUST stay declared BEFORE @router.get("/{review_id}") —
@@ -948,6 +972,7 @@ class BulkReviewRequest(BaseModel):
 
 
 @router.post("/bulk-approve")
+@_not_a_judgement
 async def bulk_approve_reviews(request: BulkReviewRequest, db: Session = Depends(get_db)):
     """
     Approve a human-selected set of reviews in one call (Phase Q4, 29 Jul —
@@ -982,6 +1007,7 @@ async def bulk_approve_reviews(request: BulkReviewRequest, db: Session = Depends
 
 
 @router.post("/bulk-reject")
+@_not_a_judgement
 async def bulk_reject_reviews(request: BulkReviewRequest, db: Session = Depends(get_db)):
     """Same shape as bulk-approve, for reject. See its docstring."""
     if not request.ids:
@@ -1019,6 +1045,7 @@ class BulkResolveFilteredRequest(BaseModel):
 
 
 @router.post("/bulk-resolve-filtered")
+@_not_a_judgement
 async def bulk_resolve_filtered(request: BulkResolveFilteredRequest, db: Session = Depends(get_db)):
     """
     Approve or reject EVERY review matching a filter, not just what's
@@ -1111,6 +1138,7 @@ class GroupedBulkResolveRequest(BaseModel):
 
 
 @router.post("/grouped/bulk-resolve")
+@_not_a_judgement
 async def bulk_resolve_grouped(request: GroupedBulkResolveRequest, db: Session = Depends(get_db)):
     """
     Auto-pick the majority candidate for every field across every pending
@@ -1372,7 +1400,15 @@ async def recent_merges(limit: int = 30, db: Session = Depends(get_db)):
     rows = (db.query(MergeSnapshot)
             .order_by(MergeSnapshot.created_at.desc())
             .limit(max(1, min(limit, 200))).all())
+    # Which of these did the nightly job do, rather than a person? The audit
+    # entry lives on the review the job merged through.
+    review_ids = [m.review_id for m in rows if m.review_id]
+    via = {r.id: (r.evidence or {}).get("auto_merge", {}).get("via", "nightly")
+           for r in db.query(DuplicateReview).filter(DuplicateReview.id.in_(review_ids)).all()
+           if "auto_merge" in (r.evidence or {})} if review_ids else {}
     return {"merges": [{
+        "automatic": m.review_id in via,
+        "via": via.get(m.review_id),          # "nightly" | "dedup-button" | None (a person's own merge)
         "id": str(m.id),
         "keeper_name": m.keeper_name,
         "loser_name": m.loser_name,

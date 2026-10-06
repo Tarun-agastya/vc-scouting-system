@@ -1,0 +1,51 @@
+# GT Hub One-Pager — ENTWURF, automatisch erzeugt aus deck.pdf.
+# Erzeugt von templates/one_pager/generate.py. Nichts hier ist geprüft:
+# jeder Punkt unter review.open_questions braucht einen Menschen.
+# Format und Regeln: templates/one_pager/FORMAT.md
+
+lang: de
+
+meta:
+  page_label: Matchmaking-Startups
+claim: Rohstoffmischungen aus mineralischen Nebenprodukten
+name: Eidola
+location: k. A.
+founded: k. A.
+team_size: k. A.
+sections:
+  loesung: Identifizieren, veredeln und liefern mineralischer Nebenprodukte.
+  mehrwerte: >-
+    Erfolgreiche Integration neuer Rohstofflieferanten in bestehende Lieferketten (2024).
+  usp: >-
+    Konvertieren von regionalen mineralischen Reststoffen in baugewandte Materialien.
+  zielgruppe: >-
+    Industrie und Bauwirtschaft, Pilotprojekte mit Zürcher Ziegeleien AG und Guber Natursteine
+    AG.
+  geschaeftsmodell: >-
+    Identifizieren, source, refine und deliver mineralischer Nebenprodukte. Beratung für Rohstoffliefernde
+    und Hersteller.
+visuals:
+  visual_solution:
+    label: Visualisierung der Lösung
+    placeholder: >-
+      Kandidaten in assets/eidola/: slide01_img1.jpg, slide01_page.jpg, slide02_img1.jpg,
+      slide02_page.jpg, slide03_page.jpg, slide04_img1.jpg … (+43 weitere)
+  visual_how_it_works:
+    label: So funktioniert die Lösung
+    placeholder: >-
+      Kandidaten in assets/eidola/: slide01_img1.jpg, slide01_page.jpg, slide02_img1.jpg,
+      slide02_page.jpg, slide03_page.jpg, slide04_img1.jpg … (+43 weitere)
+sources:
+- 'Pitch Deck: deck.pdf (20 Folien, PDF)'
+- >-
+  Inhaltsfolien ausgewertet: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+  19, 20
+- 'Website: https://eidolamaterials.ch/'
+review:
+  status: draft
+  open_questions:
+  - Ort nicht im Deck gefunden — bitte in 'location' eintragen.
+  - Gründungsjahr nicht im Deck gefunden — bitte in 'founded' eintragen.
+  - >-
+    Bilder: 49 Kandidaten wurden nach data/assets/eidola/ extrahiert. Bitte zwei auswählen
+    und bei 'visuals' als image: assets/eidola/<datei> eintragen.

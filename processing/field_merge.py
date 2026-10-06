@@ -70,12 +70,21 @@ def build_merge_preview(keeper, loser) -> list:
         l_empty = l in (None, "", [], {})
         if k_empty and l_empty:
             continue
+        is_list = isinstance(k, (list, tuple)) or isinstance(l, (list, tuple))
+        differs = _norm(k) != _norm(l)
+        if is_list and differs and not k_empty and not l_empty:
+            # A list is not a either/or choice. Taking "the keeper's" tags
+            # silently dropped every tag only the merged-away record had.
+            default = "both"
+        else:
+            default = "incoming" if k_empty else "keeper"
         out.append({
             "field": field,
             "keeper": k,
             "incoming": l,
-            "differs": _norm(k) != _norm(l),
-            "default": "incoming" if k_empty else "keeper",
+            "differs": differs,
+            "list": is_list,
+            "default": default,
         })
     return out
 
@@ -113,10 +122,19 @@ def merge_records(db, keeper, loser, choices: dict, review_id=None) -> dict:
     for field, side in (choices or {}).items():
         if field in _NEVER_MERGE or field not in MERGEABLE_FIELDS:
             continue
-        if side != "incoming":
+        if side not in ("incoming", "both"):
             continue
         new_val = _val(loser, field)
         old_val = _val(keeper, field)
+        if side == "both":
+            # Union, keeper's order first — the lossless choice for a list.
+            from processing.field_policy import merge_list_field
+            merged = merge_list_field(old_val, new_val)
+            if merged is None:
+                continue                        # nothing the keeper doesn't already have
+            keeper_before[field] = old_val
+            applied[field] = merged
+            continue
         if _norm(new_val) == _norm(old_val):
             continue
         keeper_before[field] = old_val

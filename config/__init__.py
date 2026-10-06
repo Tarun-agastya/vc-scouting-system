@@ -278,6 +278,41 @@ class Settings(BaseSettings):
     # web_verify_chain_limit and ig_max_calls_per_run above.
     resolver_max_searches: int = 40
 
+    # A2 (autonomy plan): rule-based merge of identical-name duplicates —
+    # processing/auto_merge.py. Default OFF, same staged-rollout rule as
+    # resolver_enabled: nothing merges unattended until a person has read a
+    # dry-run (scripts/resolve_reviews.py --auto-merge) and switched it on.
+    # Also refuses to run without a fresh backup, regardless of this flag.
+    auto_merge_enabled: bool = False
+    auto_merge_nightly_limit: int = 50
+
+    # A4: a field earns auto-apply of a high-confidence model pick only when
+    # humans have agreed with that field's picks this often, over this many
+    # distinct decisions, inside this window — processing/trust.py. Recomputed
+    # from the ledger at every use, so it is revoked the moment agreement
+    # slips. Every field starts with none.
+    trust_min_decisions: int = 30
+    trust_min_agreement: float = 0.95
+    trust_window_days: int = 90
+
+    # A5: daily owner digest (processing/digest.py), sent from the API process.
+    # Comma-separated. EMPTY = disabled — deliberately NOT defaulted to
+    # press_monitor_recipients (those are other people, and this is a system
+    # status mail). Nothing is ever sent until someone sets an address.
+    digest_recipients: str = ""
+
+    # How long a suppression created by a machine (resolver "keep the stored
+    # value", adjudicator "different company") lasts before the change may be
+    # proposed again. Human rejections never expire.
+    machine_suppression_days: int = 90
+
+    # The resolver does not re-judge a review it judged within this many days
+    # unless its inputs changed. The model runs at temperature 0, so
+    # re-asking gives the same answer; without this the same oldest reviews
+    # (the ones it can never close — same_company, insufficient_evidence,
+    # none_fit) were re-judged every night and everything behind them starved.
+    resolver_rejudge_days: int = 7
+
     # Pattern-decision thresholds (evidence patterns, not a single linear gate)
     dedup_strong_signal: float = 0.80     # a per-signal value >= this counts as "strong"
     dedup_anomaly_gap: float = 0.30       # domain strong but best other signal below this -> anomaly

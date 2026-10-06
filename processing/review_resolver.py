@@ -64,6 +64,21 @@ logger = logging.getLogger(__name__)
 _CONSECUTIVE_FAILURE_THRESHOLD = 3
 
 
+def _parse_at(value):
+    try:
+        return datetime.fromisoformat(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _fresh(judged_at) -> bool:
+    """Judged recently enough that asking the (deterministic) model again is waste."""
+    from datetime import timedelta
+
+    from config import settings
+    return bool(judged_at) and judged_at > datetime.utcnow() - timedelta(days=settings.resolver_rejudge_days)
+
+
 def _proposed(review) -> dict:
     import json
     prop = review.proposed_changes or {}
@@ -97,7 +112,7 @@ async def _resolve_field_updates(db, limit: int, apply: bool, stats: dict,
 
     from database.models import DuplicateReview, Startup
     from processing.field_adjudicator import adjudicate_field_group, group_may_auto_apply
-    from processing.review_actions import record_rejection
+    from processing.review_actions import record_rejection, settle_field_keep
     from processing.scout_controller import scout_controller
 
     query = db.query(DuplicateReview).filter(
@@ -134,6 +149,32 @@ async def _resolve_field_updates(db, limit: int, apply: bool, stats: dict,
                 continue
             if isinstance(change, dict):
                 groups[(r.master_id, field)].append((r, change))
+
+    # Fair rotation instead of "oldest first, every night". A review the
+    # resolver can never close stays at the head of an oldest-first queue, so
+    # the same ones were re-judged each night and the rest never reached.
+    # Never-judged groups go first, then the longest-since-judged, and a group
+    # judged recently with unchanged inputs is skipped outright.
+    def _group_state(key, items):
+        field = key[1]
+        stamps = [_parse_at(((r.evidence or {}).get("field_adjudications") or {}).get(field, {}).get("at"))
+                  for r, _c in items]
+        stamps = [t for t in stamps if t]
+        considered = {str(c.get("new")).strip() for _r, c in items}
+        prior = next((((r.evidence or {}).get("field_adjudications") or {}).get(field, {}).get("considered")
+                      for r, _c in items
+                      if ((r.evidence or {}).get("field_adjudications") or {}).get(field)), None)
+        same_inputs = prior is not None and {str(x).strip() for x in prior} == considered
+        return (max(stamps) if stamps else None), same_inputs
+
+    ordered = []
+    for key, items in groups.items():
+        judged_at, same_inputs = _group_state(key, items)
+        if same_inputs and _fresh(judged_at):
+            continue
+        ordered.append((judged_at or datetime.min, key, items))
+    ordered.sort(key=lambda t: t[0])
+    groups = {key: items for _t, key, items in ordered}
 
     loop = asyncio.get_event_loop()
     consecutive_failures = 0
@@ -182,6 +223,19 @@ async def _resolve_field_updates(db, limit: int, apply: bool, stats: dict,
             "will_close": bool(apply and group_may_auto_apply(res, field)),
         })
 
+        # Re-read every review the moment the model call returns. It may have
+        # taken seconds or minutes, and a person may have settled one since
+        # this batch was loaded — their decision wins. See
+        # review_actions.record_rejection for what went wrong without this.
+        live = []
+        for r, c in items:
+            db.refresh(r)
+            if r.status == "pending":
+                live.append((r, c))
+        items = live
+        if not items:
+            continue
+
         for r, _c in items:
             # Keyed per field, not a flat overwrite — found alongside the
             # tags/founders bug above: a review proposing BOTH city and
@@ -208,9 +262,80 @@ async def _resolve_field_updates(db, limit: int, apply: bool, stats: dict,
 
         if apply and group_may_auto_apply(res, field):
             for r, _c in items:
-                record_rejection(db, r, commit=False)
-                stats["auto_closed"] += 1
+                # settle_field_keep, not record_rejection: a review that also
+                # proposes OTHER fields must keep them.
+                outcome = settle_field_keep(db, r, field)
+                if outcome == "closed":
+                    stats["auto_closed"] += 1
+                elif outcome == "trimmed":
+                    stats["field_settled"] = stats.get("field_settled", 0) + 1
+        elif apply and _earned_pick(db, res, field, items):
+            _apply_earned_pick(db, master, field, res["winner"], items, stats)
         db.commit()
+
+
+def _earned_pick(db, res, field, items) -> bool:
+    """
+    May this verdict be APPLIED rather than left for a person? Only when every
+    condition holds — this is the one place the resolver ever overwrites:
+
+      * a single winning proposal (not keep, not none_fit), at high confidence;
+      * the field has EARNED autonomy from the decision ledger right now
+        (processing/trust.py) — enough human agreement, over enough decisions;
+      * every review in the group proposes only this field, so approving it
+        cannot silently approve some other field along with it.
+    """
+    from processing.trust import field_autonomy
+
+    if res.get("none_fit") or res["winner"] is None or res["confidence"] != "high":
+        return False
+    if any(set(_proposed(r)) != {field} for r, _c in items):
+        return False
+    return field_autonomy(db, field)
+
+
+def _apply_earned_pick(db, master, field, winner, items, stats) -> None:
+    """
+    Write the winning value and settle the group. Reversible: the write lands
+    in FieldChange attributed to "resolver" with the old value, so it shows in
+    the record's history and can be put back by hand; rival proposals are
+    suppressed exactly as a person rejecting them would.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from processing.change_log import changes_from
+    from processing.review_actions import record_rejection, settle_field_keep
+    from processing.storage import _sanitize_for_column
+
+    ok, cleaned = _sanitize_for_column(field, winner)
+    if not ok:
+        return
+    with changes_from("resolver", detail=f"earned autonomy on '{field}'"):
+        setattr(master, field, cleaned)
+        master.updated_at = datetime.utcnow()
+        db.flush()               # inside the block, so the change is attributed
+
+    now = datetime.utcnow()
+    for r, c in items:
+        if str(c.get("new")).strip() == str(winner).strip():
+            # Marked BEFORE the status change, so the decision ledger reads
+            # this as a machine closure and never counts it as a person
+            # agreeing with the model.
+            ev = dict(r.evidence or {})
+            ev["auto_applied"] = {"field": field, "value": winner,
+                                  "at": now.isoformat(timespec="seconds")}
+            r.evidence = ev
+            flag_modified(r, "evidence")
+            r.status, r.resolved_at = "approved", now
+        else:
+            record_rejection(db, r, commit=False, by="resolver")
+    db.commit()
+    try:
+        from api.routes.reviews import _reindex
+        _reindex(db, master)
+    except Exception as exc:
+        logger.warning(f"[Resolver] reindex after earned apply failed: {exc}")
+    stats["auto_applied"] += len(items)
 
 
 async def _resolve_duplicates(db, limit: int, apply: bool, stats: dict,
@@ -219,7 +344,7 @@ async def _resolve_duplicates(db, limit: int, apply: bool, stats: dict,
 
     from database.models import DuplicateReview, Startup
     from processing.dedup_adjudicator import adjudicate_pair, may_auto_apply
-    from processing.review_actions import record_rejection
+    from processing.review_actions import record_rejection, settle_field_keep
     from processing.scout_controller import scout_controller
 
     query = db.query(DuplicateReview).filter(
@@ -227,7 +352,18 @@ async def _resolve_duplicates(db, limit: int, apply: bool, stats: dict,
         DuplicateReview.review_type == "possible_duplicate")
     if master_ids is not None:
         query = query.filter(DuplicateReview.master_id.in_(master_ids))
-    pending = query.order_by(DuplicateReview.created_at.asc()).limit(limit).all()
+    # Same rotation as the field groups above: unjudged first, then the
+    # longest since judged; anything judged within resolver_rejudge_days is
+    # skipped. An oldest-first .limit(N) let the reviews the model can never
+    # close (same_company, insufficient_evidence) monopolise the batch.
+    candidates = []
+    for r in query.order_by(DuplicateReview.created_at.asc()).all():
+        at = _parse_at(((r.evidence or {}).get("adjudication") or {}).get("at"))
+        if _fresh(at):
+            continue
+        candidates.append((at or datetime.min, r.created_at or datetime.min, r))
+    candidates.sort(key=lambda t: (t[0], t[1]))
+    pending = [r for _a, _c, r in candidates[:limit]]
 
     loop = asyncio.get_event_loop()
     consecutive_failures = 0
@@ -271,6 +407,9 @@ async def _resolve_duplicates(db, limit: int, apply: bool, stats: dict,
             "reasoning": res.get("reasoning"),
             "will_close": bool(apply and may_auto_apply(res)),
         })
+        db.refresh(r)                       # a person may have settled it while the model ran
+        if r.status != "pending":
+            continue
         ev = dict(r.evidence or {})
         ev["adjudication"] = {**res, "at": datetime.utcnow().isoformat(timespec="seconds")}
         r.evidence = ev
@@ -278,7 +417,7 @@ async def _resolve_duplicates(db, limit: int, apply: bool, stats: dict,
         r.llm_explanation = f"[{res['verdict']} / {res['confidence']}] {res['reasoning']}"[:2000]
 
         if apply and may_auto_apply(res):
-            record_rejection(db, r, commit=False)
+            record_rejection(db, r, commit=False, by="resolver")
             stats["auto_closed"] += 1
         db.commit()
 

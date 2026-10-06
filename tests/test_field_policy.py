@@ -245,3 +245,38 @@ def test_hashtags_are_stripped_and_deduped_against_bare_words():
     assert clean_tag("#Moverloop") == "Moverloop"
     assert clean_tag("  ##Energytech ") == "Energytech"
     assert merge_list_field(["#Biotech"], ["Biotech", "AI"]) == ["Biotech", "AI"]
+
+
+# ── is_noise_change (30 Sep): what is not a change at all ───────────────────
+
+def test_same_website_domain_is_not_a_change():
+    from processing.field_policy import is_noise_change
+    assert is_noise_change("website", "https://www.munich-startup.de/en/finance/a",
+                           "https://www.munich-startup.de/de/finance/a")
+    assert is_noise_change("website", "https://acme.io", "http://www.acme.io/about")
+    assert not is_noise_change("website", "https://acme.io", "https://acme.com")     # a real change
+
+
+def test_one_value_containing_the_other_is_not_a_change():
+    from processing.field_policy import is_noise_change
+    assert is_noise_change("city", "Munich, Düsseldorf, Cologne", "Munich")
+    assert is_noise_change("address", "Albisried 17, 87663 Lengenwang",
+                           "Albisried 17, 87663 Lengenwang, Germany")
+    assert not is_noise_change("city", "Munich", "Herzberg am Harz")
+
+
+def test_a_fill_or_an_unrelated_field_is_never_noise():
+    from processing.field_policy import is_noise_change
+    assert not is_noise_change("city", None, "Munich")
+    assert not is_noise_change("city", "Munich", "")
+    assert not is_noise_change("funding_stage", "Seed", "Seed round")     # not a field this rule covers
+
+
+def test_english_and_german_spellings_of_one_place_are_not_a_conflict():
+    """Found by the Deduplicate dry run: 'Hanover vs Hannover' was reported as
+    a conflicting city and would have held a merge."""
+    from processing.field_policy import norm_value
+    for a, b in [("Hanover", "Hannover"), ("Nuremberg", "Nürnberg"), ("Düsseldorf", "Duesseldorf"),
+                 ("Frankfurt", "Frankfurt am Main"), ("Austria", "Österreich"), ("Switzerland", "Schweiz")]:
+        assert norm_value(a) == norm_value(b), (a, b)
+    assert norm_value("Hannover") != norm_value("Hamburg")           # still distinct places

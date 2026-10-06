@@ -15,9 +15,9 @@ a silently incomplete one is worse than none, the same reasoning behind the
 pipeline's staged-review model.
 
 Usage:
-    python3 templates/one_pager/render.py templates/one_pager/data/ligaro.yaml
+    python3 templates/one_pager/render.py templates/one_pager/data/ligaro.de.yaml
     python3 templates/one_pager/render.py templates/one_pager/data/*.yaml --out-dir /tmp/onepagers
-    python3 templates/one_pager/render.py data/hula_earth.yaml --check   # validate only
+    python3 templates/one_pager/render.py data/hula_earth.de.yaml --check   # validate only
 """
 from __future__ import annotations
 
@@ -31,21 +31,13 @@ from pathlib import Path
 
 import yaml
 
-# The five sections, in their fixed order, with their verbatim headings.
-# Order is the reading argument: what it is -> what it's worth -> why not a
-# competitor -> who buys it -> how it earns. Never reorder or extend.
-SECTIONS = [
-    ("loesung", "Lösung & Funktionalität"),
-    ("mehrwerte", "Mehrwerte & Leistungen"),
-    ("usp", "USP & Abgrenzung vom Wettbewerb"),
-    ("zielgruppe", "Zielgruppe & Kunden"),
-    ("geschaeftsmodell", "Geschäftsmodell"),
-]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import i18n  # noqa: E402
 
-VISUALS = [
-    ("visual_solution", "Visualisierung der Lösung"),
-    ("visual_how_it_works", "So funktioniert die Lösung"),
-]
+# The five sections, in their fixed order. Order is the reading argument: what
+# it is -> what it's worth -> why not a competitor -> who buys it -> how it
+# earns. Never reorder or extend. The headings come from i18n by the file's
+# `lang:` — the page is either all English or all German, never mixed.
 
 REQUIRED_TOP = ["claim", "name", "location", "founded", "team_size"]
 
@@ -55,6 +47,10 @@ ACCENT = "#6C5CE7"
 def validate(data: dict, path: Path) -> list:
     """Return a list of problems. Empty list means the file is renderable."""
     problems = []
+    lang = str(data.get("lang") or i18n.LEGACY_LANG).lower()
+    if lang not in i18n.LANGS:
+        problems.append(f"lang is {lang!r}, must be one of {', '.join(i18n.LANGS)}")
+        lang = i18n.LEGACY_LANG
 
     for field in REQUIRED_TOP:
         if not str(data.get(field) or "").strip():
@@ -67,17 +63,17 @@ def validate(data: dict, path: Path) -> list:
         problems.append(f"claim is {len(claim)} chars, spec says <= 70 (it must fit one line)")
 
     sections = data.get("sections") or {}
-    for key, heading in SECTIONS:
+    for key, heading in i18n.sections(lang):
         if not str(sections.get(key) or "").strip():
             problems.append(f"missing required section: {key} ({heading})")
 
     # Section 2 without a digit has failed its job — see FORMAT.md rule 2.
     mehrwerte = str(sections.get("mehrwerte") or "")
     if mehrwerte and not any(c.isdigit() for c in mehrwerte):
-        problems.append("'Mehrwerte & Leistungen' contains no number — spec requires a concrete figure")
+        problems.append(f"'{i18n.labels(lang)['sections']['mehrwerte']}' contains no number — spec requires a concrete figure")
 
     visuals = data.get("visuals") or {}
-    for key, _label in VISUALS:
+    for key, _label in i18n.visuals(lang):
         slot = visuals.get(key) or {}
         if not isinstance(slot, dict) or not (slot.get("image") or slot.get("placeholder")):
             problems.append(f"visual slot '{key}' needs either an `image:` or a `placeholder:`")
@@ -130,16 +126,18 @@ def _visual_box(slot: dict, default_label: str, base_dir: Path, grow: int, embed
 
 
 def render(data: dict, base_dir: Path, *, embed: bool = False, draft_mark: bool = False) -> str:
+    lang = i18n.lang_of(data)
+    L = i18n.labels(lang)
     meta = data.get("meta") or {}
-    page_label = html.escape(str(meta.get("page_label") or "Matchmaking-Startups"))
+    page_label = html.escape(str(meta.get("page_label") or L["page_label"]))
     page_number = html.escape(str(meta.get("page_number") or ""))
 
-    name = html.escape(str(data["name"]))
-    claim = html.escape(str(data["claim"]))
+    name = html.escape(str(data.get("name") or ""))
+    claim = html.escape(str(data.get("claim") or ""))
     metaline = " / ".join([
-        f"Ort: {html.escape(str(data['location']))}",
-        f"Gründung: {html.escape(str(data['founded']))}",
-        f"Team: {html.escape(str(data['team_size']))}",
+        f"{L['location']}: {html.escape(str(data.get('location') or L['unknown']))}",
+        f"{L['founded']}: {html.escape(str(data.get('founded') or L['unknown']))}",
+        f"{L['team']}: {html.escape(str(data.get('team_size') or L['unknown']))}",
     ])
 
     logo = data.get("logo")
@@ -148,18 +146,18 @@ def render(data: dict, base_dir: Path, *, embed: bool = False, draft_mark: bool 
     else:
         logo_html = f'<div class="logo logo--text">{name}</div>'
 
-    sections = data["sections"]
+    sections = data.get("sections") or {}
     section_html = "".join(
         f'<section class="sec"><h3>{html.escape(heading)}</h3>'
-        f'<p>{_para(sections[key])}</p></section>'
-        for key, heading in SECTIONS
+        f'<p>{_para(sections.get(key) or "")}</p></section>'
+        for key, heading in i18n.sections(lang)
     )
 
-    visuals = data["visuals"]
+    visuals = data.get("visuals") or {}
     # 40/60 split: the "how it works" box usually carries a denser graphic.
     visual_html = "".join(
         _visual_box(visuals.get(key) or {}, label, base_dir, grow, embed)
-        for (key, label), grow in zip(VISUALS, (40, 60))
+        for (key, label), grow in zip(i18n.visuals(lang), (40, 60))
     )
 
     # Opt-in only. The watermark is our own bookkeeping, not part of the GT Hub
@@ -168,12 +166,12 @@ def render(data: dict, base_dir: Path, *, embed: bool = False, draft_mark: bool 
     # is where it belongs — a stamp on the artwork is not the same as a record.
     status = ((data.get("review") or {}).get("status") or "").lower()
     draft_ribbon = (
-        '<div class="draft">ENTWURF — nicht freigegeben</div>'
+        '<div class="draft">' + html.escape(L["draft"]) + '</div>'
         if (draft_mark and status != "approved") else ""
     )
 
     return f"""<!doctype html>
-<html lang="de"><head><meta charset="utf-8">
+<html lang="{lang}"><head><meta charset="utf-8">
 <title>{name} — GT Hub One-Pager</title>
 <style>
   @page {{ size: 338.7mm 190.5mm; margin: 0; }}
@@ -254,8 +252,11 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="validate only, write nothing")
     ap.add_argument("--embed", action="store_true",
                     help="inline images as data: URIs so the HTML is a single self-contained file")
+    ap.add_argument("--allow-incomplete", action="store_true",
+                    help="render even if validation fails (for previewing a draft); "
+                         "implies --draft-mark. Export (export_pptx.py) still validates.")
     ap.add_argument("--draft-mark", action="store_true",
-                    help="stamp an ENTWURF watermark on pages whose review.status is not 'approved'")
+                    help="stamp a DRAFT watermark on pages whose review.status is not 'approved'")
     args = ap.parse_args()
 
     exit_code = 0
@@ -268,12 +269,16 @@ def main() -> int:
 
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         problems = validate(data, path)
-        if problems:
+        if problems and not (args.allow_incomplete and not args.check):
             print(f"  ✗ {path.name}: {len(problems)} problem(s)")
             for p in problems:
                 print(f"      - {p}")
             exit_code = 1
             continue
+        if problems:
+            print(f"  ! {path.name}: rendering anyway (--allow-incomplete), {len(problems)} problem(s):")
+            for p in problems:
+                print(f"      - {p}")
 
         status = ((data.get("review") or {}).get("status") or "draft").lower()
         open_q = (data.get("review") or {}).get("open_questions") or []
@@ -286,7 +291,8 @@ def main() -> int:
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"{path.stem}_onepager.html"
         try:
-            page = render(data, path.parent, embed=args.embed, draft_mark=args.draft_mark)
+            page = render(data, path.parent, embed=args.embed,
+                          draft_mark=args.draft_mark or args.allow_incomplete)
         except FileNotFoundError as exc:
             print(f"  ✗ {path.name}: {exc}")
             exit_code = 1

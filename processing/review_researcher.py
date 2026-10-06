@@ -259,7 +259,7 @@ async def research_pending(limit: int = 40, *, apply: bool = False,
     from database.connection import SessionLocal
     from database.models import DuplicateReview, Startup
     from processing.field_adjudicator import group_may_auto_apply
-    from processing.review_actions import record_rejection
+    from processing.review_actions import record_rejection, settle_field_keep
     from processing.scout_controller import scout_controller
     from ingestion.web_search import search as web_search
 
@@ -328,6 +328,15 @@ async def research_pending(limit: int = 40, *, apply: bool = False,
                      else "prefers_proposal")
             stats[label] += 1
 
+            live = []
+            for r, c in items:
+                db.refresh(r)               # a person may have settled it during the search
+                if r.status == "pending":
+                    live.append((r, c))
+            items = live
+            if not items:
+                continue
+
             for r, _c in items:
                 ev = dict(r.evidence or {})
                 field_adj = {k: v for k, v in res.items() if k != "search_results"}
@@ -344,8 +353,11 @@ async def research_pending(limit: int = 40, *, apply: bool = False,
 
             if apply and group_may_auto_apply(res, field):
                 for r, _c in items:
-                    record_rejection(db, r, commit=False)
-                    stats["auto_closed"] += 1
+                    outcome = settle_field_keep(db, r, field)
+                    if outcome == "closed":
+                        stats["auto_closed"] += 1
+                    elif outcome == "trimmed":
+                        stats["field_settled"] = stats.get("field_settled", 0) + 1
             db.commit()
     except Exception as exc:
         db.rollback()

@@ -1,0 +1,78 @@
+# GT Hub One-Pager (English) — DRAFT, generated from 260826_Pitch_Deck_Eidola.pdf.
+# Written by templates/one_pager/generate.py. Nothing here is checked yet:
+# every item under review.open_questions needs a person.
+# Its twin in the other language: eidola_materials.de.yaml
+# Format and rules: templates/one_pager/FORMAT.md
+
+lang: en
+meta:
+  page_label: Matchmaking Startups
+claim: Refining mineral by-products into secondary raw materials
+name: Eidola Materials
+location: Zurich
+founded: '2025'
+team_size: n/a
+sections:
+  loesung: >-
+    Eidola Materials identifies, sources, and refines mineral by-products from gravel and
+    stone extraction as well as from industrial processes. The company evaluates the technical
+    properties of these waste materials and provides tailored raw material mixtures tailored
+    to specific requirements such as grain size distribution and mineral composition. These
+    secondary raw materials are reintegrated into regional supply chains.
+  mehrwerte: >-
+    The use of secondary raw materials increases material efficiency per extracted cubic meter
+    and reduces costs for waste treatment and disposal. Furthermore, the use of these materials
+    reduces dependence on new extractions and strengthens the sustainability of supply chains
+    by utilizing already extracted resources.
+  usp: >-
+    Instead of relying on primary raw materials, Eidola Materials enables the integration
+    of secondary raw materials into existing industrial processes through specific compatibility
+    tests. The company provides technical and strategic consulting for both sides of the chain:
+    for raw material suppliers for waste utilization and for industrial customers to diversify
+    their raw material base.
+  zielgruppe: >-
+    The target group includes raw material suppliers from the extraction industry as well
+    as industrial manufacturers of construction materials and architects. The effectiveness
+    of the approach is proven by successful projects, such as the substitution of filter cakes
+    in brick production or the development of products such as garden bricks from gravel washing
+    sludge.
+  geschaeftsmodell: >-
+    The company generates revenue through the sale of refined raw material mixtures as well
+    as by providing consulting and development services for the raw material industry and
+    industrial manufacturers.
+visuals:
+  visual_solution:
+    label: Visualisation of the Solution
+    placeholder: >-
+      Candidates in assets/eidola_materials/: slide01_img1.jpg, slide01_page.jpg, slide02_img1.jpg,
+      slide02_page.jpg, slide03_page.jpg, slide04_img1.jpg … (+43 more)
+  visual_how_it_works:
+    label: How the Solution Works
+    placeholder: >-
+      Candidates in assets/eidola_materials/: slide01_img1.jpg, slide01_page.jpg, slide02_img1.jpg,
+      slide02_page.jpg, slide03_page.jpg, slide04_img1.jpg … (+43 more)
+sources:
+- 'Pitch deck: 260826_Pitch_Deck_Eidola.pdf (20 slides, PDF)'
+- >-
+  Content slides used: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+  20
+- 'Website: https://eidolamaterials.ch/'
+- >-
+  Web search: https://www.linkedin.com/posts/eidola-materials_eidolamaterials-activity-7429948868072697856-jnu1
+- 'Web search: https://ch.linkedin.com/company/eidola-materials'
+- 'Web search: https://ch.linkedin.com/in/jonas-kissling-8b6933149'
+- >-
+  Web search: https://yellowpages.swiss/location.cfm?key=2756571&company=Eidola-Materials-AG&art=HRB
+review:
+  status: draft
+  open_questions:
+  - Translated automatically from the Deutsch version — read it through before use.
+  - >-
+    Section 'Benefits & Performance' has no concrete figure — the deck gave none the model
+    could use. Add one (e.g. tonnes, %, cost saving); the PowerPoint export requires it.
+  - >-
+    Images: 49 candidates were extracted to data/assets/eidola_materials/. Pick two and enter
+    them under 'visuals' as image: assets/eidola_materials/<file> (in both language files).
+  - >-
+    Web search added 4 third-party source(s) (no paid credits). Facts from them are not in
+    the deck — check them against the links under 'sources'.

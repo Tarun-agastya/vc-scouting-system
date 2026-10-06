@@ -207,7 +207,12 @@ def test_empty_duplicate_of_a_documented_master_auto_merges(make, db):
     assert s1 == "new_master"
 
     r2, s2 = make("Auto Merge Rich Co")  # bare name-only stub, no website/description
-    assert s2 == "auto_merged_empty_duplicate"
+    # 29 Sep (autonomy plan A1): identical name + nothing conflicting is now
+    # recognised as the same entity BEFORE insertion (matcher, same_entity),
+    # so it resolves as a no_op rather than insert-then-auto_merged. The old
+    # label is still reachable for non-identical names in the "high" risk
+    # band; every behavioural assertion below is unchanged.
+    assert s2 in ("no_op", "auto_merged_empty_duplicate")
     assert r2 == r1  # folded into the SAME existing master, no surviving second row
 
     rev = db.query(DuplicateReview).filter(
@@ -270,3 +275,111 @@ def test_a_real_company_website_survives_the_check():
     for good in ("https://isaraerospace.com", "https://www.kiwigrid.com",
                  "https://beeoled.com", "https://api.echobot.de"):
         assert clean_company_website(good, "X") == good
+
+
+def test_same_name_no_website_incoming_matches_websited_master(make, db):
+    """
+    A1 (29 Sep): a website-less re-sighting of a company that HAS a website
+    used to stage a possible_duplicate on every crawl — matcher branch (b)
+    never claims a websited master by name alone. 261 of 316 pending
+    duplicate reviews were this shape. It must now resolve to the same
+    record, non-destructively.
+    """
+    rid, _ = make("Stage SameEntity", website="pytest-stage-sameentity.com", city="Munich",
+                  description="widget maker")
+    rid2, status2 = make("Stage SameEntity", city="Munich", description="widget maker")
+    assert rid2 == rid
+    assert status2 in ("no_op", "staged_update")
+    dupes = db.query(DuplicateReview).filter(
+        DuplicateReview.review_type == "possible_duplicate",
+        DuplicateReview.master_id == rid).count()
+    assert dupes == 0
+
+
+def test_same_name_but_different_real_domains_is_not_collapsed(make, db):
+    """The rule's whole point: two real, different domains under one name is
+    the shape of 'same name, different company' — must still go to a human."""
+    rid, _ = make("Stage TwoDomains", website="pytest-stage-twodomains-a.com", city="Munich",
+                  description="widget maker")
+    rid2, status2 = make("Stage TwoDomains", website="pytest-stage-twodomains-b.com",
+                         city="Munich", description="widget maker")
+    assert rid2 != rid
+
+
+def test_same_name_conflicting_city_is_not_collapsed(make, db):
+    rid, _ = make("Stage CityClash", website="pytest-stage-cityclash.com", city="Munich",
+                  description="widget maker")
+    rid2, status2 = make("Stage CityClash", city="Hamburg", description="widget maker")
+    assert rid2 != rid or status2 == "staged_update"   # never silently absorbed as a no-op
+
+
+# ── sub_industry is never staged (30 Sep owner decision) ────────────────────
+
+def test_a_reworded_sub_industry_is_kept_not_staged(make, db):
+    """Two extraction runs word a free-form label differently. That is not a
+    conflict anyone can adjudicate: 67 of 125 pending field reviews were this."""
+    rid, _ = make("Stage SubInd", website="pytest-stage-subind.com", city="Munich",
+                  description="widget maker", sub_industry="Fintech - Payments")
+    rid2, status2 = make("Stage SubInd", website="pytest-stage-subind.com", city="Munich",
+                         description="widget maker", sub_industry="Payments")
+    assert rid2 == rid and status2 == "no_op"
+    assert _get(db, rid).sub_industry == "Fintech - Payments"        # stored value kept
+    assert db.query(DuplicateReview).filter(DuplicateReview.master_id == rid,
+                                            DuplicateReview.review_type == "field_update").count() == 0
+
+
+def test_an_empty_sub_industry_is_still_filled(make, db):
+    rid, _ = make("Stage SubFill", website="pytest-stage-subfill.com", city="Munich",
+                  description="widget maker")
+    make("Stage SubFill", website="pytest-stage-subfill.com", city="Munich",
+         description="widget maker", sub_industry="HealthTech")
+    assert _get(db, rid).sub_industry == "HealthTech"
+
+
+def test_web_verification_cannot_stage_it_either(make, db):
+    """Ingest and web verification both stage through _create_review, so the
+    policy is enforced there rather than at each caller."""
+    from processing.storage import _create_review
+    rid, _ = make("Stage SubWeb", website="pytest-stage-subweb.com", city="Munich",
+                  description="widget maker", sub_industry="Fintech")
+    master = _get(db, rid)
+    _create_review(db, review_type="field_update", master=master, incoming_row=None,
+                   incoming_data={}, proposed_changes={"sub_industry": {"old": "Fintech", "new": "X"}},
+                   evidence={}, risk_level="high", confidence=None, source="pytest", run_id=None)
+    assert db.query(DuplicateReview).filter(DuplicateReview.master_id == rid,
+                                            DuplicateReview.review_type == "field_update").count() == 0
+    _create_review(db, review_type="field_update", master=master, incoming_row=None, incoming_data={},
+                   proposed_changes={"sub_industry": {"old": "Fintech", "new": "X"},
+                                     "city": {"old": "Munich", "new": "Berlin"}},
+                   evidence={}, risk_level="high", confidence=None, source="pytest", run_id=None)
+    rev = db.query(DuplicateReview).filter(DuplicateReview.master_id == rid).first()
+    assert set(rev.proposed_changes) == {"city"}          # only the real question is staged
+
+
+def test_drain_closes_sub_industry_only_reviews_and_strips_mixed_ones(make, db):
+    from scripts.drain_never_staged_reviews import run
+    rid, _ = make("Stage SubDrain", website="pytest-stage-subdrain.com", city="Munich",
+                  description="widget maker", sub_industry="Fintech")
+    only = DuplicateReview(review_type="field_update", master_id=rid, master_name="PYTEST x",
+                           incoming_name="x", risk_level="low", status="pending", source="pytest",
+                           proposed_changes={"sub_industry": {"old": "Fintech", "new": "A"}})
+    mixed = DuplicateReview(review_type="field_update", master_id=rid, master_name="PYTEST x",
+                            incoming_name="x", risk_level="low", status="pending", source="pytest",
+                            proposed_changes={"sub_industry": {"old": "Fintech", "new": "B"},
+                                              "city": {"old": "Munich", "new": "Berlin"}})
+    db.add_all([only, mixed])
+    db.commit()
+    a, b = only.id, mixed.id
+
+    assert run(False, master_ids=[rid]) == {"closed": 1, "stripped": 1}     # dry run
+    db.expire_all()
+    assert db.query(DuplicateReview).get(a).status == "pending"
+
+    run(True, master_ids=[rid])
+    db.expire_all()
+    closed, kept = db.query(DuplicateReview).get(a), db.query(DuplicateReview).get(b)
+    assert closed.status == "rejected" and "policy_closed" in closed.evidence
+    assert kept.status == "pending" and set(kept.proposed_changes) == {"city"}
+    # No suppression: nobody judged that value bad, the policy just keeps the stored one.
+    from database.models import SuppressedMatch
+    assert db.query(SuppressedMatch).filter(SuppressedMatch.master_id == rid).count() == 0

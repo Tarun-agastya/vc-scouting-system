@@ -1,0 +1,52 @@
+# GT Hub One-Pager (English) — translated from eidola.de.yaml.
+# Written by templates/one_pager/translate.py. Nothing here is checked yet:
+# every item under review.open_questions needs a person.
+# Format and rules: templates/one_pager/FORMAT.md
+
+lang: en
+meta:
+  page_label: Matchmaking Startups
+claim: Raw material mixtures from mineral by-products
+name: Eidola
+location: n/a
+founded: n/a
+team_size: n/a
+sections:
+  loesung: Identify, purify, and supply mineral by-products.
+  mehrwerte: >-
+    Successful integration of new raw material suppliers into existing supply chains (2024).
+  usp: Convert regional mineral waste materials into construction-grade materials.
+  zielgruppe: >-
+    Industry and construction, pilot projects with Zürcher Ziegeleien AG and Guber Natursteine
+    AG.
+  geschaeftsmodell: >-
+    Identify, source, refine, and deliver mineral by-products. Consultation for raw material
+    suppliers and manufacturers.
+visuals:
+  visual_solution:
+    label: Visualisation of the Solution
+    placeholder: >-
+      Kandidaten in assets/eidola/: slide01_img1.jpg, slide01_page.jpg, slide02_img1.jpg,
+      slide02_page.jpg, slide03_page.jpg, slide04_img1.jpg … (+43 weitere)
+  visual_how_it_works:
+    label: How the Solution Works
+    placeholder: >-
+      Kandidaten in assets/eidola/: slide01_img1.jpg, slide01_page.jpg, slide02_img1.jpg,
+      slide02_page.jpg, slide03_page.jpg, slide04_img1.jpg … (+43 weitere)
+sources:
+- 'Pitch Deck: deck.pdf (20 Folien, PDF)'
+- >-
+  Inhaltsfolien ausgewertet: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+  19, 20
+- 'Website: https://eidolamaterials.ch/'
+review:
+  status: draft
+  open_questions:
+  - >-
+    Translated automatically from the Deutsch version (eidola.de.yaml) — read it through before
+    use.
+  - Ort nicht im Deck gefunden — bitte in 'location' eintragen.
+  - Gründungsjahr nicht im Deck gefunden — bitte in 'founded' eintragen.
+  - >-
+    Bilder: 49 Kandidaten wurden nach data/assets/eidola/ extrahiert. Bitte zwei auswählen
+    und bei 'visuals' als image: assets/eidola/<datei> eintragen.

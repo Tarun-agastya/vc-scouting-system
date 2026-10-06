@@ -146,6 +146,8 @@ export const api = {
    *  (resolver_enabled is off, or scripts/resolve_reviews.py hasn't been
    *  used yet). */
   resolverLastRun: () => get("/reviews/resolver/last-run"),
+  /** A4: per-field human-agreement ledger and what it currently earns. */
+  autonomy: () => get("/reviews/autonomy"),
   /**
    * Phase Z-4 (12 Aug): act on EVERY review matching a filter, not just a
    * loaded page — the queue-clearing endpoints. Both re-embed/re-score per
@@ -176,12 +178,17 @@ export const api = {
   regionalExportUrl: (filters) => `/regional/export.csv${qs(filters)}`,
 
   // ── One-pager generator ───────────────────────────────────────────────
-  /** Drafts on disk (templates/one_pager/data/*.yaml). */
+  /** Drafts on disk, one entry per startup with its "de" and "en" versions. */
   listOnePagers: () => get("/onepager"),
-  getOnePagerYaml: (slug) => get(`/onepager/${encodeURIComponent(slug)}/yaml`),
-  /** Rendered preview + editable PowerPoint are plain URLs (iframe / download). */
-  onePagerPreviewUrl: (slug) => `/onepager/${encodeURIComponent(slug)}/preview`,
-  onePagerPptxUrl: (slug) => `/onepager/${encodeURIComponent(slug)}/pptx`,
+  getOnePagerYaml: (slug, lang = "de") => get(`/onepager/${encodeURIComponent(slug)}/yaml?lang=${lang}`),
+  /** Rendered preview + editable PowerPoint are plain URLs (iframe / download).
+   *  German is the final, exported version, hence the default. */
+  onePagerPreviewUrl: (slug, lang = "de") => `/onepager/${encodeURIComponent(slug)}/preview?lang=${lang}`,
+  onePagerPptxUrl: (slug, lang = "de") => `/onepager/${encodeURIComponent(slug)}/pptx?lang=${lang}`,
+  /** (Re)create one language version from the other with the local model. */
+  translateOnePager: (slug, fromLang, force = false) =>
+    post(`/onepager/${encodeURIComponent(slug)}/translate?from_lang=${fromLang}&force=${force}`, null,
+         { timeout: 620000 }),
   /**
    * Upload a pitch deck and generate a draft. multipart/form-data, so this
    * bypasses the JSON `request()` helper. The server runs the generator as a
@@ -189,16 +196,21 @@ export const api = {
    * deck takes ~20-60s, and longer if an ingestion run is holding the GPU,
    * so this gets the same generous ceiling as the other LLM-bound calls.
    */
-  async generateOnePager({ file, name, url, noLlm, force }) {
+  /** Tavily balance, pipeline reserve and the one-pager's own monthly search use. */
+  onePagerSearchBudget: () => get("/onepager/search-budget"),
+  async generateOnePager({ file, name, url, noLlm, force, draftLang = "de", webSearch = true, paidSearch = true }) {
     const form = new FormData();
     form.append("deck", file);
     form.append("name", name);
     if (url) form.append("url", url);
     form.append("no_llm", noLlm ? "true" : "false");
     form.append("force", force ? "true" : "false");
+    form.append("draft_lang", draftLang);
+    form.append("web_search", webSearch ? "true" : "false");
+    form.append("paid_search", paidSearch ? "true" : "false");
 
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 320000);
+    const t = setTimeout(() => ctrl.abort(), 620000);
     try {
       const res = await fetch("/onepager/generate", { method: "POST", body: form, signal: ctrl.signal });
       if (!res.ok) {
@@ -253,6 +265,14 @@ export const api = {
   runRecheck: (limit = 20) => post(`/verification/recheck?limit=${limit}`),
   runWebVerify: (limit = 15) => post(`/verification/web-verify?limit=${limit}`),
   /** Phase Q2: run recheck/web-verify on an explicit human-selected set of startups from Browse (fire-and-forget; find the run via /ingestion/status). */
+  /**
+   * The Deduplicate button. ids=null runs on every record, an array on the
+   * duplicates OF those records. Always call with dryRun:true first (the
+   * default) and show the counts before ever passing dryRun:false — an apply
+   * merges records and takes a backup, so give it real headroom.
+   */
+  dedupRun: (ids, { dryRun = true, includeReview = false, limit = 100 } = {}) =>
+    post("/dedup/run", { ids, dry_run: dryRun, include_review: includeReview, limit }, { timeout: 300000 }),
   recheckSelected: (ids) => post("/verification/recheck-selected", { ids }),
   webVerifySelected: (ids) => post("/verification/web-verify-selected", { ids }),
 

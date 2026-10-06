@@ -1,0 +1,75 @@
+# GT Hub One-Pager (Deutsch) — DRAFT, generated from deck.pdf.
+# Written by templates/one_pager/generate.py. Nothing here is checked yet:
+# every item under review.open_questions needs a person.
+# Its twin in the other language: arctory.en.yaml
+# Format and rules: templates/one_pager/FORMAT.md
+
+lang: de
+meta:
+  page_label: Matchmaking-Startups
+claim: KI-gestützter Shopfloor-Anwendungs-Builder für die Fertigung
+name: Arctory
+location: k. A.
+founded: k. A.
+team_size: k. A.
+sections:
+  loesung: >-
+    Arctory bietet eine Plattform, die es Fertigungsunternehmen ermöglicht, maßgeschneiderte
+    Anwendungen für das Shopfloor-Management, die Produktionsplanung und die Instandhaltung
+    zu erstellen. Das System integriert sich direkt über bestehende Datensätze wie ERP-, MES-
+    und PLM-Systeme. Nutzer beschreiben ihre spezifischen Prozesse, um funktionale Apps ohne
+    manuelles Coding zu generieren.
+  mehrwerte: >-
+    Die Plattform ermöglicht eine schnelle Digitalisierung von Fertigungsprozessen, indem
+    sie manuelle Arbeit in Excel durch maßgeschneiderte Apps ersetzt. Das Unternehmen hat
+    erfolgreich über 12 Shopfloor-Anwendungen pro Fabrik innerhalb eines Zeitraums von sechs
+    Monaten aufgebaut, um Abläufe zu optimieren und den Datenfluss zu verbessern.
+  usp: >-
+    Im Gegensatz zu traditionellen IT-Projekten, die umfangreiche Entwicklungszeit erfordern,
+    nutzt Arctory agentische KI, um Anwendungen in Minuten zu generieren. Das System gewährleistet
+    Datensicherheit, da während der Erstellungsphase nur Softwarecode und Datenmodelle mit
+    der KI geteilt werden, sodass die KI nach der Bereitstellung keinen Zugriff auf Produktionsdaten
+    hat.
+  zielgruppe: >-
+    Die Zielkunden sind Fertigungsunternehmen und Operational Excellence Teams, die Tools
+    für das Shopfloor-Management und Qualitätsaudits benötigen. Das Unternehmen hat Referenzen
+    von Partnern wie ams OSRAM und Ventilatorenfabrik Oelde gesichert.
+  geschaeftsmodell: >-
+    Arctory agiert als Softwareplattform, die einen KI-gesteuerten Anwendungs-Builder für
+    Fertigungsunternehmen bereitstellt, um deren Produktionsprozesse zu digitalisieren.
+visuals:
+  visual_solution:
+    label: Visualisierung der Lösung
+    placeholder: >-
+      Candidates in assets/arctory/: slide01_img1.jpg, slide01_page.jpg, slide02_page.jpg,
+      slide03_page.jpg, slide04_page.jpg, slide05_page.jpg … (+21 more)
+  visual_how_it_works:
+    label: So funktioniert die Lösung
+    placeholder: >-
+      Candidates in assets/arctory/: slide01_img1.jpg, slide01_page.jpg, slide02_page.jpg,
+      slide03_page.jpg, slide04_page.jpg, slide05_page.jpg … (+21 more)
+sources:
+- 'Pitch deck: deck.pdf (13 slides, PDF)'
+- 'Content slides used: 2, 3, 4, 7, 9, 10, 11, 12, 13'
+- 'Website: https://arctory.ai/de/'
+- >-
+  Web search: https://www.linkedin.com/posts/joachim-henkel_startup-innovation-ai-activity-7474063690506592256-0K56
+- 'Web search: https://vivatech.com/speakers/573638f8-9365-f111-8fcb-6045bd954326'
+- >-
+  Web search: https://podcasts.apple.com/de/podcast/entrepreneurial-realities/id1586633286?l=en-GB
+- >-
+  Web search: https://www.linkedin.com/posts/joachim-henkel_innovation-startup-exist-activity-7433986464495050763-WmHM
+- >-
+  Web search: https://www.linkedin.com/posts/antoineleboyer_a-software-developer-costs-100k-a-year-and-activity-7469672456371392512-LDpW
+review:
+  status: draft
+  open_questions:
+  - Translated automatically from the English version — read it through before use.
+  - Location not found in the deck — please fill in 'location'.
+  - Year founded not found in the deck — please fill in 'founded'.
+  - >-
+    Images: 27 candidates were extracted to data/assets/arctory/. Pick two and enter them
+    under 'visuals' as image: assets/arctory/<file> (in both language files).
+  - >-
+    Web search added 5 third-party source(s) (2 Tavily credits). Facts from them are not in
+    the deck — check them against the links under 'sources'.

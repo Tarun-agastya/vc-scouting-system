@@ -22,7 +22,7 @@ truth for *generating* a page, PowerPoint is where a page gets *finished*.
 sentence", "move that box". No terminal, no Python.
 
 ```bash
-python3 templates/one_pager/export_pptx.py templates/one_pager/data/ligaro.yaml
+python3 templates/one_pager/export_pptx.py templates/one_pager/data/ligaro.de.yaml
 ```
 
 Every text block is a real text box (click and type) and every image is a real
@@ -39,7 +39,7 @@ a sentence scales the type down instead of spilling out of the card.
 the path automation will use.
 
 ```bash
-python3 templates/one_pager/render.py    data/ligaro.yaml            # HTML (review / print-to-PDF)
+python3 templates/one_pager/render.py    data/ligaro.de.yaml            # HTML (review / print-to-PDF)
 python3 templates/one_pager/render.py    data/*.yaml --embed         # HTML, images inlined, one file
 python3 templates/one_pager/export_pptx.py data/*.yaml --combine deck.pptx   # all pages, one deck
 python3 templates/one_pager/render.py    data/*.yaml --check         # validate only, write nothing
@@ -76,7 +76,35 @@ box.
 
 - **Left** — one white card, thin border, holding name + meta + the five sections.
 - **Right** — two stacked image boxes, roughly 40/60 height split.
-- Everything is in **German**. The audience is German-speaking matchmaking partners.
+- The **final, exported page is German** — the audience is German-speaking
+  matchmaking partners. Every one-pager also has an **English twin** for reading
+  and sharing internally (see §1a). A page is always entirely one language.
+
+## 1a. Two languages — German final, English twin
+
+Every startup has two files side by side:
+
+```
+data/<slug>.de.yaml   lang: de   ← the final version; this is what gets exported
+data/<slug>.en.yaml   lang: en   ← translated from the German one
+```
+
+- `lang:` decides every piece of fixed page text: section headings, the
+  meta line (*Ort / Gründung / Team* vs *Location / Founded / Team*), the
+  header label, image-slot labels, and the "not stated" marker (`k. A.` vs
+  `n/a`). All of it lives in `i18n.py`; never hard-code a heading elsewhere.
+- The YAML **keys** (`loesung`, `mehrwerte`, …) are fixed identifiers and are
+  identical in both files. Only the text inside them is translated.
+- A file without `lang:` is German (every file before Oct 2026 was).
+- `generate.py` always writes both. German is drafted from the deck; English is
+  translated from that draft, never drafted separately — two independent drafts
+  would pick different facts, and the two pages must say the same thing.
+- After editing the German file, bring the English one up to date with
+  `python3 templates/one_pager/translate.py data/<slug>.de.yaml --force`
+  (or "Update English from Deutsch" on the dashboard). The translation is
+  checked for numbers the German version does not contain.
+- Images, logo and sources are per file: when you pick the two images, enter
+  them in both.
 
 ## 2. The five sections — fixed, in this order
 
@@ -180,7 +208,9 @@ What it does, in order:
 4. Drafts the claim, the meta line and all five sections on the local 7B model
    (`llm.py`), constrained to the deck text.
 5. Applies the grounding checks in §8.
-6. Writes `data/<slug>.yaml` as `status: draft` with an `open_questions` list.
+6. Writes `data/<slug>.de.yaml` as `status: draft` with an `open_questions`
+   list, then translates it into `data/<slug>.en.yaml` (§1a). `--draft-lang en`
+   reverses the direction for an English-only deck; German stays the export.
 
 **It deliberately stops there.** It never picks the two images, never exports,
 and never marks anything approved — same staged model as the Review Inbox, for

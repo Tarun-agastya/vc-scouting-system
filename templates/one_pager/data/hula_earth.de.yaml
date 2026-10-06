@@ -6,6 +6,8 @@
 # lower evidential weight than the LIGARO page, which came from a real deck.
 # Confirm against the deck before this goes to any partner.
 
+lang: de
+
 meta:
   page_label: Matchmaking-Startups
 

@@ -45,6 +45,9 @@ def main():
                     help="close the confident reversible-direction verdicts")
     ap.add_argument("--type", choices=["field_update", "possible_duplicate"], default=None,
                     help="judge only this review type (default: both; ignored with --research)")
+    ap.add_argument("--auto-merge", action="store_true",
+                    help="A2: list (dry-run) or, with --apply, merge identical-name duplicates "
+                        "by rule. Needs a fresh backup. Each merge is undoable.")
     ap.add_argument("--research", action="store_true",
                     help="Phase 3: search the web for the fields stored data can't settle "
                         "(city, website, funding_stage, address, country, contact_info)")
@@ -96,7 +99,16 @@ def main():
             print(f"           {str(ev['reasoning'])[:92]}", flush=True)
 
     started = datetime.utcnow()
-    if args.research:
+    if args.auto_merge:
+        from processing.auto_merge import auto_merge_pending
+        stats = auto_merge_pending(args.limit, apply=args.apply)
+        pairs = stats.pop("_pairs", [])
+        print(f"\nEligible pairs ({len(pairs)} shown of {stats['eligible']}):")
+        for keeper, loser, rule in pairs:
+            print(f"  {keeper[:30]:30} <- {loser[:30]:30} | {rule}")
+        if args.apply:
+            record_resolver_run("auto_merge", stats, started)
+    elif args.research:
         from processing.review_researcher import research_pending
         stats = asyncio.run(research_pending(limit=args.limit, apply=args.apply))
         record_resolver_run("research", stats, started)

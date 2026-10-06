@@ -96,7 +96,7 @@ def run(limit: int, apply: bool, assume_yes: bool) -> None:
 
             if apply and may_auto_apply(result) and r.master_id and r.incoming_id:
                 from processing.review_actions import record_rejection
-                record_rejection(db, r, commit=False)
+                record_rejection(db, r, commit=False, by="adjudicator")
                 applied += 1
 
         db.commit()

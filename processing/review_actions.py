@@ -33,7 +33,7 @@ review at a time also needs.
 from datetime import datetime
 
 
-def record_rejection(db, review, *, commit: bool = True) -> dict:
+def record_rejection(db, review, *, commit: bool = True, by: str = "human") -> dict:
     """
     Discard a pending review and suppress what it proposed.
 
@@ -45,24 +45,54 @@ def record_rejection(db, review, *, commit: bool = True) -> dict:
     (an HTTP 409 for the API, a skip-and-continue for a batch job). This
     function only performs the rejection once a caller has decided to.
 
+    `by` is who is rejecting: "human" (default) or a machine name — a machine closure
+    is marked in evidence so the trust ledger can tell them apart.
+
     `commit=False` lets a caller batch several rejections (e.g. every member
     of a duplicate-candidate group) into one transaction; the caller is then
     responsible for calling `db.commit()` itself.
     """
+    from datetime import timedelta
+
+    from config import settings
     from database.models import SuppressedMatch
+
+    # A machine must never overwrite a decision a person made in the meantime.
+    # The resolver loads its whole batch, then spends ~40 minutes on the
+    # model; a person can approve one of those reviews meanwhile, and the
+    # job's copy is stale (still "pending"). Setting status="rejected" from
+    # that copy flipped an approved review and suppressed the value they had
+    # just applied. People are exempt: the API endpoints check status
+    # themselves and turn it into a proper 409.
+    if by != "human" and review.status != "pending":
+        return {"status": review.status, "review_type": review.review_type, "skipped": True}
+
+    # A machine's rejection expires; a person's never does (see
+    # SuppressedMatch.expires_at for why).
+    expires = (None if by == "human"
+               else datetime.utcnow() + timedelta(days=settings.machine_suppression_days))
 
     if review.review_type == "field_update":
         for field, change in (review.proposed_changes or {}).items():
             db.add(SuppressedMatch(
                 kind="rejected_value", master_id=review.master_id,
-                field=field, value=str(change.get("new")),
+                field=field, value=str(change.get("new")), expires_at=expires,
             ))
     else:
         if review.master_id and review.incoming_id:
             db.add(SuppressedMatch(
                 kind="known_different", master_id=review.master_id,
-                other_id=review.incoming_id,
+                other_id=review.incoming_id, expires_at=expires,
             ))
+
+    if by != "human":
+        # Mark it, so the decision ledger (processing/trust.py) never counts a
+        # machine closure as a person agreeing with the model.
+        from sqlalchemy.orm.attributes import flag_modified
+        ev = dict(review.evidence or {})
+        ev["auto_closed_by"] = by
+        review.evidence = ev
+        flag_modified(review, "evidence")
 
     review.status = "rejected"
     review.resolved_at = datetime.utcnow()
@@ -78,7 +108,7 @@ def record_rejection(db, review, *, commit: bool = True) -> dict:
 # (verdicts are used as dict keys directly), so this is a denylist rather
 # than an allowlist of what to sum.
 _RUN_STAT_NON_VERDICT_KEYS = {"unavailable", "auto_closed", "error", "searches_used",
-                             "budget_exhausted"}
+                             "budget_exhausted", "auto_applied"}
 
 
 def record_resolver_run(kind: str, stats: dict, started_at, *, commit: bool = True) -> None:
@@ -101,7 +131,12 @@ def record_resolver_run(kind: str, stats: dict, started_at, *, commit: bool = Tr
     from database.connection import SessionLocal
     from database.models import ResolverRun
 
-    judged = sum(v for k, v in stats.items() if k not in _RUN_STAT_NON_VERDICT_KEYS)
+    # Only resolve/research runs report verdict counts. Other kinds (backup,
+    # auto_merge) carry byte sizes, paths or nested dicts in stats — summing
+    # those as "judged" would be meaningless or raise.
+    judged = (sum(v for k, v in stats.items()
+                  if k not in _RUN_STAT_NON_VERDICT_KEYS and isinstance(v, int))
+              if kind in ("resolve", "research") else 0)
     auto_closed = stats.get("auto_closed", 0)
 
     db = SessionLocal()
@@ -112,7 +147,7 @@ def record_resolver_run(kind: str, stats: dict, started_at, *, commit: bool = Tr
             finished_at=datetime.utcnow(),
             judged=judged,
             auto_closed=auto_closed,
-            left_pending=max(judged - auto_closed, 0),
+            left_pending=max(judged - auto_closed - stats.get("auto_applied", 0), 0),
             unavailable=stats.get("unavailable", 0),
             searches_used=stats.get("searches_used"),
             model=getattr(settings, "adjudicator_model", None) or settings.ollama_reason_model,
@@ -123,3 +158,45 @@ def record_resolver_run(kind: str, stats: dict, started_at, *, commit: bool = Tr
             db.commit()
     finally:
         db.close()
+
+
+def settle_field_keep(db, review, field: str, *, by: str = "resolver") -> str:
+    """
+    A machine has judged ONE field of `review` as "keep the stored value" and
+    that field alone must be settled.
+
+    A review can propose several fields at once (34 mixed tags+scalar rows sat
+    in the queue). record_rejection closes the WHOLE review and suppresses
+    EVERY value in it, so judging one field "keep" used to throw away the
+    others too — including a lossless tags union nobody had looked at.
+
+      only this field  -> close the review (record_rejection)
+      other fields too -> suppress just this field's value, drop the key, and
+                          leave the review pending for what remains
+
+    Returns "closed", "trimmed" or "skipped" (already resolved by someone).
+    """
+    from datetime import timedelta
+
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from config import settings
+    from database.models import SuppressedMatch
+
+    if review.status != "pending":
+        return "skipped"
+    prop = dict(review.proposed_changes or {})
+    if field not in prop:
+        return "skipped"
+    if set(prop) == {field}:
+        record_rejection(db, review, commit=False, by=by)
+        return "closed"
+
+    change = prop.pop(field)
+    db.add(SuppressedMatch(
+        kind="rejected_value", master_id=review.master_id, field=field,
+        value=str((change or {}).get("new")),
+        expires_at=datetime.utcnow() + timedelta(days=settings.machine_suppression_days)))
+    review.proposed_changes = prop
+    flag_modified(review, "proposed_changes")
+    return "trimmed"

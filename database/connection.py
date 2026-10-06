@@ -29,6 +29,16 @@ try:
 except Exception as exc:  # never let history capture stop the app booting
     logger.warning(f"Change-log capture not installed: {exc}")
 
+# Decision ledger (A4): one hook sees every human review decision, for the same
+# reason as change-log above — five resolve paths today, and a sixth would
+# otherwise silently fall out of the record the trust gate is computed from.
+try:
+    from processing.trust import install as _install_trust
+
+    _install_trust(SessionLocal)
+except Exception as exc:
+    logger.warning(f"Decision ledger not installed: {exc}")
+
 
 def get_db():
     """FastAPI dependency: yields a database session."""
@@ -39,7 +49,31 @@ def get_db():
         db.close()
 
 
+# Columns added after their table already existed. create_all() creates missing
+# TABLES but never missing COLUMNS, so a database (or a restore of an older
+# backup) that predates one of these would fail every query touching it —
+# including the suppression lookup on the ingest path — until someone
+# remembered to run a migration script. Idempotent; add new ones here.
+_LATE_COLUMNS = [
+    ("suppressed_matches", "expires_at", "TIMESTAMP"),
+    ("decision_audits", "source", "VARCHAR(12) DEFAULT 'live'"),
+]
+
+
+def ensure_columns():
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    tables = set(insp.get_table_names())
+    with engine.begin() as conn:
+        for table, column, ddl in _LATE_COLUMNS:
+            if table in tables and column not in {c["name"] for c in insp.get_columns(table)}:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+                logger.warning(f"Added missing column {table}.{column}")
+
+
 def init_db():
-    """Create all database tables."""
+    """Create all database tables, then any columns create_all can't add."""
     Base.metadata.create_all(bind=engine)
+    ensure_columns()
     logger.info("Database tables initialized successfully")

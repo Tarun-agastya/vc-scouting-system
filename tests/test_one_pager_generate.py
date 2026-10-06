@@ -148,11 +148,11 @@ def test_unsupported_team_size_becomes_none_not_a_guess():
 
 # ── YAML assembly ────────────────────────────────────────────────────────────
 
-def _build(pdf_deck, drafted, images=("slide01_page.jpg",), llm_note=None):
+def _build(pdf_deck, drafted, images=("slide01_page.jpg",), llm_note=None, lang="de"):
     return gen.build_yaml(
         name="ONOX", slug="onox", drafted=drafted,
         deck_obj=deck_mod.parse_deck(pdf_deck), images=list(images),
-        url=None, url_ok=False, llm_note=llm_note,
+        url=None, url_ok=False, llm_note=llm_note, lang=lang,
     )
 
 
@@ -185,15 +185,14 @@ def test_missing_images_are_flagged_rather_than_faked(pdf_deck):
     data = _build(pdf_deck, None, images=())
     assert "placeholder" in data["visuals"]["visual_solution"]
     assert "image" not in data["visuals"]["visual_solution"]
-    assert any("keine Bilder" in q.lower() or "manuell" in q.lower()
-               for q in data["review"]["open_questions"])
+    assert any("no images" in q.lower() for q in data["review"]["open_questions"])
 
 
 def test_sources_cite_the_deck_and_the_slides_used(pdf_deck):
     data = _build(pdf_deck, None)
     joined = " ".join(data["sources"])
-    assert "deck.pdf" in joined and "Folien" in joined
-    assert "Inhaltsfolien ausgewertet" in joined
+    assert "deck.pdf" in joined and "slides" in joined
+    assert "Content slides used" in joined
 
 
 # ── llm helpers (no network) ─────────────────────────────────────────────────
@@ -220,3 +219,182 @@ def test_slugify_handles_umlauts_and_punctuation():
     assert gen.slugify("Hula Earth") == "hula_earth"
     assert gen.slugify("Müller & Söhne GmbH") == "mueller_soehne_gmbh"
     assert gen.slugify("!!!") == "startup"
+
+
+# ── Two languages: German (final) + English ──────────────────────────────────
+
+import i18n                        # noqa: E402
+import render as render_mod        # noqa: E402
+
+_DRAFT_DE = {
+    "claim": "Elektrischer Traktor mit Wechselbatterien",
+    "location": "Isny", "founded": "2021", "team_size": "11",
+    "loesung": "Ein Traktor.", "mehrwerte": "11t CO2 pro Jahr.",
+    "usp": "Wechselmodule.", "zielgruppe": "Höfe.", "geschaeftsmodell": "Verkauf.",
+}
+_TRANSLATED_EN = {
+    "claim": "Electric tractor with swappable batteries",
+    "location": "Isny", "founded": "2021", "team_size": "11",
+    "loesung": "A tractor.", "mehrwerte": "11t CO2 per year.",
+    "usp": "Swappable modules.", "zielgruppe": "Farms.", "geschaeftsmodell": "Sales.",
+}
+
+
+def test_german_is_the_final_version_and_drafted_from_the_deck():
+    assert i18n.FINAL_LANG == "de"
+    assert gen.yaml_path("onox", "de").name == "onox.de.yaml"
+    assert gen.yaml_path("onox", "en").name == "onox.en.yaml"
+
+
+def test_each_file_carries_its_language_and_unknown_marker(pdf_deck):
+    de = _build(pdf_deck, None, lang="de")
+    en = _build(pdf_deck, None, lang="en")
+    assert de["lang"] == "de" and de["location"] == "k. A."
+    assert en["lang"] == "en" and en["location"] == "n/a"
+    assert de["visuals"]["visual_solution"]["label"] == "Visualisierung der Lösung"
+    assert en["visuals"]["visual_solution"]["label"] == "Visualisation of the Solution"
+
+
+def test_translation_keeps_images_and_facts_and_swaps_labels(pdf_deck, monkeypatch):
+    de = _build(pdf_deck, _DRAFT_DE, lang="de")
+    de["visuals"]["visual_solution"]["image"] = "assets/onox/slide01_page.jpg"
+    monkeypatch.setattr(gen.llm_mod, "translate", lambda f, s, d: dict(_TRANSLATED_EN))
+    en, ok = gen.translate_data(de, "en")
+    assert ok and en["lang"] == "en"
+    assert en["claim"] == _TRANSLATED_EN["claim"]
+    assert en["sections"]["usp"] == "Swappable modules."
+    assert en["visuals"]["visual_solution"]["image"] == "assets/onox/slide01_page.jpg"
+    assert en["visuals"]["visual_solution"]["label"] == "Visualisation of the Solution"
+    assert en["meta"]["page_label"] == "Matchmaking Startups"
+    assert en["sources"] == de["sources"]
+    assert en["review"]["status"] == "draft"
+    assert any("Translated automatically" in q for q in en["review"]["open_questions"])
+    assert de["lang"] == "de", "the source must not be mutated"
+
+
+def test_translation_that_invents_a_number_is_flagged(pdf_deck, monkeypatch):
+    de = _build(pdf_deck, _DRAFT_DE, lang="de")
+    bad = dict(_TRANSLATED_EN, mehrwerte="12t CO2 per year.")
+    monkeypatch.setattr(gen.llm_mod, "translate", lambda f, s, d: bad)
+    en, ok = gen.translate_data(de, "en")
+    assert any("12" in q and "Benefits" in q for q in en["review"]["open_questions"])
+
+
+def test_translation_can_never_change_team_size_or_year(pdf_deck, monkeypatch):
+    de = _build(pdf_deck, _DRAFT_DE, lang="de")
+    de["team_size"] = "4"
+    monkeypatch.setattr(gen.llm_mod, "translate",
+                        lambda f, s, d: dict(_TRANSLATED_EN, team_size="40", founded="2012"))
+    en, _ = gen.translate_data(de, "en")
+    assert en["team_size"] == "4" and en["founded"] == de["founded"]
+
+
+def test_failed_translation_still_writes_a_complete_twin(pdf_deck, monkeypatch):
+    de = _build(pdf_deck, _DRAFT_DE, lang="de")
+    monkeypatch.setattr(gen.llm_mod, "translate", lambda f, s, d: None)
+    en, ok = gen.translate_data(de, "en")
+    assert not ok
+    assert all(v == "" for v in en["sections"].values())
+    assert any("Translation from the Deutsch version failed" in q for q in en["review"]["open_questions"])
+    assert en["location"] == "Isny", "an untranslated fact beats an empty one"
+
+
+def test_unknown_marker_maps_between_languages(pdf_deck, monkeypatch):
+    de = _build(pdf_deck, dict(_DRAFT_DE, team_size=None), lang="de")
+    assert de["team_size"] == "k. A."
+    monkeypatch.setattr(gen.llm_mod, "translate", lambda f, s, d: dict(_TRANSLATED_EN, team_size=None))
+    en, _ = gen.translate_data(de, "en")
+    assert en["team_size"] == "n/a"
+
+
+@pytest.mark.parametrize("lang,headings,meta", [
+    ("de", ["Lösung & Funktionalität", "Geschäftsmodell"], "Gründung: 2021"),
+    ("en", ["Solution & Functionality", "Business Model"], "Founded: 2021"),
+])
+def test_render_uses_the_files_language_throughout(pdf_deck, tmp_path, lang, headings, meta):
+    data = _build(pdf_deck, _DRAFT_DE, lang=lang)
+    assert render_mod.validate(data, tmp_path / "x.yaml") == []
+    page = render_mod.render(data, tmp_path)
+    import html
+    for h in headings:
+        assert html.escape(h) in page
+    assert meta in page and f'lang="{lang}"' in page
+    other = "en" if lang == "de" else "de"
+    assert html.escape(i18n.labels(other)["sections"]["usp"]) not in page, "a page must never mix languages"
+
+
+def test_a_file_without_lang_is_german(pdf_deck, tmp_path):
+    data = _build(pdf_deck, _DRAFT_DE, lang="de")
+    data.pop("lang")
+    assert "Lösung &amp; Funktionalität" in render_mod.render(data, tmp_path)
+
+
+def test_pptx_export_uses_the_files_language(pdf_deck, tmp_path):
+    import export_pptx
+    data = _build(pdf_deck, _DRAFT_DE, lang="en")
+    prs = export_pptx.new_deck()
+    export_pptx.build_slide(prs, data, tmp_path, tmp_path / "tmp")
+    text = " ".join(sh.text_frame.text for sh in prs.slides[0].shapes if sh.has_text_frame)
+    assert "Business Model" in text and "Founded: 2021" in text
+    assert "Geschäftsmodell" not in text
+
+
+# ── Draft quality: the whole deck reaches the model ──────────────────────────
+
+def _footer_deck(tmp_path, n_slides=12):
+    """A deck shaped like Eidola's: a numbered footer on every slide, one long
+    bio slide, and short slides that carry the actual argument."""
+    import fitz
+    doc = fitz.open()
+    footer = "ACME: Die Rueckfuehrung mineralischer Nebenprodukte in die Kreislaufwirtschaft."
+    for i in range(1, n_slides + 1):
+        body = ("Gruenderin mit langem Lebenslauf. " * 120) if i == 2 else f"Kernaussage {i}: das Problem, die Loesung und der Markt in einem Satz."
+        page = doc.new_page(width=1600, height=2400)
+        page.insert_textbox(fitz.Rect(20, 20, 1580, 2380), f"{i} {footer}\n{body}", fontsize=9)
+    path = tmp_path / "footer.pdf"
+    doc.save(path)
+    return deck_mod.parse_deck(path)
+
+
+def test_every_slide_reaches_the_model_and_long_slides_are_trimmed(tmp_path):
+    d = _footer_deck(tmp_path)
+    text = d.content_text(2000)
+    assert len(text) <= 2000
+    for i in range(1, 13):
+        assert f"[Folie {i}]" in text, f"slide {i} was dropped"
+        if i != 2:
+            assert f"Kernaussage {i}" in text, "a short slide must keep all of its text"
+
+
+def test_a_repeated_numbered_footer_is_removed(tmp_path):
+    d = _footer_deck(tmp_path)
+    assert "Kreislaufwirtschaft" not in d.content_text(14000)
+
+
+def test_short_sections_and_a_figureless_benefit_are_flagged(pdf_deck):
+    data = _build(pdf_deck, dict(_DRAFT_DE, loesung="Ein Traktor.", mehrwerte="Spart viel Diesel."))
+    q = " ".join(data["review"]["open_questions"])
+    assert "'Solution & Functionality' is only 2 words" in q
+    assert "'Benefits & Performance' has no concrete figure" in q
+
+
+def test_drafting_prompt_carries_no_other_companys_facts():
+    """An example page in the prompt leaked 'bis zu 90 %' from LIGARO into
+    Eidola's draft. No other startup's page may sit in the drafting prompt."""
+    for lang, (system, prompt) in llm_mod._PROMPTS.items():
+        for leak in ("LIGARO", "Henkel", "EGGER", "200.000", "200,000"):
+            assert leak not in system + prompt, f"{lang} prompt contains {leak!r}"
+
+
+def test_preview_renders_an_incomplete_draft_but_export_still_refuses(pdf_deck, tmp_path):
+    import subprocess, sys, yaml
+    data = _build(pdf_deck, dict(_DRAFT_DE, mehrwerte="Spart viel Diesel."))
+    src = tmp_path / "x.de.yaml"
+    src.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    tool = Path(gen.__file__).parent
+    run = lambda *a: subprocess.run([sys.executable, *a], capture_output=True, text=True)
+    ok = run(str(tool / "render.py"), str(src), "--allow-incomplete", "--out-dir", str(tmp_path))
+    assert ok.returncode == 0 and (tmp_path / "x.de_onepager.html").exists()
+    assert "ENTWURF" in (tmp_path / "x.de_onepager.html").read_text(encoding="utf-8")
+    assert run(str(tool / "render.py"), str(src), "--check").returncode == 1
+    assert run(str(tool / "export_pptx.py"), str(src), "--out-dir", str(tmp_path)).returncode == 1

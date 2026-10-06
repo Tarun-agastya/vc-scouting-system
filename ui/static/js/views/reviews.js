@@ -160,13 +160,70 @@ export default {
 
     async function loadResolverCard() {
       try {
-        const runs = await api.resolverLastRun();
+        const [runs, aut, mergeList] = await Promise.all([
+          api.resolverLastRun(), api.autonomy().catch(() => null),
+          api.recentMerges(25).catch(() => null)]);
+        const merge = runs.auto_merge
+          ? `<div class="row" style="gap:6px;font-size:13px"><strong>🔗 Auto-merge</strong>
+               <span class="dim">${runs.auto_merge.finished_at ? fmt.dateTime(runs.auto_merge.finished_at) : "—"} ·
+               ${runs.auto_merge.stats && runs.auto_merge.stats.blocked ? "blocked: " + esc(runs.auto_merge.stats.blocked) : "see Recent merges — each has Undo"}</span></div>` : "";
+        const backup = runs.backup
+          ? `<div class="row" style="gap:6px;font-size:13px"><strong>💾 Backup</strong>
+               <span class="dim">${runs.backup.finished_at ? fmt.dateTime(runs.backup.finished_at) : "—"}${runs.backup.error ? " · FAILED: " + esc(runs.backup.error) : " · ok"}</span></div>` : "";
+        // What is automated, and the evidence — never a bare "on". A field only
+        // appears once a person has settled a review the model judged.
+        const earned = aut ? aut.fields.filter((f) => f.earned).map((f) => f.field) : [];
+        const autLine = aut
+          ? `<div class="row" style="gap:6px;font-size:13px"><strong>🧭 Autonomy</strong>
+               <span class="dim">${earned.length ? "auto-applying: " + earned.map(esc).join(", ")
+                 : "nothing auto-applied yet — needs " + aut.min_decisions + " human decisions at ≥" + Math.round(aut.min_agreement * 100) + "% agreement per field"}
+               ${aut.fields.length ? " · " + aut.fields.map((f) => esc(f.field) + " " + (f.rate == null ? "–" : Math.round(f.rate * 100) + "%") + " (" + f.n + ")").join(", ") : ""}</span></div>` : "";
         const lines = [
           resolverRunLine("resolve", "🌙 Review resolver", runs.resolve),
           resolverRunLine("research", "🔎 Research loop", runs.research),
+          merge, backup, autLine,
         ].filter(Boolean);
+        // Recent merges, each with its own Undo. The nightly job merges
+        // without asking, so "every merge can be undone" is only true if the
+        // button is somewhere a person will find it — it used to exist only as
+        // a bar that appeared after a MANUAL merge. Newest first, and undo in
+        // that order: a keeper that was itself merged away later can't be
+        // put back until the later merge is undone.
+        const merges = (mergeList && mergeList.merges) || [];
+        const mergesHtml = merges.length ? `
+          <details style="margin-top:6px" id="merge-list">
+            <summary style="cursor:pointer;font-size:13px"><strong>↩ Recent merges</strong>
+              <span class="dim">· ${merges.filter((m) => m.can_undo).length} can be undone</span></summary>
+            <div class="stack" style="gap:4px;margin-top:6px;max-height:240px;overflow-y:auto">
+              ${merges.map((m) => `
+                <div class="row" style="gap:8px;font-size:12.5px;align-items:center">
+                  <span class="dim" style="min-width:110px">${fmt.dateTime(m.created_at)}</span>
+                  <span>${esc(m.loser_name)} → <strong>${esc(m.keeper_name)}</strong></span>
+                  ${m.automatic ? `<span class="chip" style="font-size:10.5px">${m.via === "dedup-button" ? "dedup button" : "auto"}</span>` : ""}
+                  ${m.fields_taken.length ? `<span class="dim">took ${m.fields_taken.map(esc).join(", ")}</span>` : ""}
+                  <span class="grow"></span>
+                  ${m.can_undo
+                    ? `<button class="btn btn--ghost btn--sm" data-undo-merge="${esc(m.id)}">↩ Undo</button>`
+                    : '<span class="dim">undone</span>'}
+                </div>`).join("")}
+            </div>
+          </details>` : "";
         resolverCardEl.innerHTML = lines.length
-          ? `<div class="card" style="padding:10px 16px">${lines.join("")}</div>` : "";
+          ? `<div class="card" style="padding:10px 16px">${lines.join("")}${mergesHtml}</div>` : "";
+        resolverCardEl.querySelectorAll("[data-undo-merge]").forEach((btn) =>
+          btn.addEventListener("click", async () => {
+            const row = btn.closest(".row");
+            if (!confirmAction(`Undo this merge?\n\n${row.innerText.replace(/\s+/g, " ").trim()}\n\nThe deleted record comes back exactly as it was.`)) return;
+            btn.disabled = true;
+            try {
+              const r = await api.undoFieldMerge(btn.getAttribute("data-undo-merge"));
+              toast(`Undone — ${r.restored} restored`);
+              await loadResolverCard(); await loadCounts(); await loadList();
+            } catch (err) {
+              btn.disabled = false;
+              toast(`Undo failed: ${err.message}`, "error");
+            }
+          }));
       } catch { /* non-fatal — the card is a convenience */ }
     }
 
@@ -794,6 +851,10 @@ export default {
             ? ` · ${res.still_pending_review_ids.length} review${res.still_pending_review_ids.length === 1 ? "" : "s"} still have other fields`
             : "")
         );
+        // A deliberate action: hand the pane back so it repaints with this
+        // field settled. Other unsubmitted picks reset on that repaint — a
+        // visible result of the user's own click, unlike the silent poll wipe.
+        state.detailLocked = false;
         await loadCounts();
         await loadList(true);
       } catch (err) {
@@ -819,6 +880,7 @@ export default {
       try {
         const res = await api.resolveGroupedReviews(entry.master_id, selections);
         toast(`Applied ${res.applied_fields.length} field${res.applied_fields.length === 1 ? "" : "s"} · closed ${res.approved_review_ids.length + res.rejected_review_ids.length} review${(res.approved_review_ids.length + res.rejected_review_ids.length) === 1 ? "" : "s"}`);
+        state.detailLocked = false;
         await loadCounts();
         await loadList();
       } catch (err) {

@@ -69,28 +69,69 @@ class Deck:
 
     def content_text(self, max_chars: int) -> str:
         """
-        Text for the model, capped. Content-dense slides first: a 33-slide deck
-        easily exceeds an 8k context, and the chapter dividers carry no
-        information, so spending the budget on them would push out real content.
-        Slide order is preserved within the selection — the narrative sequence
-        (problem -> solution -> market) is itself a signal.
+        Text for the model, capped at max_chars, with EVERY content slide
+        represented, in deck order.
+
+        The first version kept the longest slides whole and dropped the rest.
+        On the real Eidola deck that sent 4 of 20 slides — the cover, four
+        founder bios, the services slide and a reference letter — and dropped
+        the problem, impact, case-study and milestone slides, which are exactly
+        what a one-pager is written from. Long slides are usually bios and
+        letters, not the argument. So now each slide gets a fair share: the
+        budget is spread evenly, a short slide keeps all of its text, and only
+        the long ones are trimmed.
+
+        Two clean-ups first, both measured on real decks:
+          * a footer/header line repeated on most slides ("EIDOLA MATERIALS: Die
+            Rückführung …" on all 20 = ~2,000 characters) is removed;
+          * PDF hard line-wraps every ~30 characters are joined back into text.
         """
-        ranked = sorted(
-            (s for s in self.slides if s.is_content),
-            key=lambda s: len(s.text), reverse=True,
-        )
-        chosen, used = [], 0
-        for s in ranked:
-            block = f"[Folie {s.number}]\n{s.text.strip()}"
-            if used + len(block) > max_chars:
-                continue
-            chosen.append(s.number)
-            used += len(block) + 2
-        keep = set(chosen)
-        return "\n\n".join(
-            f"[Folie {s.number}]\n{s.text.strip()}"
-            for s in self.slides if s.number in keep
-        )
+        bp = self._boilerplate()
+        slides = [(s.number, _model_text(s.text, bp)) for s in self.slides if s.is_content]
+        slides = [(n, t) for n, t in slides if len(t) >= MIN_CONTENT_CHARS]
+        overhead = sum(len(f"[Folie {n}]\n") + 2 for n, _ in slides)
+        budget = max(max_chars - overhead, 0)
+
+        # Largest per-slide cap such that the capped total fits the budget.
+        lo, hi = 0, max((len(t) for _, t in slides), default=0)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if sum(min(len(t), mid) for _, t in slides) <= budget:
+                lo = mid
+            else:
+                hi = mid - 1
+        cap = lo
+        out = []
+        for n, t in slides:
+            if cap < MIN_CONTENT_CHARS:
+                break
+            out.append(f"[Folie {n}]\n{t if len(t) <= cap else t[:cap].rsplit(' ', 1)[0] + ' …'}")
+        return "\n\n".join(out)
+
+    def _boilerplate(self) -> set:
+        """Lines repeated on at least 40% of slides (and 3+ of them): headers/footers."""
+        from collections import Counter
+
+        counts = Counter()
+        for s in self.slides:
+            counts.update({_unnumbered(ln) for ln in s.text.splitlines() if len(_unnumbered(ln)) >= 15})
+        threshold = max(3, int(len(self.slides) * 0.4))
+        return {ln for ln, c in counts.items() if c >= threshold}
+
+
+def _unnumbered(line: str) -> str:
+    """A footer usually carries the page number: "3 EIDOLA …", "EIDOLA … 3"."""
+    return re.sub(r"^\d{1,3}\s+|\s+\d{1,3}$", "", line.strip())
+
+
+def _model_text(text: str, boilerplate: set) -> str:
+    """Drop header/footer lines, a bare slide number, and PDF hard wraps."""
+    lines = [ln.strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln and _unnumbered(ln) not in boilerplate and not ln.isdigit()]
+    joined = " ".join(lines)
+    for b in boilerplate:                      # also when glued onto other text
+        joined = joined.replace(b, " ")
+    return " ".join(joined.split())
 
 
 class DeckError(RuntimeError):

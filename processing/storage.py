@@ -156,7 +156,7 @@ def upsert_startup(
         # Embed once — reused for matcher blocking and (for new masters) Qdrant sync.
         incoming_vector = embedder.embed(embedder.build_startup_text(startup))
 
-        report = build_match_report(startup, db, incoming_vector)
+        report = build_match_report(startup, db, incoming_vector, source_url=source_url)
         logger.info(f"[Storage] Match '{name}': {report.outcome} "
                     f"(conf={report.confidence}, {report.reason})")
 
@@ -715,6 +715,19 @@ _TEXT_FIELDS = {"short_description", "description"}
 # union policy, documented in one place via field_policy.merge_list_field.
 _LIST_FIELDS = {"tags", "founders"}
 
+# Fields that are never staged for review. sub_industry is a free-form label
+# that two extraction runs word differently, so every re-crawl produced a
+# "conflict" that was really just paraphrase: 67 of 125 pending field reviews
+# on 30 Sep, and a person rejected 58% of the 294 historic ones. Backtesting
+# the model against those decisions gave 35% agreement (17 of 49 confident
+# picks) — but the decisions themselves looked like queue-clearing, many
+# rejecting a plausible label for an EMPTY field — so they prove nothing
+# about the model either way. Nobody's judgement was being used. Owner
+# decision 30 Sep: resolve it at write time. Empty -> fill it; set -> keep
+# what is stored. A wrong label is a low-stakes, recoverable miss (the field
+# is still in FieldChange history and in the next re-extraction).
+_NEVER_STAGED_FIELDS = {"sub_industry"}
+
 
 def _norm(v) -> str:
     return (str(v).strip().lower()) if v is not None else ""
@@ -792,6 +805,15 @@ def _diff_fields(master, incoming: dict, source: str, extracted_at_iso: str, db)
                 auto_apply[attr] = merged
             continue
 
+        from processing.field_policy import is_noise_change
+        if is_noise_change(attr, old_val, new_val):
+            continue        # same website domain / one value containing the other
+
+        if attr in _NEVER_STAGED_FIELDS:
+            if new_val is not None and (old_val is None or str(old_val).strip() == ""):
+                auto_apply[attr] = new_val          # a fill: nothing to disagree with
+            continue                                # otherwise keep the stored value
+
         # norm_value (Phase Z-2) folds diacritics/casing and a small explicit
         # DE/EN synonym map (Germany/Deutschland, Munich/München, ...) so a
         # pure locale variant is never mistaken for new information — it was
@@ -829,12 +851,20 @@ def _diff_fields(master, incoming: dict, source: str, extracted_at_iso: str, db)
 
 # ── Suppression (human-reject memory) ─────────────────────────────────────────
 
+def _not_expired(model):
+    """SQL condition: a suppression that still applies. Machine-created ones
+    lapse (SuppressedMatch.expires_at); NULL means permanent."""
+    from sqlalchemy import or_
+    return or_(model.expires_at.is_(None), model.expires_at > datetime.utcnow())
+
+
 def _is_known_different(db, master_id, other_id) -> bool:
     from database.models import SuppressedMatch
     if not master_id or not other_id:
         return False
     return db.query(SuppressedMatch).filter(
         SuppressedMatch.kind == "known_different",
+        _not_expired(SuppressedMatch),
         SuppressedMatch.master_id.in_([master_id, other_id]),
         SuppressedMatch.other_id.in_([master_id, other_id]),
     ).first() is not None
@@ -844,6 +874,7 @@ def _is_value_suppressed(db, master_id, field, value) -> bool:
     from database.models import SuppressedMatch
     return db.query(SuppressedMatch).filter(
         SuppressedMatch.kind == "rejected_value",
+        _not_expired(SuppressedMatch),
         SuppressedMatch.master_id == master_id,
         SuppressedMatch.field == field,
         SuppressedMatch.value == value,
@@ -1017,6 +1048,13 @@ def _create_review(db, *, review_type, master, incoming_row, incoming_data,
 
         if master is not None:
             if review_type == "field_update":
+                # Every path that stages a field change comes through here —
+                # ingest and web verification both — so this is where a field
+                # that is never staged (see _NEVER_STAGED_FIELDS) is dropped.
+                proposed_changes = {f: c for f, c in (proposed_changes or {}).items()
+                                    if f not in _NEVER_STAGED_FIELDS}
+                if not proposed_changes:
+                    return
                 # Phase Y-3: drop fields already covered by a pending review
                 # for this master, keep only genuinely new/changed ones.
                 surviving = _uncovered_fields(db, master.id, proposed_changes)

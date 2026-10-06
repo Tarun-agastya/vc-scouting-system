@@ -77,3 +77,6 @@ press_monitor/_last_run.json
 
 # Database backups (large, local recovery only — never source)
 backups/
+
+# One-pager web-search cache + credit ledger (templates/one_pager/websearch.py)
+templates/one_pager/.websearch/

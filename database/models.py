@@ -289,6 +289,13 @@ class SuppressedMatch(Base):
     value     = Column(Text, nullable=True)                            # rejected_value
 
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Set only on suppressions a MACHINE created (resolver, adjudicator).
+    # A person's rejection is permanent — they looked and decided. A model's
+    # "keep the stored value" is a judgement from the data as it was that
+    # night, and if the stored value was stale it would otherwise block the
+    # correct one for ever. After this date the suppression stops applying
+    # and the change is proposed again. NULL = permanent.
+    expires_at = Column(DateTime, nullable=True, index=True)
 
 
 class FieldChange(Base):
@@ -419,6 +426,44 @@ class ResolverRun(Base):
     model = Column(String(80), nullable=True)
     error = Column(Text, nullable=True)             # set only if the run stopped early
     stats = Column(JSON, default=dict)
+
+
+class DecisionAudit(Base):
+    """
+    One row each time a human settles a review the model had an opinion on —
+    the evidence for how far the model can be trusted, per field (A4 of the
+    autonomy plan).
+
+    Without this there is no way to ever hand the resolver more autonomy
+    responsibly: "it seems right" is not a number. With it, a field earns
+    auto-apply only when humans have agreed with the model's high-confidence
+    picks on that field often enough over enough decisions
+    (processing/trust.py), and loses it again the moment they stop.
+
+    Written by one before_flush hook on DuplicateReview, not by each resolve
+    path — there are five human ones and a sixth added later would silently
+    fall out of the ledger. Only reviews closed by a PERSON are recorded;
+    anything the resolver or auto-merge closed carries an `auto_*` marker in
+    evidence and is skipped, so the model never grades its own homework.
+
+    verdict: "prefer" (model wanted a proposed value) | "keep" (model wanted
+    the stored value). none_fit is never recorded — it makes no claim.
+    """
+    __tablename__ = "decision_audits"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    review_id = Column(UUID(as_uuid=True), index=True)
+    master_id = Column(UUID(as_uuid=True), index=True)
+    field = Column(String(80), index=True)
+    verdict = Column(String(12))
+    confidence = Column(String(10))
+    agreed = Column(Boolean, default=False)
+    decided_at = Column(DateTime, default=datetime.utcnow, index=True)
+    # "live" = a person settled a review the model had judged. "backtest" =
+    # the model was run, after the fact, over a review a person had already
+    # settled (scripts/backtest_trust.py). Kept distinct so the ledger can
+    # always be audited and recomputed without the backtest.
+    source = Column(String(12), default="live")
 
 
 class SiteProfile(Base):

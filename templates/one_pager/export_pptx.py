@@ -12,7 +12,7 @@ Nothing here is a flattened image. Opens in PowerPoint, Keynote, LibreOffice and
 Google Slides.
 
 Usage:
-    python3 templates/one_pager/export_pptx.py templates/one_pager/data/ligaro.yaml
+    python3 templates/one_pager/export_pptx.py templates/one_pager/data/ligaro.de.yaml
     python3 templates/one_pager/export_pptx.py templates/one_pager/data/*.yaml --out-dir ~/Desktop
     python3 templates/one_pager/export_pptx.py data/*.yaml --combine deck.pptx   # all pages, one file
 
@@ -32,7 +32,8 @@ from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Emu, Inches, Pt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render import SECTIONS, VISUALS, validate  # noqa: E402  — single source of truth
+import i18n  # noqa: E402
+from render import validate  # noqa: E402  — single source of truth
 
 # ── Layout, in inches. Proportions taken from the ONOX / Arctory reference pages.
 SLIDE_W, SLIDE_H = 13.333, 7.5
@@ -164,6 +165,8 @@ def build_slide(prs: Presentation, data: dict, base_dir: Path, tmp_dir: Path) ->
     slide = prs.slides.add_slide(prs.slide_layouts[6])          # blank layout
     _rect(slide, 0, 0, SLIDE_W, SLIDE_H, fill=PAGE_BG)
 
+    lang = i18n.lang_of(data)
+    L = i18n.labels(lang)
     meta = data.get("meta") or {}
 
     # ── header + rule ────────────────────────────────────────────────────────
@@ -173,7 +176,7 @@ def build_slide(prs: Presentation, data: dict, base_dir: Path, tmp_dir: Path) ->
     tb, tf = _txbox(slide, SLIDE_W - MARGIN - 4.6, HDR_Y, 4.6, HDR_H)
     p = tf.paragraphs[0]
     p.alignment = PP_ALIGN.RIGHT
-    label = str(meta.get("page_label") or "Matchmaking-Startups")
+    label = str(meta.get("page_label") or L["page_label"])
     num = str(meta.get("page_number") or "")
     _run(p, f"{label}      {num}".rstrip(), size=8.5)
 
@@ -193,8 +196,8 @@ def build_slide(prs: Presentation, data: dict, base_dir: Path, tmp_dir: Path) ->
     _run(tf.paragraphs[0], str(data["name"]), size=15, bold=True)
 
     tb, tf = _txbox(slide, inner_x, BODY_Y + CARD_PAD + 0.30, inner_w - LOGO_W - 0.12, 0.26)
-    metaline = (f"Ort: {data['location']} / Gründung: {data['founded']} / "
-                f"Team: {data['team_size']}")
+    metaline = (f"{L['location']}: {data['location']} / {L['founded']}: {data['founded']} / "
+                f"{L['team']}: {data['team_size']}")
     _run(tf.paragraphs[0], metaline, size=9.5, italic=True)
 
     logo = data.get("logo")
@@ -222,7 +225,7 @@ def build_slide(prs: Presentation, data: dict, base_dir: Path, tmp_dir: Path) ->
     tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
     sections = data["sections"]
     first = True
-    for key, heading in SECTIONS:
+    for key, heading in i18n.sections(lang):
         p = tf.paragraphs[0] if first else tf.add_paragraph()
         if not first:
             p.space_before = Pt(9)
@@ -234,7 +237,7 @@ def build_slide(prs: Presentation, data: dict, base_dir: Path, tmp_dir: Path) ->
 
     # ── right column ─────────────────────────────────────────────────────────
     visuals = data["visuals"]
-    slots = zip(VISUALS, (BODY_Y, BODY_Y + VIS_H_TOP + VIS_GAP), (VIS_H_TOP, VIS_H_BOTTOM))
+    slots = zip(i18n.visuals(lang), (BODY_Y, BODY_Y + VIS_H_TOP + VIS_GAP), (VIS_H_TOP, VIS_H_BOTTOM))
     for (key, default_label), y, h in slots:
         _visual(slide, visuals.get(key) or {}, default_label, base_dir, tmp_dir, y, h)
 

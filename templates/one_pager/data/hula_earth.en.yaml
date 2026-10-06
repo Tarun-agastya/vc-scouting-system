@@ -1,0 +1,81 @@
+# GT Hub One-Pager (English) — translated from hula_earth.de.yaml.
+# Written by templates/one_pager/translate.py. Nothing here is checked yet:
+# every item under review.open_questions needs a person.
+# Format and rules: templates/one_pager/FORMAT.md
+
+lang: en
+meta:
+  page_label: Matchmaking Startups
+claim: Real-time biodiversity monitoring via sensor and satellite
+name: Hula Earth
+location: Munich
+founded: '2023'
+team_size: n/a
+website: hula.earth
+logo: assets/hula_earth/logo.jpg
+sections:
+  loesung: >-
+    Hula Earth measures biodiversity in real-time. Self-developed BioT sensors are solar-powered
+    and maintenance-free, recognizing species—especially bird sounds—via AI directly on the
+    device without SD card swaps or battery replacements. Satellite observation complements
+    this; the Hula platform integrates both data sources into a dashboard for monitoring,
+    reporting, and verification (MRV).
+  mehrwerte: >-
+    Over 80 sensors are already in the field as of the end of 2025. Direct processing on the
+    device replaces a significant part of manual biological fieldwork. The dashboard provides
+    metrics for ecosystem vitality, leaf area index, and water storage capacity, supporting
+    CSRD/ESRS E4 reporting obligations.
+  usp: >-
+    Not just sensor technology or satellite data, but the combination of both: Samples from
+    representative areas can be extrapolated to large areas, providing a scalable picture
+    of biodiversity. Data processing occurs in real-time on the device and is compliant with
+    data protection regulations. Hula Earth is also developing the first German biodiversity
+    certificates.
+  zielgruppe: >-
+    Operators of solar and wind parks, agriculture, project developers (e.g., wetland restoration),
+    nature conservation associations, and certifiers and insurers. The company cites Engie
+    Green as a reference—where wind park control is coupled with the bird migration schedule.
+  geschaeftsmodell: >-
+    B2B: Sale or provision of BioT sensor technology combined with a platform and data subscription
+    for MRV reporting. Biodiversity certificates are an additional revenue stream.
+visuals:
+  visual_solution:
+    label: Visualisation of the Solution
+    image: assets/hula_earth/biot_sensor.jpg
+  visual_how_it_works:
+    label: How the Solution Works
+    image: assets/hula_earth/platform_dashboard.jpg
+sources:
+- >-
+  https://hula.earth/ — BioT-Sensor (low-cost, low-power, long-range IoT), Earth observation,
+  Plattform-Dashboard, Industrien (Solar/Wind, Agrar, Naturschutz), Engie Green Success Story
+- >-
+  https://hula.earth/company — 'founded in Munich in 2023'; Mission; 730 Mrd. USD nature funding
+  gap; ML + Satellit + BioT; MRV
+- >-
+  https://www.umweltdialog.de/de/WIRTSCHAFT/Wirtschaft/2025/Start-up-Hula-Earth-waechst-Biodiversitaet-langfristig-beobachten.php
+  (31.12.2025) — über 80 Kästen im Feld; Vogelstimmenerkennung; Echtzeitverarbeitung; Kennzahlen
+  Ökosystemvitalität/Blattflächenindex/Wasserspeicherkapazität; Mitgründer David Schmider
+  (CTO), Florian Geiser (CEO, TUM-Alumnus); Kunden: Moorrenaturierung, Solarparks, Naturschutzverbände
+- >-
+  https://www.munich-startup.de/startups-and-ecosystem/hula-earth — CSRD/ESRS E4, Kunming-Montreal,
+  erste deutsche Biodiversitätszertifikate, Zusammenarbeit mit Zertifizierern und Versicherungen
+review:
+  status: draft
+  open_questions:
+  - >-
+    Translated automatically from the Deutsch version (hula_earth.de.yaml) — read it through
+    before use.
+  - >-
+    KEIN PITCH DECK VORHANDEN — diese Seite stammt aus Website + Presse. Bitte gegen das Deck
+    prüfen, bevor sie an Partner geht.
+  - >-
+    Teamgröße unbekannt ('k. A.'). Bekannt sind nur die Mitgründer Florian Geiser (CEO) und
+    David Schmider (CTO). Bitte Headcount ergänzen.
+  - >-
+    Geschäftsmodell ist aus dem Angebot abgeleitet (Hardware + Plattform-Abo), nicht wörtlich
+    belegt. Bitte bestätigen — insbesondere ob Sensoren verkauft oder vermietet werden.
+  - Gründungsjahr 2023 laut eigener Website. Rechtsform/GmbH-Gründung nicht geprüft.
+  - >-
+    Traktion: Über die 80 Sensoren hinaus liegen keine belastbaren Kundenzahlen vor. Falls
+    vorhanden, in 'Zielgruppe & Kunden' ergänzen — das ist aktuell die schwächste Sektion.

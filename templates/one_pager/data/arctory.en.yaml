@@ -1,0 +1,71 @@
+# GT Hub One-Pager (English) — DRAFT, generated from deck.pdf.
+# Written by templates/one_pager/generate.py. Nothing here is checked yet:
+# every item under review.open_questions needs a person.
+# Its twin in the other language: arctory.de.yaml
+# Format and rules: templates/one_pager/FORMAT.md
+
+lang: en
+meta:
+  page_label: Matchmaking Startups
+claim: AI-powered shopfloor application builder for manufacturing
+name: Arctory
+location: n/a
+founded: n/a
+team_size: n/a
+sections:
+  loesung: >-
+    Arctory provides a platform that allows manufacturing companies to build custom applications
+    for shopfloor management, production planning, and maintenance. The system integrates
+    directly on top of existing records such as ERP, MES, and PLM systems. Users describe
+    their specific processes to generate functional apps without manual coding.
+  mehrwerte: >-
+    The platform enables rapid digitalization of manufacturing processes by replacing manual
+    work in Excel with custom apps. The company has successfully built over 12 shopfloor applications
+    per factory within a six-month period to streamline operations and improve data flow.
+  usp: >-
+    Unlike traditional IT projects that require extensive development time, Arctory uses agentic
+    AI to generate applications in minutes. The system ensures data security by only sharing
+    software code and data models with the AI during the creation phase, ensuring the AI has
+    no access to production data once deployed.
+  zielgruppe: >-
+    The target customers are manufacturing companies and operational excellence teams requiring
+    shopfloor management and quality audit tools. The company has secured references from
+    partners such as ams OSRAM and Ventilatorenfabrik Oelde.
+  geschaeftsmodell: >-
+    Arctory operates as a software platform providing an AI-driven application builder for
+    manufacturing companies to digitize their production processes.
+visuals:
+  visual_solution:
+    label: Visualisation of the Solution
+    placeholder: >-
+      Candidates in assets/arctory/: slide01_img1.jpg, slide01_page.jpg, slide02_page.jpg,
+      slide03_page.jpg, slide04_page.jpg, slide05_page.jpg … (+21 more)
+  visual_how_it_works:
+    label: How the Solution Works
+    placeholder: >-
+      Candidates in assets/arctory/: slide01_img1.jpg, slide01_page.jpg, slide02_page.jpg,
+      slide03_page.jpg, slide04_page.jpg, slide05_page.jpg … (+21 more)
+sources:
+- 'Pitch deck: deck.pdf (13 slides, PDF)'
+- 'Content slides used: 2, 3, 4, 7, 9, 10, 11, 12, 13'
+- 'Website: https://arctory.ai/de/'
+- >-
+  Web search: https://www.linkedin.com/posts/joachim-henkel_startup-innovation-ai-activity-7474063690506592256-0K56
+- 'Web search: https://vivatech.com/speakers/573638f8-9365-f111-8fcb-6045bd954326'
+- >-
+  Web search: https://podcasts.apple.com/de/podcast/entrepreneurial-realities/id1586633286?l=en-GB
+- >-
+  Web search: https://www.linkedin.com/posts/joachim-henkel_innovation-startup-exist-activity-7433986464495050763-WmHM
+- >-
+  Web search: https://www.linkedin.com/posts/antoineleboyer_a-software-developer-costs-100k-a-year-and-activity-7469672456371392512-LDpW
+review:
+  status: draft
+  open_questions:
+  - Location not found in the deck — please fill in 'location'.
+  - Year founded not found in the deck — please fill in 'founded'.
+  - >-
+    Images: 27 candidates were extracted to data/assets/arctory/. Pick two and enter them
+    under 'visuals' as image: assets/arctory/<file> (in both language files).
+  - >-
+    Web search added 5 third-party source(s) (2 Tavily credits). Facts from them are not in
+    the deck — check them against the links under 'sources'.

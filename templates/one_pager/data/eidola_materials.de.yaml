@@ -1,0 +1,76 @@
+# GT Hub One-Pager (Deutsch) — DRAFT, generated from 260826_Pitch_Deck_Eidola.pdf.
+# Written by templates/one_pager/generate.py. Nothing here is checked yet:
+# every item under review.open_questions needs a person.
+# Its twin in the other language: eidola_materials.en.yaml
+# Format and rules: templates/one_pager/FORMAT.md
+
+lang: de
+meta:
+  page_label: Matchmaking-Startups
+claim: Veredelung mineralischer Nebenprodukte zu Sekundärrohstoffen
+name: Eidola Materials
+location: Zürich
+founded: '2025'
+team_size: k. A.
+sections:
+  loesung: >-
+    Eidola Materials identifiziert, beschafft und veredelt mineralische Nebenprodukte aus
+    dem Kies- und Steingewinnung sowie aus industriellen Prozessen. Die Unternehmen bewerten
+    die technischen Eigenschaften dieser Reststoffe und stellen maßgeschneiderte Rohstoffmischungen
+    bereit, die auf spezifische Anforderungen wie Korngrößenverteilung und mineralische Zusammensetzung
+    abgestimmt sind. Diese Sekundärrohstoffe werden in regionale Lieferketten zurückgeführt.
+  mehrwerte: >-
+    Die Nutzung von Sekundärrohstoffen steigert die Materialeffizienz pro gefördertem Kubikmeter
+    und senkt die Kosten für die Abfallbehandlung und -entsorgung. Zudem reduziert der Einsatz
+    dieser Materialien die Abhängigkeit von neuen Förderungen und stärkt die Nachhaltigkeit
+    der Lieferketten durch die Nutzung bereits geförderter Ressourcen.
+  usp: >-
+    Anstatt auf Primärrohstoffe zu setzen, ermöglicht Eidola Materials die Integration von
+    Sekundärrohstoffen in bestehende industrielle Prozesse durch spezifische Kompatibilitätstests.
+    Das Unternehmen bietet dabei eine technische und strategische Beratung für beide Seiten
+    der Kette: für Rohstofflieferanten zur Abfallverwertung und für industrielle Abnehmer
+    zur Diversifizierung ihrer Rohstoffbasis.
+  zielgruppe: >-
+    Die Zielgruppe umfasst Rohstofflieferer aus der Gewinnungsindustrie sowie industrielle
+    Hersteller von Baustoffen und Architekten. Die Wirksamkeit des Ansatzes ist durch erfolgreiche
+    Projekte belegt, wie die Substitution von Filterkuchen in der Ziegelproduktion oder die
+    Entwicklung von Produkten wie Gartenziegeln aus Kieswaschschlamm.
+  geschaeftsmodell: >-
+    Das Unternehmen generiert Umsatz durch den Verkauf von veredelten Rohstoffmischungen sowie
+    durch die Erbringung von Beratungs- und Entwicklungsleistungen für die Rohstoffindustrie
+    und industrielle Hersteller.
+visuals:
+  visual_solution:
+    label: Visualisierung der Lösung
+    placeholder: >-
+      Candidates in assets/eidola_materials/: slide01_img1.jpg, slide01_page.jpg, slide02_img1.jpg,
+      slide02_page.jpg, slide03_page.jpg, slide04_img1.jpg … (+43 more)
+  visual_how_it_works:
+    label: So funktioniert die Lösung
+    placeholder: >-
+      Candidates in assets/eidola_materials/: slide01_img1.jpg, slide01_page.jpg, slide02_img1.jpg,
+      slide02_page.jpg, slide03_page.jpg, slide04_img1.jpg … (+43 more)
+sources:
+- 'Pitch deck: 260826_Pitch_Deck_Eidola.pdf (20 slides, PDF)'
+- >-
+  Content slides used: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+  20
+- 'Website: https://eidolamaterials.ch/'
+- >-
+  Web search: https://www.linkedin.com/posts/eidola-materials_eidolamaterials-activity-7429948868072697856-jnu1
+- 'Web search: https://ch.linkedin.com/company/eidola-materials'
+- 'Web search: https://ch.linkedin.com/in/jonas-kissling-8b6933149'
+- >-
+  Web search: https://yellowpages.swiss/location.cfm?key=2756571&company=Eidola-Materials-AG&art=HRB
+review:
+  status: draft
+  open_questions:
+  - >-
+    Section 'Benefits & Performance' has no concrete figure — the deck gave none the model
+    could use. Add one (e.g. tonnes, %, cost saving); the PowerPoint export requires it.
+  - >-
+    Images: 49 candidates were extracted to data/assets/eidola_materials/. Pick two and enter
+    them under 'visuals' as image: assets/eidola_materials/<file> (in both language files).
+  - >-
+    Web search added 4 third-party source(s) (no paid credits). Facts from them are not in
+    the deck — check them against the links under 'sources'.

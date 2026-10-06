@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from api.routes import scout, matchmaking, ingestion, sources, reviews, verification, classification, theses, regional, onepager
+from api.routes import scout, matchmaking, ingestion, sources, reviews, verification, classification, theses, regional, onepager, dedup
 from database.connection import init_db
 
 logging.basicConfig(
@@ -74,6 +74,43 @@ async def lifespan(app: FastAPI):
                 return
             await scout_controller.run_newsletters_then_recheck(max_messages=50)
 
+        async def _scheduled_backup():
+            """
+            Nightly 00:30 (A0, autonomy plan): Postgres dump + Qdrant
+            snapshots into backups/nightly/, 14 days kept. Runs before the
+            01:00 resolver because auto-merge refuses to run without a fresh
+            complete backup — see processing/backup.py. Unconditional: a
+            backup is never the risky part.
+            """
+            import asyncio as _aio
+            from datetime import datetime as _dt
+            from processing.backup import run_backup
+            from processing.review_actions import record_resolver_run
+            started = _dt.utcnow()
+            stats = await _aio.get_event_loop().run_in_executor(None, run_backup)
+
+            # Housekeeping that nothing else ever did. Merge snapshots hold a
+            # whole deleted row as JSON and the change log gets a row per
+            # field change; with unattended merging both grow every night for
+            # ever. 90 days is far beyond a realistic undo; the log is kept a
+            # year and bounded per record.
+            def _prune():
+                from database.connection import SessionLocal
+                from processing.change_log import prune as prune_changes
+                from processing.field_merge import prune_snapshots
+                db = SessionLocal()
+                try:
+                    return {"snapshots_pruned": prune_snapshots(db, days=90),
+                            "changes_pruned": prune_changes(db, keep_per_record=100, older_than_days=365)}
+                finally:
+                    db.close()
+            try:
+                stats.update(await _aio.get_event_loop().run_in_executor(None, _prune))
+            except Exception as exc:
+                logger.warning(f"[Backup] housekeeping failed: {exc}")
+            record_resolver_run("backup", stats, started)
+            logger.info(f"[Backup] nightly: {stats}")
+
         async def _scheduled_review_resolve():
             """
             Nightly (Phase 2, plans/REVIEW_INBOX_AUTONOMY_PLAN.md): the local
@@ -95,10 +132,64 @@ async def lifespan(app: FastAPI):
             from datetime import datetime as _dt
             from processing.review_resolver import resolve_pending
             from processing.review_actions import record_resolver_run
+            if settings.auto_merge_enabled:
+                # Merge the mechanical identical-name pairs FIRST so the model
+                # only spends GPU time on what a rule couldn't settle.
+                # Refuses (and records why) if there is no fresh backup.
+                import asyncio as _aio
+                from processing.auto_merge import auto_merge_pending
+                t0 = _dt.utcnow()
+                m = await _aio.get_event_loop().run_in_executor(
+                    None, lambda: auto_merge_pending(settings.auto_merge_nightly_limit, apply=True))
+                m.pop("_pairs", None)
+                record_resolver_run("auto_merge", m, t0)
+                logger.info(f"[AutoMerge] nightly: {m}")
             started = _dt.utcnow()
             stats = await resolve_pending(limit=settings.resolver_nightly_limit, apply=True)
             record_resolver_run("resolve", stats, started)
             logger.info(f"[Resolver] nightly run: {stats}")
+
+        async def _scheduled_review_research():
+            """
+            Nightly 01:30 (A3): the search-then-judge loop for the fields a
+            description can't settle (city/website/funding stage/...). Same
+            resolver_enabled gate and same reversible-only policy; hard-capped
+            by resolver_max_searches, the only cost control that exists for
+            Tavily. Also splits the lossless tags/founders union out of mixed
+            reviews so the queue only holds real questions.
+            """
+            from config import settings
+            if not settings.resolver_enabled:
+                return
+            import asyncio as _aio
+            from datetime import datetime as _dt
+            from database.connection import SessionLocal
+            from processing.list_field_drain import drain_mixed_list_fields
+            from processing.review_actions import record_resolver_run
+            from processing.review_researcher import research_pending
+
+            def _drain():
+                db = SessionLocal()
+                try:
+                    return drain_mixed_list_fields(db, apply=True)
+                finally:
+                    db.close()
+            logger.info(f"[Resolver] list split: {await _aio.get_event_loop().run_in_executor(None, _drain)}")
+            started = _dt.utcnow()
+            stats = await research_pending(limit=settings.resolver_nightly_limit, apply=True)
+            record_resolver_run("research", stats, started)
+            logger.info(f"[Researcher] nightly run: {stats}")
+
+        async def _scheduled_digest():
+            """
+            Daily 07:00 (A5): what the nightly jobs did, and — through what is
+            missing — whether they ran at all. No-ops unless
+            settings.digest_recipients is set. See processing/digest.py.
+            """
+            import asyncio as _aio
+            from processing.digest import send_digest
+            result = await _aio.get_event_loop().run_in_executor(None, send_digest)
+            logger.info(f"[Digest] {result}")
 
         async def _scheduled_llm_explain():
             """
@@ -158,7 +249,14 @@ async def lifespan(app: FastAPI):
             from processing.scout_controller import scout_controller
             await scout_controller.run_reclassify(limit=20)
 
-        scheduler = AsyncIOScheduler()
+        # APScheduler's defaults are misfire_grace_time=1s and no coalescing:
+        # an event-loop stall (a long blocking call, a GC pause, the machine
+        # waking from sleep) at 01:00 made the job "misfire" and it was
+        # skipped for the WHOLE NIGHT, silently. An hour of grace lets a late
+        # run still happen; coalesce collapses a pile of missed runs into one;
+        # max_instances=1 stops a slow run overlapping itself.
+        scheduler = AsyncIOScheduler(job_defaults={
+            "misfire_grace_time": 3600, "coalesce": True, "max_instances": 1})
 
         # Full sweep: Monday + Thursday at 05:00 (twice a week, per the 25 June
         # requirements). Off-hours so it never competes with anyone using the
@@ -179,6 +277,13 @@ async def lifespan(app: FastAPI):
             replace_existing=True,
         )
 
+        scheduler.add_job(
+            func=_scheduled_backup,
+            trigger=CronTrigger(hour=0, minute=30),
+            id="nightly_backup",
+            replace_existing=True,
+        )
+
         # Review resolver: nightly at 01:00, ahead of the 02:00 explain job —
         # see _scheduled_review_resolve's docstring. No-ops unless
         # settings.resolver_enabled is True.
@@ -186,6 +291,20 @@ async def lifespan(app: FastAPI):
             func=_scheduled_review_resolve,
             trigger=CronTrigger(hour=1, minute=0),
             id="review_resolve",
+            replace_existing=True,
+        )
+
+        scheduler.add_job(
+            func=_scheduled_review_research,
+            trigger=CronTrigger(hour=1, minute=30),
+            id="review_research",
+            replace_existing=True,
+        )
+
+        scheduler.add_job(
+            func=_scheduled_digest,
+            trigger=CronTrigger(hour=7, minute=0),
+            id="owner_digest",
             replace_existing=True,
         )
 
@@ -231,7 +350,7 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         app.state.scheduler = scheduler
         logger.info(
-            "Background scheduler started (review resolver nightly 01:00 [off unless "
+            "Background scheduler started (backup nightly 00:30, review resolver nightly 01:00 + research 01:30 [off unless "
             "resolver_enabled], full sweep Mon+Thu 05:00, Gmail top-up daily 13:00, "
             "LLM review explanations nightly 02:00, verification recheck nightly 03:00, "
             "web verification nightly 04:00, reclassify safety-net nightly 04:30). "
@@ -286,6 +405,7 @@ app.include_router(regional.router,    prefix="/regional",     tags=["Regional"]
 # keeps a generator crash or hang from taking this process down with it, and
 # tests/test_one_pager_isolation.py enforces it.
 app.include_router(onepager.router,    prefix="/onepager",     tags=["One-Pager"])
+app.include_router(dedup.router,       prefix="/dedup",        tags=["Deduplication"])
 
 
 @app.get("/health", tags=["System"])

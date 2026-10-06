@@ -124,3 +124,55 @@ def test_record_resolver_run_carries_search_budget_for_research_kind(db):
         if run_id is not None:
             db.query(ResolverRun).filter(ResolverRun.id == run_id).delete()
             db.commit()
+
+
+# ── machine suppressions expire; a person's never do ────────────────────────
+
+def _review(db, rid, name):
+    rev = DuplicateReview(
+        review_type="field_update", master_id=rid, master_name=name, incoming_name=name,
+        proposed_changes={"city": {"old": "Munich", "new": "Berlin"}},
+        risk_level="low", status="pending", source="pytest")
+    db.add(rev)
+    db.commit()
+    return rev
+
+
+def test_a_persons_rejection_never_expires(make, db):
+    rid, _ = make("Actions Human", website="pytest-actions-human.com", city="Munich")
+    record_rejection(db, _review(db, rid, "PYTEST Actions Human"))
+    sup = db.query(SuppressedMatch).filter(SuppressedMatch.master_id == rid).first()
+    assert sup.expires_at is None
+
+
+def test_a_machines_rejection_lapses(make, db):
+    """A model's 'keep the stored value' is a judgement from the data as it
+    was that night. If the stored value was stale it would otherwise block the
+    correct one for ever."""
+    from config import settings
+    rid, _ = make("Actions Machine", website="pytest-actions-machine.com", city="Munich")
+    rev = _review(db, rid, "PYTEST Actions Machine")
+    record_rejection(db, rev, by="resolver")
+    sup = db.query(SuppressedMatch).filter(SuppressedMatch.master_id == rid).first()
+    days = (sup.expires_at - datetime.utcnow()).days
+    assert settings.machine_suppression_days - 1 <= days <= settings.machine_suppression_days
+    assert "auto_closed_by" in db.query(DuplicateReview).get(rev.id).evidence   # ledger skips it
+
+
+def test_an_expired_suppression_no_longer_blocks_the_proposal(make, db):
+    from datetime import timedelta
+    from processing.storage import _is_value_suppressed
+    rid, _ = make("Actions Lapse", website="pytest-actions-lapse.com", city="Munich")
+    sup = SuppressedMatch(kind="rejected_value", master_id=rid, field="city", value="Berlin",
+                          expires_at=datetime.utcnow() + timedelta(days=5))
+    db.add(sup)
+    db.commit()
+    assert _is_value_suppressed(db, rid, "city", "Berlin") is True
+
+    sup.expires_at = datetime.utcnow() - timedelta(days=1)
+    db.commit()
+    assert _is_value_suppressed(db, rid, "city", "Berlin") is False     # proposed again
+
+    sup.expires_at = None                                                # permanent
+    db.commit()
+    assert _is_value_suppressed(db, rid, "city", "Berlin") is True
