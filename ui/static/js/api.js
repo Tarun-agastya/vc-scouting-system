@@ -52,6 +52,37 @@ const post = (p, body, opts = {}) => request("POST", p, { body, ...opts });
 const patch = (p, body) => request("PATCH", p, { body });
 const del = (p, params) => request("DELETE", p + qs(params));
 
+/* multipart/form-data POST for the one-pager uploads — bypasses the JSON
+   request() helper. Drafting runs locally and can take minutes while an
+   ingestion run holds the GPU, hence the long ceiling. */
+function appendCommon(form, { draftLang, webSearch, paidSearch }) {
+  form.append("draft_lang", draftLang);
+  form.append("web_search", webSearch ? "true" : "false");
+  form.append("paid_search", paidSearch ? "true" : "false");
+}
+
+async function postForm(path, form) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 620000);
+  try {
+    const res = await fetch(path, { method: "POST", body: form, signal: ctrl.signal });
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try {
+        const j = await res.json();
+        if (j.detail) detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+      } catch { /* non-JSON error body */ }
+      throw new Error(detail);
+    }
+    return res.json();
+  } catch (err) {
+    if (err.name === "AbortError") throw new Error("Generation timed out — is the local model busy with an ingestion run?");
+    throw err;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 export const api = {
   health: () => get("/health"),
 
@@ -196,38 +227,47 @@ export const api = {
    * deck takes ~20-60s, and longer if an ingestion run is holding the GPU,
    * so this gets the same generous ceiling as the other LLM-bound calls.
    */
+  /** One-pagers from the HubDrive database: a background batch, one startup at a time. */
+  onePagerBatch: () => get("/onepager/batch"),
+  createOnePagersFromDb: (body) => post("/onepager/from-database", body),
   /** Tavily balance, pipeline reserve and the one-pager's own monthly search use. */
   onePagerSearchBudget: () => get("/onepager/search-budget"),
-  async generateOnePager({ file, name, url, noLlm, force, draftLang = "de", webSearch = true, paidSearch = true }) {
+  /**
+   * Upload a pitch deck and generate a draft (both languages). Your own input
+   * — location, founded, teamSize, notes (facts + instructions), logo file —
+   * beats every other source; empty fields keep earlier input on an overwrite.
+   */
+  generateOnePager({ file, name, url, noLlm, force, draftLang = "de", webSearch = true,
+                     paidSearch = true, location, founded, teamSize, notes, logo }) {
     const form = new FormData();
     form.append("deck", file);
     form.append("name", name);
     if (url) form.append("url", url);
     form.append("no_llm", noLlm ? "true" : "false");
     form.append("force", force ? "true" : "false");
-    form.append("draft_lang", draftLang);
-    form.append("web_search", webSearch ? "true" : "false");
-    form.append("paid_search", paidSearch ? "true" : "false");
-
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 620000);
-    try {
-      const res = await fetch("/onepager/generate", { method: "POST", body: form, signal: ctrl.signal });
-      if (!res.ok) {
-        let detail = `${res.status} ${res.statusText}`;
-        try {
-          const j = await res.json();
-          if (j.detail) detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
-        } catch { /* non-JSON error body */ }
-        throw new Error(detail);
-      }
-      return res.json();
-    } catch (err) {
-      if (err.name === "AbortError") throw new Error("Generation timed out — is the local model busy with an ingestion run?");
-      throw err;
-    } finally {
-      clearTimeout(t);
+    appendCommon(form, { draftLang, webSearch, paidSearch });
+    for (const [k, v] of [["location", location], ["founded", founded],
+                          ["team_size", teamSize], ["notes", notes]]) {
+      if (v) form.append(k, v);
     }
+    if (logo) form.append("logo", logo);
+    return postForm("/onepager/generate", form);
+  },
+  /**
+   * Redraft from the kept deck with the input panel exactly as shown — here an
+   * empty field CLEARS that input (the panel is prefilled with what was given).
+   */
+  regenerateOnePager(slug, { url, draftLang = "de", webSearch = true, paidSearch = true,
+                             location = "", founded = "", teamSize = "", notes = "", logo }) {
+    const form = new FormData();
+    if (url) form.append("url", url);
+    appendCommon(form, { draftLang, webSearch, paidSearch });
+    form.append("location", location);
+    form.append("founded", founded);
+    form.append("team_size", teamSize);
+    form.append("notes", notes);
+    if (logo) form.append("logo", logo);
+    return postForm(`/onepager/${encodeURIComponent(slug)}/regenerate`, form);
   },
 
   // ── Sources ───────────────────────────────────────────────────────────

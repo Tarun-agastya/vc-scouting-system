@@ -80,3 +80,6 @@ backups/
 
 # One-pager web-search cache + credit ledger (templates/one_pager/websearch.py)
 templates/one_pager/.websearch/
+
+# Uploaded pitch decks kept for one-pager regeneration — confidential, never commit
+templates/one_pager/data/decks/

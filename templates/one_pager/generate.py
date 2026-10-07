@@ -29,8 +29,10 @@ to do. Everything else degrades and still produces a usable draft:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -41,6 +43,9 @@ import yaml  # noqa: E402
 import deck as deck_mod  # noqa: E402
 import i18n  # noqa: E402
 import llm as llm_mod  # noqa: E402
+import logo_fetch  # noqa: E402
+import research  # noqa: E402
+import sitereader  # noqa: E402
 import websearch  # noqa: E402
 
 logger = logging.getLogger("one_pager.generate")
@@ -48,6 +53,15 @@ logger = logging.getLogger("one_pager.generate")
 HERE = Path(__file__).resolve().parent
 DATA_DIR = HERE / "data"
 ASSETS_DIR = DATA_DIR / "assets"
+# Copies of uploaded decks, so the dashboard can regenerate a one-pager with
+# new instructions without asking for the deck again. Gitignored: pitch decks
+# are confidential and never belong in the repository.
+DECKS_DIR = DATA_DIR / "decks"
+
+# What the GT Hub team can set by hand (dashboard fields / CLI flags). A value
+# given here beats every source — deck, website, web search — and survives
+# regeneration until someone changes it. Stored under `manual:` in the YAML.
+MANUAL_FIELDS = ("location", "founded", "team_size", "notes")
 
 # Deck text budget for one prompt. With num_ctx 16384 (llm.NUM_CTX), ~14,000
 # characters fits a typical 20-30 slide deck WHOLE once footers are stripped —
@@ -123,8 +137,65 @@ def _supported_meta(value, source: str):
     """
     if not value:
         return None
-    return value if _digits(str(value)) in {_digits(m.group()) for m in _NUM.finditer(source)} \
-        or not _digits(str(value)) else None
+    nums = re.findall(r"\d+", str(value))
+    if not nums:
+        return value
+    have = {_digits(m.group()) for m in _NUM.finditer(source)}
+    # Every number must be in a source: a range "11–50" needs both 11 and 50.
+    return value if all(n in have for n in nums) else None
+
+
+_TEAM_WORD = re.compile(r"(employees?|mitarbeit\w*|people|personen|köpfe|team\s*members?|"
+                        r"teammitglied\w*|fte|beschäftigte\w*|team)", re.I)
+
+
+def _supported_team(value, source: str):
+    """
+    Like _supported_meta, but a team number must appear NEAR a word like
+    "employees" / "Mitarbeiter" / "team" in a source — not just anywhere.
+    Found live (Bliro, Oct 2026): "6" was in the material three times, twice
+    as "6 bis 8 Stunden"; only one mention ("bliro has 6 total employees")
+    actually supported it. A bare-digit check passes either way.
+    """
+    if not value:
+        return None
+    nums = re.findall(r"\d+", str(value))
+    if not nums:
+        return value
+    near = set()
+    for m in _TEAM_WORD.finditer(source):
+        window = source[max(0, m.start() - 60): m.end() + 60]
+        near.update(_digits(x.group()) for x in _NUM.finditer(window))
+    return value if all(n in near for n in nums) else None
+
+
+def _supported_founded(value, source: str):
+    """A founding year must appear next to a founding word in a source ("born
+    in 2023", "gegründet 2021", "a 2023 spin-off") — a year alone appears in
+    every news article's date line."""
+    if not value:
+        return None
+    years = re.findall(r"(?:19|20)\d\d", str(value))
+    if not years:
+        return _supported_meta(value, source)
+    near = set()
+    for m in re.finditer(research.FOUNDED_PATTERN, source, re.I):
+        near.update(re.findall(r"(?:19|20)\d\d", m.group(0)))
+    return value if all(y in near for y in years) else None
+
+
+def manual_prompt_text(manual: dict) -> str:
+    """The [GT Hub input] block for the model: confirmed values first, then the
+    free text (facts and instructions) exactly as the team wrote it."""
+    manual = manual or {}
+    lines = []
+    for key, label in (("location", "Location / Standort"), ("founded", "Founded / Gründung"),
+                       ("team_size", "Team size / Teamgröße")):
+        if manual.get(key):
+            lines.append(f"{label}: {manual[key]}")
+    if manual.get("notes"):
+        lines.append(str(manual["notes"]).strip())
+    return "\n".join(lines)
 
 
 # ── YAML emission ────────────────────────────────────────────────────────────
@@ -157,27 +228,43 @@ def _number_origin(bad: list, website_text: str, web) -> str:
 
 
 def build_yaml(*, name, slug, drafted, deck_obj, images, url, url_ok, llm_note, lang="en",
-               website_text="", web=None):
+               website_text="", web=None, manual=None, logo=None, logo_source=None,
+               logo_note=None, research_=None):
     L = i18n.labels(lang)
-    source_text = deck_obj.full_text
+    manual = {k: v for k, v in (manual or {}).items() if v}
+    # Your own input is a source too: a figure you typed is never flagged.
+    source_text = deck_obj.full_text + "\n" + manual_prompt_text(manual)
+    meta_source = "\n".join([source_text, website_text or "", web.text if web else ""])
     open_questions = []
     d = drafted or {}
 
     if llm_note:
         open_questions.append(llm_note)
 
-    # Meta fields: keep only what the deck actually supports.
-    location = d.get("location") or None
-    founded = d.get("founded") or None
-    team = _supported_meta(d.get("team_size"), source_text)
-    if d.get("team_size") and not team:
+    # Meta fields: your input first; otherwise only what a source supports.
+    location = manual.get("location") or d.get("location") or None
+    founded = manual.get("founded") or _supported_founded(d.get("founded"), meta_source)
+    if not manual.get("founded") and d.get("founded") and not founded:
         open_questions.append(
-            f"Team size: the model suggested {d['team_size']!r}, but that number is not "
-            f"in the deck — set to '{L['unknown']}'. Please check and fill in."
-        )
-    for label, val, key in (("Location", location, "location"), ("Year founded", founded, "founded")):
+            f"Year founded: the model suggested {d['founded']!r}, but no source states it as the founding year — "
+            f"left as '{L['unknown']}'. Add it in the 'Founded' field if you know it.")
+    if manual.get("team_size"):
+        team = manual["team_size"]
+    else:
+        team = _supported_team(d.get("team_size"), meta_source)
+        if d.get("team_size") and not team:
+            open_questions.append(
+                f"Team size: the model estimated {d['team_size']!r}, but no source states that "
+                f"number — left as '{L['unknown']}'. If it's right, enter it in the 'Team size' field.")
+        elif not d.get("team_size"):
+            open_questions.append(
+                "Team size not found in any source (deck, website, web search) — enter it in the "
+                "'Team size' field (an approximate number is fine).")
+    for label, val, field in (("Location", location, "Location"), ("Year founded", founded, "Founded")):
         if not val:
-            open_questions.append(f"{label} not found in the deck — please fill in '{key}'.")
+            open_questions.append(
+                f"{label} not found in any source (deck, website, web search) — enter it in the "
+                f"'{field}' field.")
 
     sections = {}
     for key, heading in SECTION_LABELS.items():
@@ -199,7 +286,7 @@ def build_yaml(*, name, slug, drafted, deck_obj, images, url, url_ok, llm_note, 
         bad = _unsupported_numbers(val, source_text)
         if bad:
             open_questions.append(
-                f"Section '{heading}': figure(s) not in the deck: "
+                f"Section '{heading}': figure(s) not in the deck or on the company's own website: "
                 f"{_number_origin(bad, website_text, web)}. Check before use."
             )
 
@@ -218,14 +305,36 @@ def build_yaml(*, name, slug, drafted, deck_obj, images, url, url_ok, llm_note, 
         )
     else:
         vis_note = f"No images could be extracted — please add them to assets/{slug}/ by hand"
-        open_questions.append("No images could be extracted from the deck — please add them by hand.")
+        open_questions.append(
+            "No usable images were found on the website — please add two by hand."
+            if research_ is not None else
+            "No images could be extracted from the deck — please add them by hand.")
 
-    sources = [f"Pitch deck: {deck_obj.path.name} ({len(deck_obj.slides)} slides, {deck_obj.kind.upper()})"]
-    content_slides = [s.number for s in deck_obj.slides if s.is_content]
-    if content_slides:
-        sources.append(f"Content slides used: {', '.join(str(n) for n in content_slides)}")
+    if research_ is not None:
+        sources = deck_obj.source_lines()
+        if research_.website_via and research_.website_via not in ("your input", "database", "an earlier run"):
+            open_questions.insert(0,
+                f"Website {url} was identified automatically ({research_.website_via}; its domain "
+                f"matches the name) — confirm it is the company's own site.")
+        open_questions.extend(research.missing_questions(research_))
+        open_questions.extend(n for n in research_.notes if n not in open_questions)
+    else:
+        sources = [f"Pitch deck: {deck_obj.path.name} ({len(deck_obj.slides)} slides, {deck_obj.kind.upper()})"]
+        content_slides = [s.number for s in deck_obj.slides if s.is_content]
+        if content_slides:
+            sources.append(f"Content slides used: {', '.join(str(n) for n in content_slides)}")
     if url:
         sources.append(f"Website: {url}" + ("" if url_ok else "  [unreachable — not used]"))
+    if logo:
+        sources.append(f"Logo: {logo_source}")
+        if not manual.get("logo"):
+            open_questions.append(
+                f"Logo taken automatically from {logo_source} — check it is the startup's "
+                f"current logo before export (upload a better one in the 'Logo' field).")
+    else:
+        open_questions.append(
+            f"No logo: {logo_note or 'none found.'} Upload one in the 'Logo' field, or save it "
+            f"under data/assets/{slug}/ and set 'logo:'.")
     if web is not None:
         for u in web.urls:
             sources.append(f"Web search: {u}")
@@ -233,26 +342,33 @@ def build_yaml(*, name, slug, drafted, deck_obj, images, url, url_ok, llm_note, 
         if web.results:
             open_questions.append(
                 f"Web search added {len(web.results)} third-party source(s) ({spent}). Facts "
-                f"from them are not in the deck — check them against the links under 'sources'.")
+                f"from them come from third parties — check them against the links under 'sources'.")
         elif web.queries:
             open_questions.append(f"Web search found nothing clearly about {name} ({spent}).")
-        open_questions.extend(web.notes)
+        open_questions.extend(n for n in web.notes if n not in open_questions)
 
-    return {
+    out = {
         "lang": lang,
         "meta": {"page_label": L["page_label"]},
         "claim": d.get("claim") or "",
         "name": name,
+        "website": url or None,
         "location": location or L["unknown"],
         "founded": founded or L["unknown"],
         "team_size": team or L["unknown"],
+        "logo": logo or None,
         "sections": sections,
         "visuals": {
             key: {"label": label, "placeholder": vis_note} for key, label in i18n.visuals(lang)
         },
         "sources": sources,
+        "manual": manual or None,
+        "source_record": ({"id": deck_obj.rec.get("id"), "name": deck_obj.rec.get("name")}
+                          if research_ is not None else None),
+        "research": research_.summary if research_ is not None else None,
         "review": {"status": "draft", "open_questions": open_questions},
     }
+    return {k: v for k, v in out.items() if v is not None}
 
 
 def translate_data(src: dict, dst: str, *, src_label: str = "") -> tuple:
@@ -289,6 +405,11 @@ def translate_data(src: dict, dst: str, *, src_label: str = "") -> tuple:
     for k in ("founded", "team_size"):
         if fields[k] and _digits(str(fields[k])) and _digits(str(out[k])) != _digits(str(fields[k])):
             out[k] = str(fields[k])
+    # Your own values appear exactly as typed in both languages.
+    manual = src.get("manual") or {}
+    for k in ("location", "founded", "team_size"):
+        if manual.get(k):
+            out[k] = str(manual[k])
     out["claim"] = tr.get("claim") or ""
     out["sections"] = {k: tr.get(k) or "" for k in i18n.SECTION_KEYS}
 
@@ -343,8 +464,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--deck", required=True, help="pitch deck: .pdf or .pptx")
-    ap.add_argument("--name", required=True, help="startup name as it should appear")
+    ap.add_argument("--deck", default=None, help="pitch deck: .pdf or .pptx")
+    ap.add_argument("--record", default=None,
+                    help="instead of a deck: a HubDrive database record as JSON (written by the API) — "
+                         "used as a lead; the facts come from the company's website and the web")
+    ap.add_argument("--name", default=None, help="startup name as it should appear (default: the record's)")
     ap.add_argument("--url", default=None, help="optional company website for extra context")
     ap.add_argument("--draft-lang", choices=i18n.LANGS, default=i18n.FINAL_LANG,
                     help="language drafted from the deck (default: de, the exported one); the other one is translated from it")
@@ -354,8 +478,36 @@ def main() -> int:
     ap.add_argument("--no-paid-search", action="store_true",
                     help="search only free/cached sources; never spend Tavily credits")
     ap.add_argument("--force", action="store_true", help="overwrite existing drafts")
+    # Your own input. Each beats every source and is kept on regeneration.
+    ap.add_argument("--location", default=None, help="the startup's location, as it should appear")
+    ap.add_argument("--founded", default=None, help="year founded, as it should appear")
+    ap.add_argument("--team-size", default=None, help="team size, e.g. 12 or ca. 10")
+    ap.add_argument("--notes", default=None,
+                    help="free text from the GT Hub team: extra facts the deck lacks, and "
+                         "instructions (what to emphasise or leave out)")
+    ap.add_argument("--logo", default=None, help="the startup's logo file; beats the one found online")
+    ap.add_argument("--manual-replace", action="store_true",
+                    help="take --location/--founded/--team-size/--notes exactly as given (empty "
+                         "clears them) instead of keeping earlier values")
+    ap.add_argument("--save-deck", action="store_true",
+                    help="keep a copy of the deck in data/decks/ so the dashboard can regenerate")
     args = ap.parse_args()
 
+    if bool(args.deck) == bool(args.record):
+        print("✗ Give exactly one of --deck (a pitch deck) or --record (a database record).")
+        return 1
+    rec = None
+    if args.record:
+        try:
+            rec = json.loads(Path(args.record).read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"✗ The database record could not be read ({exc}).")
+            return 1
+        args.name = args.name or rec.get("name")
+    if not (args.name or "").strip():
+        print("✗ A startup name is required.")
+        return 1
+    args.name = args.name.strip()
     slug = slugify(args.name)
     out_dir = Path(args.out_dir).resolve() if args.out_dir else DATA_DIR
     primary, secondary = args.draft_lang, i18n.other(args.draft_lang)
@@ -366,40 +518,106 @@ def main() -> int:
         print(f"✗ {existing[0]} already exists. Re-run with --force to overwrite.")
         return 1
 
-    # 1. Deck — the only hard failure.
-    try:
-        d = deck_mod.parse_deck(args.deck)
-    except deck_mod.DeckError as exc:
-        print(f"✗ {exc}")
-        return 1
-    content = [s for s in d.slides if s.is_content]
-    print(f"✓ Deck read: {d.path.name} — {len(d.slides)} slides, {len(content)} with content")
+    # Your input: what was given now, plus (unless --manual-replace) whatever
+    # was given last time — so regenerating never silently loses a team size
+    # someone typed in last week.
+    old = _read_existing(paths, legacy) if existing else {}
+    old_manual = dict(old.get("manual") or {})
+    given = {k: (getattr(args, k) or "").strip() for k in MANUAL_FIELDS if getattr(args, k) is not None}
+    if args.manual_replace:
+        manual = {k: v for k, v in given.items() if v}
+    else:
+        manual = {k: v for k, v in old_manual.items() if k in MANUAL_FIELDS and v}
+        manual.update({k: v for k, v in given.items() if v})
+    if args.logo:
+        if logo_fetch.save_local(args.logo, ASSETS_DIR / slug / "logo_manual.png"):
+            manual["logo"] = f"assets/{slug}/logo_manual.png"
+        else:
+            print(f"! Logo file {args.logo} could not be read as an image — ignored")
+    elif old_manual.get("logo") and (DATA_DIR / old_manual["logo"]).exists():
+        manual["logo"] = old_manual["logo"]
+    url = (args.url or "").strip() or old.get("website") or None
+    if manual:
+        print(f"✓ Your input: {', '.join(sorted(manual))}")
 
-    # 2. Images — best effort.
-    images = deck_mod.extract_images(d, ASSETS_DIR / slug)
-    print(f"✓ Images extracted: {len(images)} to data/assets/{slug}/")
-
-    # 3. Website — optional, non-fatal.
-    extra, url_ok = "", False
-    if args.url:
-        try:
-            import trafilatura
-
-            dl = trafilatura.fetch_url(args.url)
-            extra = (trafilatura.extract(dl) or "")[:WEBSITE_TEXT_BUDGET] if dl else ""
-            url_ok = bool(extra.strip())
-            print(f"{'✓' if url_ok else '!'} Website {args.url}: {len(extra)} characters")
-        except Exception as exc:
-            logger.warning(f"Website {args.url} unreachable ({exc}) — continuing without it")
-
-    # 3b. Web search — optional, credit-guarded (see websearch.py), non-fatal.
     web = None
-    if not args.no_web_search and not args.no_llm:
-        web = websearch.search_company(args.name, args.url, allow_paid=not args.no_paid_search)
-        how = f"{web.cached} cached, {web.free} free, {web.paid} paid (Tavily)"
-        print(f"✓ Web search: {len(web.results)} relevant results — {how}")
-        for n in web.notes:
-            print(f"! {n}")
+    extra, url_ok = "", False
+    res = None
+    if rec is None:
+        # 1. Deck — the only hard failure.
+        try:
+            d = deck_mod.parse_deck(args.deck)
+        except deck_mod.DeckError as exc:
+            print(f"✗ {exc}")
+            return 1
+        content = [s for s in d.slides if s.is_content]
+        print(f"✓ Deck read: {d.path.name} — {len(d.slides)} slides, {len(content)} with content")
+        if args.save_deck:
+            _save_deck(Path(args.deck), slug)
+
+        # 2. Images — best effort.
+        images = deck_mod.extract_images(d, ASSETS_DIR / slug)
+        print(f"✓ Images extracted: {len(images)} to data/assets/{slug}/")
+
+        # 3. Website — optional, non-fatal.
+        if url:
+            try:
+                import trafilatura
+
+                dl = trafilatura.fetch_url(url)
+                extra = (trafilatura.extract(dl) or "")[:WEBSITE_TEXT_BUDGET] if dl else ""
+                url_ok = bool(extra.strip())
+                print(f"{'✓' if url_ok else '!'} Website {url}: {len(extra)} characters")
+            except Exception as exc:
+                logger.warning(f"Website {url} unreachable ({exc}) — continuing without it")
+
+        # 3b. Web search — optional, credit-guarded (see websearch.py), non-fatal.
+        if not args.no_web_search and not args.no_llm:
+            web = websearch.search_company(args.name, url, allow_paid=not args.no_paid_search)
+            how = f"{web.cached} cached, {web.free} free, {web.paid} paid (Tavily)"
+            print(f"✓ Web search: {len(web.results)} relevant results — {how}")
+            for n in web.notes:
+                print(f"! {n}")
+    else:
+        # 1-3. No deck: the record is a lead; research.py gathers the facts from
+        # the source article, the company's own website and targeted searches
+        # for whatever a one-pager needs that is still missing.
+        print(f"✓ Database record: {args.name} (id {rec.get('id')})")
+        res = research.run(rec, website=(args.url or "").strip() or old.get("website"),
+                           website_via="your input" if args.url else "an earlier run",
+                           allow_web=not args.no_web_search,
+                           allow_paid=not args.no_paid_search)
+        web, url = res.web, res.website
+        url_ok = bool(res.site and res.site.ok)
+        d = _RecordSource(rec, res)
+        images = sitereader.save_site_images(res.site.image_urls, ASSETS_DIR / slug) if url_ok else []
+        print(f"✓ Images from the website: {len(images)} to data/assets/{slug}/")
+        if web:
+            how = f"{web.cached} cached, {web.free} free, {web.paid} paid (Tavily)"
+            print(f"✓ Web search: {len(web.results)} relevant results — {how}")
+        missing = ", ".join(research._label(k) for k in res.missing) or "nothing"
+        print(f"• Still missing after research: {missing}")
+
+    # 3a. Logo — yours if given, else the one the website declares (logo_fetch:
+    # markup-based, no model). Best effort; never blocks the draft.
+    logo = logo_source = logo_note = None
+    auto_logo = ASSETS_DIR / slug / "logo.png"
+    if manual.get("logo"):
+        logo, logo_source = manual["logo"], "provided by GT Hub"
+        print("✓ Logo: your upload")
+    elif url:
+        r = logo_fetch.fetch_logo(url, auto_logo)
+        if r["found"]:
+            logo, logo_source = f"assets/{slug}/logo.png", r["source"]
+            print(f"✓ Logo: {r['source']}")
+        elif auto_logo.exists():
+            logo, logo_source = f"assets/{slug}/logo.png", "the website (found on an earlier run)"
+            print("! Logo: not found this time — keeping the one found earlier")
+        else:
+            logo_note = r["note"]
+            print(f"! Logo: {r['note']}")
+    else:
+        logo_note = "no website was given, so none could be looked up."
 
     # 4. Draft — degrades to empty sections.
     drafted, llm_note, llm_ok = None, None, False
@@ -413,8 +631,15 @@ def main() -> int:
             print(f"! {unhealthy} — continuing without a text draft")
         else:
             print(f"• Drafting ({i18n.labels(primary)['name']}) with {llm_mod.MODEL} …")
-            drafted = llm_mod.draft(args.name, d.content_text(DECK_TEXT_BUDGET), extra, lang=primary,
-                                    web_text=web.text if web else "")
+            if res is None:
+                drafted = llm_mod.draft(args.name, d.content_text(DECK_TEXT_BUDGET), extra, lang=primary,
+                                        web_text=web.text if web else "",
+                                        manual_text=manual_prompt_text(manual))
+            else:
+                drafted = llm_mod.draft(args.name, d.full_text, "", lang=primary,
+                                        web_text=web.text if web else "",
+                                        manual_text=manual_prompt_text(manual),
+                                        source_kind="record", identity=d.identity)
             if drafted is None:
                 llm_note = "Sections could not be drafted (the local model returned nothing usable). Please write them by hand."
                 print("! Draft failed — the YAML files are still written")
@@ -424,9 +649,10 @@ def main() -> int:
 
     # 5. Ground and assemble the drafted language.
     data = {primary: build_yaml(name=args.name, slug=slug, drafted=drafted, deck_obj=d,
-                                images=images, url=args.url, url_ok=url_ok,
+                                images=images, url=url, url_ok=url_ok,
                                 llm_note=llm_note, lang=primary,
-                                website_text=extra, web=web)}
+                                website_text=extra, web=web, manual=manual, logo=logo,
+                                logo_source=logo_source, logo_note=logo_note, research_=res)}
 
     # 6. The other language: translated from it, never drafted separately.
     if llm_ok:
@@ -462,6 +688,57 @@ def main() -> int:
     print(f"  3. python3 templates/one_pager/render.py {paths[i18n.FINAL_LANG]} --check")
     print("  4. python3 templates/one_pager/export_pptx.py <yaml>   # editable PowerPoint")
     return 0
+
+
+class _RecordSource:
+    """
+    Stands in for a parsed deck when the one-pager is built from a database
+    record: `full_text` is everything research.py gathered except the web
+    search (passed to the model separately, and its figures flagged as
+    third-party), so the grounding checks work unchanged.
+    """
+    kind = "record"
+
+    def __init__(self, rec: dict, res: "research.Research"):
+        self.rec, self.res = rec, res
+        self.path = Path(f"{rec.get('name')}.record.json")
+        self.slides = []
+        self.full_text = research.material(rec, res, with_web=False)
+        bits = [rec.get("short_description") or "", rec.get("city") or "",
+                f"website {res.website}" if res.website else ""]
+        self.identity = " — ".join(b for b in bits if b)
+
+    def source_lines(self) -> list:
+        rec, res = self.rec, self.res
+        lines = [f"HubDrive database record: {rec.get('name')} (id {rec.get('id')}) — used as a lead only"]
+        if res.article_url:
+            lines.append(f"Source article: {res.article_url}")
+        if res.site and res.site.ok:
+            lines.append("Website pages read: " + ", ".join(u for u, _ in res.site.pages))
+        return lines
+
+
+def _read_existing(paths: dict, legacy: Path) -> dict:
+    """The current draft (German first), to carry your input and website over."""
+    for p in (paths[i18n.FINAL_LANG], paths[i18n.other(i18n.FINAL_LANG)], legacy):
+        if p.exists():
+            try:
+                return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            except Exception:
+                return {}
+    return {}
+
+
+def _save_deck(deck: Path, slug: str) -> None:
+    """Keep the deck so the dashboard can regenerate with new instructions."""
+    src = deck.expanduser().resolve()
+    dest = DECKS_DIR / f"{slug}{src.suffix.lower()}"
+    if src == dest.resolve():
+        return
+    DECKS_DIR.mkdir(parents=True, exist_ok=True)
+    for other in DECKS_DIR.glob(f"{slug}.*"):
+        other.unlink()
+    shutil.copy2(src, dest)
 
 
 def _empty_twin(src: dict, dst: str) -> dict:

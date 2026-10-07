@@ -106,6 +106,78 @@ data/<slug>.en.yaml   lang: en   ← translated from the German one
 - Images, logo and sources are per file: when you pick the two images, enter
   them in both.
 
+## 1b. GT Hub style guide and your input
+
+**The look follows 241023_GTHub_Styleguide.pdf**, with every token in
+`brand.py` (colors, type, logo, page geometry) shared by `render.py` and
+`export_pptx.py`, so the HTML and the PowerPoint can't drift:
+
+- The real GT Hub lockup (logo + name) top right, pulled from the style guide
+  PDF as vector paths (`tools/extract_logo.py`), not redrawn.
+- Colors: lime `#D7F159`, black, purple `#7C57FC`, white, grey `#BBBBBB`. Only
+  the guide's print-safe pairs (p.6): black on white/lime/grey, white on
+  black/purple.
+- Type: Work Sans (bundled, free) for body and sublines. The headline face,
+  PP Neue Machina, is a paid font and is **not** bundled; drop a licensed file
+  at `assets/fonts/PPNeueMachina-Regular.woff2` and both outputs use it.
+- Rounded rectangles everywhere, radius = the element's short side / 24 (p.9).
+- The lime identity block carries the startup's logo, name, location /
+  founding year / team, and its website as a link.
+
+**Your input beats every source.** The dashboard's "Your input" (or the CLI's
+`--location --founded --team-size --notes --logo`) is stored under `manual:`:
+the values appear exactly as typed in both languages; `notes` goes to the
+model first as `[GT Hub input]`: its facts must appear on the page, and its
+instructions (emphasis, tone, what to leave out) are followed, without
+inventing facts. Figures from your input are never flagged as unsupported.
+Regenerating keeps your input until you change it (`--manual-replace` = take
+the fields exactly as given, empty clears).
+
+**Location, founding year and team** come from your input, else the deck,
+the website or the web search. Team size may be approximate ("ca. 10",
+"11–50" from a company profile), but every number in it must appear in a
+source; an estimate no source states is shown to you as an open question,
+never printed.
+
+**The startup's logo** comes from your upload, else the website's own markup
+(apple-touch-icon, a header image named "logo", a favicon whose file name
+looks like an icon), else Clearbit's free lookup — no AI model involved.
+A favicon with an arbitrary file name is refused: one site's turned out to be
+a photo of rocks.
+
+## 1c. One-pagers from the HubDrive database (no deck)
+
+Pick up to **5 startups** on the One-Pager page ("Create from the HubDrive
+database"). Each takes about 1½ minutes (research ~10 s, drafting and
+translating ~90 s on gemma4:12b, measured Oct 2026 on Atira, Bliro and REEcover);
+they run **one at a time** in the background, each holding the GPU lock the
+scouting pipeline uses, so a batch waits for ingestion instead of fighting it.
+Five is a ~8-minute batch; parallel runs would only compete for the one GPU and
+the ~9 GB the model needs.
+
+**The record is a lead, not a source** — measured on the first three: a news
+article as Atira's website, a politician among its founders, no website for
+Bliro or REEcover. So `research.py` works from what a one-pager needs:
+
+1. the record's source article, cut to the paragraphs that name the company;
+2. the company's own website — homepage, about / team / product pages and the
+   **Impressum** (the registered address). Missing? Found from the article's
+   links or a search result, but only a domain that *is* the company's name;
+3. web searches **only for checklist items still missing** (figures,
+   customers, competitors, business model, founding year, team size), up to
+   4 per startup, cache and free engine first;
+4. anything still missing becomes an open question naming the item.
+
+Third-party pages contribute only the paragraphs naming the company; a
+directory profile must be *this* company's (CB Insights' "Atira Hotels" page is
+dropped), and another domain built on the same name is another company.
+Founding year and team size must appear next to a founding / team word in a
+source. Founders and tags from the record are never used.
+
+The tool still never opens the database: the API writes the record to a JSON
+file and runs `generate.py --record <file>`, exactly as it hands over a deck.
+"Regenerate" re-reads the record, so a corrected record is picked up.
+
 ## 2. The five sections — fixed, in this order
 
 Never reorder, never rename, never add a sixth. The order is the reading argument:
@@ -208,7 +280,10 @@ What it does, in order:
 4. Drafts the claim, the meta line and all five sections on the local 7B model
    (`llm.py`), constrained to the deck text.
 5. Applies the grounding checks in §8.
-6. Writes `data/<slug>.de.yaml` as `status: draft` with an `open_questions`
+6. Fetches the startup's logo (§1b) unless you uploaded one, and keeps a copy
+   of the deck in `data/decks/` (gitignored) when run from the dashboard, so
+   the draft can be regenerated with new input without a re-upload.
+7. Writes `data/<slug>.de.yaml` as `status: draft` with an `open_questions`
    list, then translates it into `data/<slug>.en.yaml` (§1a). `--draft-lang en`
    reverses the direction for an English-only deck; German stays the export.
 
@@ -227,7 +302,8 @@ the same reason: a one-pager is outward-facing.
   funder and partner logos (EXIST, Leibniz Universität, Future Greentech
   Incubator); the only real product shot was the poster frame of a site video.
   Anything automatic would have confidently chosen wrong.
-- **It does not read the scouting database.** An earlier version of this
+- **It does not open the scouting database.** (One-pagers *from* the database
+  get the record as a JSON file from the API — §1c.) An earlier version of this
   section proposed pre-filling `name`/`city`/`founded_year` from it. That is now
   forbidden — see §7.
 

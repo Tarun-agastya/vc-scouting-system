@@ -1,0 +1,111 @@
+# GT Hub One-Pager (English) — DRAFT, generated from Atira.record.json.
+# Written by templates/one_pager/generate.py. Nothing here is checked yet:
+# every item under review.open_questions needs a person.
+# Its twin in the other language: atira.de.yaml
+# Format and rules: templates/one_pager/FORMAT.md
+
+lang: en
+meta:
+  page_label: Matchmaking Startups
+claim: AI orchestration for industrial sales processes
+name: Atira
+website: https://atira.ai/
+location: Munich
+founded: '2024'
+team_size: n/a
+logo: assets/atira/logo.png
+sections:
+  loesung: >-
+    Atira offers an AI-powered orchestration layer for industrial sales processes, particularly
+    for companies selling complex, customized products. The platform automates the processing
+    of requests for quotation (RFQ) by integrating existing CRM, ERP, and CPQ systems. It
+    extracts requirements from documents, checks them for risks, and automatically creates
+    technical and commercial documentation.
+  mehrwerte: >-
+    The platform significantly reduces the manual effort in processing requests for quotation.
+    A specific example shows that the extraction of RFQ data, which would normally require
+    two to three days of manual work, can be completed by Atira in just 15 minutes.
+  usp: >-
+    In contrast to traditional manual processes, which often take weeks and require dependence
+    on a few experts, Atira automates the entire workflow from requirement analysis to document
+    creation. The solution connects existing corporate data with AI agents to make expert
+    knowledge scalable.
+  zielgruppe: >-
+    The target group includes industrial companies and manufacturers offering complex, customized
+    products and services. The solution has already been successfully tested with leading
+    global industrial companies in the fields of manufacturing and Industry 4.0.
+  geschaeftsmodell: >-
+    The company follows a B2B business model and sells its AI platform for automating sales
+    and quotation processes to industrial companies.
+visuals:
+  visual_solution:
+    label: Visualisation of the Solution
+    placeholder: >-
+      Candidates in assets/atira/: web01.jpg, web02.jpg, web03.jpg, web04.jpg, web05.jpg,
+      web06.jpg
+  visual_how_it_works:
+    label: How the Solution Works
+    placeholder: >-
+      Candidates in assets/atira/: web01.jpg, web02.jpg, web03.jpg, web04.jpg, web05.jpg,
+      web06.jpg
+sources:
+- >-
+  HubDrive database record: Atira (id 82afa52d-aa27-529a-8543-47e3c4e4bc8f) — used as a lead
+  only
+- >-
+  Source article: https://tech.eu/2026/09/03/atira-raises-175m-to-bring-ai-orchestration-to-industrial-sales/
+- >-
+  Website pages read: https://atira.ai/, https://atira.ai/legal/impressum, https://atira.ai/company,
+  https://atira.ai/product, https://atira.ai/customers?tab=industrial-services
+- 'Website: https://atira.ai/'
+- 'Logo: the website''s apple-touch-icon'
+- >-
+  Web search: https://pulse2.com/atira-raises-17-5-million-to-build-ai-orchestration-platform-for-industrial-sales-engineering
+- >-
+  Web search: https://fortune.com/2026/09/03/exclusive-german-ai-startup-atira-raises-17-5-million-to-unclog-the-paperwork-bottleneck-in-industrial-dealmaking
+- >-
+  Web search: https://finance.yahoo.com/technology/ai/articles/exclusive-german-ai-startup-atira-120000677.html
+- >-
+  Web search: https://tracxn.com/d/companies/atira/__8WTvr1J1YB2SQOc7G_3oZTIA1q8mquA7xUdpBHkaikI
+- >-
+  Web search: https://apps.mylearning.org/jobs/companies/atira/product-66692b63306266744d7a6a73684e757838673d3d
+- 'Web search: https://pitchbook.com/profiles/company/769700-26'
+- 'Web search: https://www.beri.net/tools/atira'
+source_record:
+  id: 82afa52d-aa27-529a-8543-47e3c4e4bc8f
+  name: Atira
+research:
+  covered:
+  - product
+  - figures
+  - traction
+  - business_model
+  - founded
+  - location
+  missing:
+  - competition
+  - team
+  website_found_via: an earlier run
+  searches:
+    paid: 0
+    cached: 3
+    free: 0
+review:
+  status: draft
+  open_questions:
+  - Translated automatically from the Deutsch version — read it through before use.
+  - >-
+    Team size not found in any source (deck, website, web search) — enter it in the 'Team
+    size' field (an approximate number is fine).
+  - >-
+    Images: 6 candidates were extracted to data/assets/atira/. Pick two and enter them under
+    'visuals' as image: assets/atira/<file> (in both language files).
+  - >-
+    Not found anywhere (database, website, web search): Competitors or the usual alternative.
+    Add it in 'Your input' and regenerate, or the section stays thin.
+  - >-
+    Logo taken automatically from the website's apple-touch-icon — check it is the startup's
+    current logo before export (upload a better one in the 'Logo' field).
+  - >-
+    Web search added 7 third-party source(s) (no paid credits). Facts from them come from
+    third parties — check them against the links under 'sources'.

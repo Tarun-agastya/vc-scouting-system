@@ -95,15 +95,18 @@ _SYSTEM_EN = (
     "point, you return an empty string for that field."
 )
 
-_PROMPT_EN = """Write the one-pager for "{name}" from the pitch deck text (and website text, if
-given) below. The reader is a decision-maker at a corporate partner who has never heard
-of this company and needs to understand it from this page alone.
+_PROMPT_EN = """Write the one-pager for "{name}" from the material below. The reader is a
+decision-maker at a corporate partner who has never heard of this company and needs to
+understand it from this page alone.{identity}
 
 RULES:
 - Use ONLY facts stated in the material below. Do not guess, do not calculate new numbers.
-- The PITCH DECK is the main source. The company website and the [Web search] results
-  are extra: use a web result only when it is clearly about this company, and when it
-  disagrees with the deck, follow the deck.
+- A [GT Hub input] block, if present, was written by the GT Hub team. Its facts are
+  confirmed and win over every other source (e.g. an exact team size). Every fact in it
+  must appear on the page, in the section where it fits (a figure belongs in mehrwerte).
+  Follow its instructions on what to emphasise, the tone, or what to leave out — but never
+  invent a fact to satisfy an instruction.
+{source_rules}
 - Write complete sentences that explain, not keyword lists. Name concrete things:
   the material, the technology, the customers, pilot partners, figures, years.
 - No marketing speak ("leading", "innovative", "revolutionary", "unique" without proof).
@@ -113,11 +116,14 @@ RULES:
 claim: a noun phrase, NOT a sentence — product category plus the one differentiator.
   No verb, no full stop, at most 70 characters.
 
-location:  city of the company, only if stated (e.g. in an address).
+location:  city of the company — look in the deck, an address, the website and the web
+           search results (company profiles, registers). Only if stated.
 founded:   the year the COMPANY was founded (look for "founded", "incorporated",
            a milestone like "June 2025: company founded"). Not the date of the deck,
            not when research started. Only if stated.
-team_size: number of people on the team, only if stated (number only).
+team_size: how many people work there. An approximation is fine: a stated number
+           ("12"), a range from a company profile ("11-50"), or "ca. 10". Write only the
+           number or range. Only if the material gives one.
 
 loesung (35-55 words, 3-4 sentences): what the company offers and how it works —
   input, process, output. A reader must be able to picture the product or service.
@@ -143,15 +149,18 @@ _SYSTEM_DE = (
     "String zurück."
 )
 
-_PROMPT_DE = """Schreibe den One-Pager für "{name}" aus dem Pitch-Deck-Text (und ggf. dem
-Website-Text) unten. Der Leser ist Entscheider bei einem Konzernpartner, kennt das
-Unternehmen nicht und muss es allein aus dieser Seite verstehen.
+_PROMPT_DE = """Schreibe den One-Pager für "{name}" aus dem Material unten. Der Leser ist
+Entscheider bei einem Konzernpartner, kennt das Unternehmen nicht und muss es allein aus
+dieser Seite verstehen.{identity}
 
 REGELN:
 - Nutze AUSSCHLIESSLICH Fakten aus dem Material unten. Nicht raten, keine neuen Zahlen errechnen.
-- Das PITCH DECK ist die Hauptquelle. Website und [Websuche]-Ergebnisse ergänzen es: Nutze
-  ein Websuch-Ergebnis nur, wenn es eindeutig dieses Unternehmen betrifft, und folge bei
-  Widersprüchen dem Deck.
+- Ein Block [GT Hub input], falls vorhanden, stammt vom GT-Hub-Team. Seine Fakten sind
+  bestätigt und gehen jeder anderen Quelle vor (z. B. eine genaue Teamgröße). Jeder Fakt
+  daraus muss auf der Seite erscheinen, im passenden Abschnitt (eine Zahl gehört in
+  mehrwerte). Folge seinen Anweisungen zu Schwerpunkt, Ton oder was weggelassen werden
+  soll – erfinde aber niemals einen Fakt, um eine Anweisung zu erfüllen.
+{source_rules}
 - Schreibe vollständige, erklärende Sätze, keine Stichwortlisten. Nenne Konkretes:
   Material, Technologie, Kunden, Pilotpartner, Zahlen, Jahreszahlen.
 - Kein Marketing-Sprech ("führend", "innovativ", "revolutionär", "einzigartig" ohne Beleg).
@@ -161,11 +170,14 @@ REGELN:
 claim: Eine Nominalphrase, KEIN Satz – Produktkategorie plus das eine
   Unterscheidungsmerkmal. Kein Verb, kein Punkt am Ende, maximal 70 Zeichen.
 
-location:  Ort/Stadt des Unternehmens, nur wenn genannt (z. B. in einer Adresse).
+location:  Ort/Stadt des Unternehmens – suche im Deck, in einer Adresse, auf der Website
+           und in den Websuch-Ergebnissen (Firmenprofile, Register). Nur wenn genannt.
 founded:   Das Jahr, in dem das UNTERNEHMEN gegründet wurde (suche nach "gegründet",
            "Gründung", einem Meilenstein wie "Juni 2025: Unternehmensgründung"). Nicht das
            Datum des Decks, nicht der Forschungsstart. Nur wenn genannt.
-team_size: Anzahl Personen im Team, nur wenn genannt (nur die Zahl).
+team_size: Wie viele Personen dort arbeiten. Eine Näherung ist in Ordnung: eine genannte
+           Zahl ("12"), eine Spanne aus einem Firmenprofil ("11-50") oder "ca. 10". Nur die
+           Zahl oder Spanne. Nur wenn das Material eine nennt.
 
 loesung (35-55 Wörter, 3-4 Sätze): Was das Unternehmen anbietet und wie es
   funktioniert – Ausgangsstoff, Verfahren, Ergebnis. Der Leser muss sich das Produkt
@@ -184,6 +196,28 @@ MATERIAL ZU "{name}":
 """
 
 _PROMPTS = {"en": (_SYSTEM_EN, _PROMPT_EN), "de": (_SYSTEM_DE, _PROMPT_DE)}
+
+# Which source wins, by what the one-pager is built from.
+_SOURCE_RULES = {
+    ("deck", "en"): """- Apart from that, the PITCH DECK is the main source. The company website and the
+  [Web search] results are extra: use a web result only when it is clearly about this
+  company, and when it disagrees with the deck, follow the deck.""",
+    ("deck", "de"): """- Ansonsten ist das PITCH DECK die Hauptquelle. Website und [Websuche]-Ergebnisse ergänzen
+  es: Nutze ein Websuch-Ergebnis nur, wenn es eindeutig dieses Unternehmen betrifft, und
+  folge bei Widersprüchen dem Deck.""",
+    ("record", "en"): """- There is no pitch deck. Trust the sources in this order: (1) the [Company website]
+  — what it does, who runs it, and the registered address in its legal notice/Impressum;
+  (2) the [Source article] and [Web search] results — third-party, so use only what is
+  clearly about THIS company: other companies share its name (e.g. a hotel chain), ignore
+  them; (3) the [HubDrive database record] — collected automatically and sometimes wrong,
+  so use it only where nothing above contradicts it.""",
+    ("record", "de"): """- Es gibt kein Pitch Deck. Vertraue den Quellen in dieser Reihenfolge: (1) die
+  [Company website] – was das Unternehmen tut, wer dahintersteht und die Adresse im
+  Impressum; (2) [Source article] und [Websuche] – Drittquellen, nutze nur, was eindeutig
+  DIESES Unternehmen betrifft: andere Firmen tragen denselben Namen (z. B. eine Hotelkette),
+  ignoriere sie; (3) der [HubDrive database record] – automatisch gesammelt und manchmal
+  falsch, nutze ihn nur, wo nichts davor widerspricht.""",
+}
 
 # ── Translation ──────────────────────────────────────────────────────────────
 # The second language is TRANSLATED from the first draft, not drafted again
@@ -234,7 +268,7 @@ def translate(fields: dict, src: str, dst: str) -> Optional[dict]:
     out = _chat(_TRANSLATE_SYSTEM, prompt, num_predict=1600)
     if out is None:
         return None
-    norm = _normalise(out)
+    norm = _normalise(out, dst)
     # Empty in -> empty out, whatever the model did with it.
     for k in TRANSLATE_KEYS:
         if not source[k].strip():
@@ -243,7 +277,8 @@ def translate(fields: dict, src: str, dst: str) -> Optional[dict]:
 
 
 def draft(name: str, deck_text: str, extra_text: str = "", lang: str = "en",
-          web_text: str = "") -> Optional[dict]:
+          web_text: str = "", manual_text: str = "", source_kind: str = "deck",
+          identity: str = "") -> Optional[dict]:
     """
     Draft the claim, meta fields and five sections from deck text, in `lang`.
 
@@ -254,15 +289,27 @@ def draft(name: str, deck_text: str, extra_text: str = "", lang: str = "en",
         logger.warning("[llm] no deck text to draft from")
         return None
 
-    body = f"[Pitch Deck]\n{deck_text}"
+    body = ""
+    if manual_text.strip():
+        # First, so the model reads the team's own facts and instructions before
+        # anything they are meant to override.
+        body += f"[GT Hub input]\n{manual_text.strip()}\n\n"
+    body += f"[Pitch Deck]\n{deck_text}" if source_kind == "deck" else deck_text
     if extra_text.strip():
         body += f"\n\n[Website des Unternehmens / company website]\n{extra_text.strip()}"
     if web_text.strip():
         body += ("\n\n[Websuche / Web search — Drittquellen, third-party sources]\n"
                  f"{web_text.strip()}")
     system, prompt = _PROMPTS.get(lang, _PROMPTS["en"])
-    out = _chat(system, prompt.format(name=name, deck_text=body), num_predict=1600)
-    return None if out is None else _normalise(out)
+    lang_key = lang if lang in ("en", "de") else "en"
+    rules = _SOURCE_RULES[(source_kind if source_kind in ("deck", "record") else "deck", lang_key)]
+    who = ""
+    if identity.strip():
+        who = (f"\nTHIS company: {identity.strip()}" if lang_key == "en"
+               else f"\nDIESES Unternehmen: {identity.strip()}")
+    out = _chat(system, prompt.format(name=name, deck_text=body, source_rules=rules, identity=who),
+                num_predict=1600)
+    return None if out is None else _normalise(out, lang)
 
 
 def _chat(system: str, user: str, *, num_predict: int) -> Optional[dict]:
@@ -309,7 +356,7 @@ def _strip_thinking(text: str) -> str:
     return text.strip()
 
 
-def _normalise(data: dict) -> dict:
+def _normalise(data: dict, lang: Optional[str] = None) -> dict:
     """
     Empty-string sentinels -> None (the schema forbids nullable types, so ""
     is how the model says "the deck doesn't state this"). Also strips a
@@ -334,13 +381,32 @@ def _normalise(data: dict) -> dict:
         if out.get(key) and out[key].strip().lower() in {"k. a.", "k.a.", "n/a", "n. a."}:
             out[key] = None
 
-    # team_size should carry only the number; the model tends to write
-    # "6 Personen". The meta line renders it as "Team: {value}".
     if out.get("team_size"):
-        m = re.search(r"\d+", out["team_size"])
-        out["team_size"] = m.group() if m else out["team_size"]
+        out["team_size"] = normalise_team(out["team_size"], lang)
 
     return out
+
+
+def normalise_team(value: str, lang: Optional[str] = None) -> str:
+    """
+    The meta line renders "Team: {value}", so keep only the number — but keep
+    what makes it honest: a range stays a range ("11-50 employees" -> "11–50"),
+    an approximation stays approximate ("about 10" -> "ca. 10" / "approx. 10"),
+    "10+" stays "10+". A bare count loses its noise ("6 Personen" -> "6").
+    """
+    t = str(value).strip()
+    rng = re.search(r"(\d+)\s*(?:-|–|bis|to)\s*(\d+)", t, re.I)
+    if rng:
+        return f"{rng.group(1)}–{rng.group(2)}"
+    m = re.search(r"\d+", t)
+    if not m:
+        return t
+    n = m.group()
+    if re.search(r"\+|\b(über|mehr als|more than|over)\b", t, re.I):
+        return f"{n}+"
+    if re.search(r"~|\b(ca|circa|approx|approximately|about|around|rund|etwa|ungefähr)\b", t, re.I):
+        return f"approx. {n}" if lang == "en" else f"ca. {n}"
+    return n
 
 
 def health() -> Optional[str]:

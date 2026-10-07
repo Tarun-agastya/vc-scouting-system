@@ -84,3 +84,59 @@ CORNER_DIVISOR = 24
 
 def corner_radius(short_side: float) -> float:
     return short_side / CORNER_DIVISOR
+
+
+# ── Page geometry, shared by render.py and export_pptx.py ───────────────────────
+# One 16:9 page, in CSS pixels (1280 x 720). export_pptx.py divides by 96 to get
+# inches, so the HTML preview and the PowerPoint are the same layout by
+# construction rather than by two people keeping two sets of numbers in step.
+PAGE_W, PAGE_H = 1280, 720
+PAD_X, PAD_TOP, PAD_BOTTOM = 34, 26, 28
+TOP_H = 84                 # page label + claim (room for a two-line claim)
+GT_LOGO_H = 72             # GT Hub lockup, top right
+COLS_TOP = PAD_TOP + TOP_H + 14
+COLS_H = PAGE_H - PAD_BOTTOM - COLS_TOP
+LEFT_W = 640               # identity block + five sections
+COL_GAP = 18
+RIGHT_X = PAD_X + LEFT_W + COL_GAP
+RIGHT_W = PAGE_W - PAD_X - RIGHT_X
+ID_H = 96                  # the lime identity block (logo, name, meta, website)
+LOGO_TILE = 72             # the startup's logo sits on a white tile inside it
+LOGO_TILE_MAX_W = 176      # ...which widens for a wide wordmark (up to this)
+
+
+def logo_tile_width(image_path) -> int:
+    """
+    Width of the white tile for a startup logo: square for a square mark,
+    wider for a wordmark, so a wide logo isn't shrunk to a sliver (LIGARO's
+    wordmark was unreadable in a square tile). Falls back to square if the
+    image can't be read.
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(image_path) as im:
+            w, h = im.size
+        inner_h = LOGO_TILE - 16                       # 8px padding each side
+        return int(max(LOGO_TILE, min(LOGO_TILE_MAX_W, inner_h * w / max(1, h) + 16)))
+    except Exception:
+        return LOGO_TILE
+VIS_GAP = 14
+VIS_TOP_H = round((COLS_H - VIS_GAP) * 0.40)   # 40/60: "how it works" gets more room
+VIS_BOTTOM_H = COLS_H - VIS_GAP - VIS_TOP_H
+
+
+def display_url(url: str) -> str:
+    """'https://www.ligaro.org/' -> 'ligaro.org' for printing on the page."""
+    u = str(url or "").strip()
+    for prefix in ("https://", "http://"):
+        if u.lower().startswith(prefix):
+            u = u[len(prefix):]
+    if u.lower().startswith("www."):
+        u = u[4:]
+    return u.rstrip("/")
+
+
+def href(url: str) -> str:
+    u = str(url or "").strip()
+    return u if "://" in u else f"https://{u}"

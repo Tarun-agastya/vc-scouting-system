@@ -32,79 +32,96 @@ from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Emu, Inches, Pt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import brand  # noqa: E402
 import i18n  # noqa: E402
 from render import validate  # noqa: E402  — single source of truth
 
-# ── Layout, in inches. Proportions taken from the ONOX / Arctory reference pages.
-SLIDE_W, SLIDE_H = 13.333, 7.5
-MARGIN = 0.24
-HDR_Y, HDR_H = 0.13, 0.20
-RULE_Y = 0.40
-CLAIM_Y, CLAIM_H = 0.50, 0.72
-BODY_Y = 1.34
-BODY_H = SLIDE_H - BODY_Y - 0.26
-LEFT_W = 6.40
-GAP = 0.17
-RIGHT_X = MARGIN + LEFT_W + GAP
-RIGHT_W = SLIDE_W - MARGIN - RIGHT_X
-VIS_GAP = 0.16
-# 40/60, matching render.py and the ONOX/Arctory reference pages: the bottom
-# ("how it works") box usually carries a denser graphic — a product breakdown
-# or a UI screenshot — and reads better with the extra height. Previously
-# hardcoded 50/50 here with a comment incorrectly claiming parity with the
-# references; the two exporters must not disagree on this.
-VIS_H_TOP = (BODY_H - VIS_GAP) * 0.40
-VIS_H_BOTTOM = (BODY_H - VIS_GAP) * 0.60
-CARD_PAD = 0.17
-LOGO_W, LOGO_H = 1.55, 0.50
+# Geometry comes from brand.py in CSS pixels (the HTML page is 1280 x 720);
+# a 13.333 x 7.5 in slide is exactly that at 96 px/in, so px / 96 = inches and
+# this slide is the HTML preview's layout by construction.
+SLIDE_W, SLIDE_H = brand.PAGE_W / 96, brand.PAGE_H / 96
 
-ACCENT = RGBColor(0x6C, 0x5C, 0xE7)
-INK = RGBColor(0x11, 0x11, 0x11)
-WHITE = RGBColor(0xFF, 0xFF, 0xFF)
-PAGE_BG = RGBColor(0xF2, 0xF2, 0xF2)
-FONT = "Arial"
+
+def _in(px: float):
+    return Inches(px / 96)
+
+
+def _rgb(hex_color: str) -> RGBColor:
+    return RGBColor.from_string(hex_color.lstrip("#").upper())
+
+
+LIME, BLACK, PURPLE, WHITE = (_rgb(c) for c in (brand.LIME, brand.BLACK, brand.PURPLE, brand.WHITE))
+# Fonts are referenced by name, not embedded (python-pptx can't embed fonts).
+# Work Sans is free: install it from templates/one_pager/assets/fonts/ on any
+# machine that edits these files, or PowerPoint substitutes a similar sans.
+BODY_FONT = brand.BODY_FONT_NAME
+HEADLINE_FONT = brand.HEADLINE_FONT_NAME
 
 
 def _txbox(slide, x, y, w, h):
-    tb = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
+    """Position and size in CSS px (see brand.py)."""
+    tb = slide.shapes.add_textbox(_in(x), _in(y), _in(w), _in(h))
     tf = tb.text_frame
     tf.word_wrap = True
     tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = 0
     return tb, tf
 
 
-def _run(p, text, *, size, bold=False, italic=False, underline=False, color=INK):
+def _run(p, text, *, size, bold=False, underline=False, color=BLACK, font=None):
     r = p.add_run()
     r.text = text
     r.font.size = Pt(size)
     r.font.bold = bold
-    r.font.italic = italic
     r.font.underline = underline
     r.font.color.rgb = color
-    r.font.name = FONT
+    r.font.name = font or BODY_FONT
+    # Tell the viewer this is a SANS-SERIF face (pitchFamily 34 = variable
+    # pitch, "swiss" family). Without the hint, a machine lacking Work Sans
+    # substitutes Times — measured with macOS Quick Look; with it, Helvetica/Arial.
+    from pptx.oxml.ns import qn
+    latin = r.font._rPr.find(qn("a:latin"))
+    if latin is not None:
+        latin.set("pitchFamily", "34")
+        latin.set("charset", "0")
     return r
 
 
-def _rect(slide, x, y, w, h, *, fill=None, line=None, line_w=0.75):
-    s = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h))
+def _set_corner(shape_or_pic, w, h) -> None:
+    """Corner radius = short side / 24 (style guide p.9). In DrawingML the
+    rounded-rectangle 'adj' is the radius as a fraction of the short side, in
+    1/100000ths, so it is the same 1/24 for every size."""
+    from pptx.oxml.ns import qn
+
+    sp_pr = shape_or_pic._element.spPr
+    geom = sp_pr.find(qn("a:prstGeom"))
+    if geom is None:
+        return
+    geom.set("prst", "roundRect")
+    av = geom.find(qn("a:avLst"))
+    if av is None:
+        av = geom.makeelement(qn("a:avLst"), {})
+        geom.append(av)
+    for gd in list(av):
+        av.remove(gd)
+    gd = av.makeelement(qn("a:gd"), {"name": "adj", "fmla": f"val {round(100000 / brand.CORNER_DIVISOR)}"})
+    av.append(gd)
+
+
+def _block(slide, x, y, w, h, *, fill):
+    """A brand rounded rectangle (style guide p.8 'Hintergrundfläche')."""
+    s = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, _in(x), _in(y), _in(w), _in(h))
     s.shadow.inherit = False
-    if fill is None:
-        s.fill.background()
-    else:
-        s.fill.solid()
-        s.fill.fore_color.rgb = fill
-    if line is None:
-        s.line.fill.background()
-    else:
-        s.line.color.rgb = line
-        s.line.width = Pt(line_w)
+    s.fill.solid()
+    s.fill.fore_color.rgb = fill
+    s.line.fill.background()
+    _set_corner(s, w, h)
     return s
 
 
-def _fit_cover(src: Path, box_w_in: float, box_h_in: float, tmp_dir: Path) -> Path:
-    """Centre-crop `src` to the box aspect ratio so the picture fills its frame
-    rather than letterboxing — matching how the reference pages look. Returns a
-    path to the cropped copy (the original on disk is never modified)."""
+def _fit_cover(src: Path, box_w: float, box_h: float, tmp_dir: Path) -> Path:
+    """Centre-crop `src` to the box aspect ratio so the picture fills its
+    rounded container (style guide p.8 'Bildcontainer'), matching the HTML's
+    object-fit: cover. The original on disk is never modified."""
     from PIL import Image
 
     im = Image.open(src)
@@ -116,7 +133,7 @@ def _fit_cover(src: Path, box_w_in: float, box_h_in: float, tmp_dir: Path) -> Pa
     else:
         im = im.convert("RGB")
 
-    target = box_w_in / box_h_in
+    target = box_w / box_h
     w, h = im.size
     if w / h > target:                       # too wide -> trim the sides
         new_w = int(h * target)
@@ -132,112 +149,137 @@ def _fit_cover(src: Path, box_w_in: float, box_h_in: float, tmp_dir: Path) -> Pa
 
 
 def _visual(slide, slot: dict, default_label: str, base_dir: Path, tmp_dir: Path, y: float, h: float):
-    """One image box: a real picture when we have one, otherwise the accent-violet
-    placeholder from the blank template, carrying the label so an unfilled slot is
+    """One image container: a real picture, masked to the brand rounded shape,
+    or the purple placeholder block carrying the label so an unfilled slot is
     obviously unfilled."""
+    x, w = brand.RIGHT_X, brand.RIGHT_W
     image = slot.get("image")
     label = str(slot.get("label") or default_label)
 
     if image:
         src = (base_dir / str(image)).resolve()
         if src.exists():
-            pic = _fit_cover(src, RIGHT_W, h, tmp_dir)
-            slide.shapes.add_picture(str(pic), Inches(RIGHT_X), Inches(y),
-                                     Inches(RIGHT_W), Inches(h))
-            _rect(slide, RIGHT_X, y, RIGHT_W, h, fill=None, line=INK)
+            pic = _fit_cover(src, w, h, tmp_dir)
+            p = slide.shapes.add_picture(str(pic), _in(x), _in(y), _in(w), _in(h))
+            _set_corner(p, w, h)
             return
         print(f"      ! image not found, using placeholder: {src}")
 
-    _rect(slide, RIGHT_X, y, RIGHT_W, h, fill=ACCENT, line=INK)
-    tb, tf = _txbox(slide, RIGHT_X + 0.35, y + h / 2 - 0.45, RIGHT_W - 0.70, 0.90)
+    _block(slide, x, y, w, h, fill=PURPLE)
+    tb, tf = _txbox(slide, x + 34, y + h / 2 - 44, w - 68, 88)
     tf.vertical_anchor = MSO_ANCHOR.MIDDLE
     p = tf.paragraphs[0]
     p.alignment = PP_ALIGN.CENTER
-    _run(p, label, size=14, color=WHITE)
+    _run(p, label, size=11.5, bold=True, color=WHITE)
     if slot.get("placeholder"):
         p2 = tf.add_paragraph()
         p2.alignment = PP_ALIGN.CENTER
         p2.space_before = Pt(6)
-        _run(p2, str(slot["placeholder"]), size=9, color=WHITE)
+        _run(p2, str(slot["placeholder"]), size=8, color=WHITE)
+
+
+def _initials(name: str) -> str:
+    words = [w for w in str(name).replace("-", " ").split() if w]
+    return "".join(w[0] for w in words[:2]).upper() or "?"
 
 
 def build_slide(prs: Presentation, data: dict, base_dir: Path, tmp_dir: Path) -> None:
+    """The same page as render.py: GT Hub lockup top right, claim, lime
+    identity block (startup logo, name, meta line, website link), five
+    sections, two rounded image containers. Every text block is a real,
+    editable text box; every image a real picture."""
+    B = brand
     slide = prs.slides.add_slide(prs.slide_layouts[6])          # blank layout
-    _rect(slide, 0, 0, SLIDE_W, SLIDE_H, fill=PAGE_BG)
+    bg = slide.background.fill
+    bg.solid()
+    bg.fore_color.rgb = WHITE
 
     lang = i18n.lang_of(data)
     L = i18n.labels(lang)
     meta = data.get("meta") or {}
 
-    # ── header + rule ────────────────────────────────────────────────────────
-    tb, tf = _txbox(slide, MARGIN, HDR_Y, 4.0, HDR_H)
-    _run(tf.paragraphs[0], "GT Hub", size=8.5)
-
-    tb, tf = _txbox(slide, SLIDE_W - MARGIN - 4.6, HDR_Y, 4.6, HDR_H)
-    p = tf.paragraphs[0]
-    p.alignment = PP_ALIGN.RIGHT
+    # ── top: page label, claim, GT Hub lockup ────────────────────────────────
+    logo_w = B.GT_LOGO_H / B.LOGO_ASPECT
+    text_w = B.PAGE_W - 2 * B.PAD_X - logo_w - 28
+    tb, tf = _txbox(slide, B.PAD_X, B.PAD_TOP, text_w, 16)
     label = str(meta.get("page_label") or L["page_label"])
     num = str(meta.get("page_number") or "")
-    _run(p, f"{label}      {num}".rstrip(), size=8.5)
+    _run(tf.paragraphs[0], f"{label}      {num}".rstrip(), size=9, bold=True)
 
-    _rect(slide, MARGIN, RULE_Y, SLIDE_W - 2 * MARGIN, 0.012, fill=INK)
-
-    # ── claim ────────────────────────────────────────────────────────────────
-    tb, tf = _txbox(slide, MARGIN, CLAIM_Y, SLIDE_W - 2 * MARGIN, CLAIM_H)
+    tb, tf = _txbox(slide, B.PAD_X, B.PAD_TOP + 22, text_w, B.TOP_H - 22)
     tf.vertical_anchor = MSO_ANCHOR.TOP
-    _run(tf.paragraphs[0], str(data["claim"]), size=28, color=ACCENT)
+    _run(tf.paragraphs[0], str(data.get("claim") or ""), size=22.5,
+         bold=not B.HEADLINE_IS_LICENSED, font=HEADLINE_FONT)
 
-    # ── left card ────────────────────────────────────────────────────────────
-    _rect(slide, MARGIN, BODY_Y, LEFT_W, BODY_H, fill=WHITE, line=INK)
-    inner_x = MARGIN + CARD_PAD
-    inner_w = LEFT_W - 2 * CARD_PAD
+    slide.shapes.add_picture(str(B.LOGO_PNG), _in(B.PAGE_W - B.PAD_X - logo_w), _in(B.PAD_TOP),
+                             _in(logo_w), _in(B.GT_LOGO_H))
 
-    tb, tf = _txbox(slide, inner_x, BODY_Y + CARD_PAD, inner_w - LOGO_W - 0.12, 0.32)
-    _run(tf.paragraphs[0], str(data["name"]), size=15, bold=True)
-
-    tb, tf = _txbox(slide, inner_x, BODY_Y + CARD_PAD + 0.30, inner_w - LOGO_W - 0.12, 0.26)
-    metaline = (f"{L['location']}: {data['location']} / {L['founded']}: {data['founded']} / "
-                f"{L['team']}: {data['team_size']}")
-    _run(tf.paragraphs[0], metaline, size=9.5, italic=True)
+    # ── identity block ────────────────────────────────────────────────────────
+    x0, y0 = B.PAD_X, B.COLS_TOP
+    _block(slide, x0, y0, B.LEFT_W, B.ID_H, fill=LIME)
+    tile_x, tile_y = x0 + 12, y0 + (B.ID_H - B.LOGO_TILE) / 2
 
     logo = data.get("logo")
-    logo_x = MARGIN + LEFT_W - CARD_PAD - LOGO_W
-    if logo:
-        lp = (base_dir / str(logo)).resolve()
-        if lp.exists():
-            from PIL import Image
-            iw, ih = Image.open(lp).size
-            scale = min(LOGO_W / (iw / 96), LOGO_H / (ih / 96))
-            w_in, h_in = (iw / 96) * scale, (ih / 96) * scale
-            slide.shapes.add_picture(
-                str(lp), Inches(logo_x + LOGO_W - w_in), Inches(BODY_Y + CARD_PAD),
-                Inches(w_in), Inches(h_in))
-        else:
+    lp = (base_dir / str(logo)).resolve() if logo else None
+    if lp is not None and lp.exists():
+        tile_w = B.logo_tile_width(lp)
+        _block(slide, tile_x, tile_y, tile_w, B.LOGO_TILE, fill=WHITE)
+        from PIL import Image
+        iw, ih = Image.open(lp).size
+        inner_w, inner_h = tile_w - 16, B.LOGO_TILE - 16
+        scale = min(inner_w / iw, inner_h / ih)
+        w, h = iw * scale, ih * scale
+        slide.shapes.add_picture(str(lp), _in(tile_x + (tile_w - w) / 2), _in(tile_y + (B.LOGO_TILE - h) / 2),
+                                 _in(w), _in(h))
+    else:
+        if lp is not None:
             print(f"      ! logo not found: {lp}")
+        tile_w = B.LOGO_TILE
+        _block(slide, tile_x, tile_y, tile_w, B.LOGO_TILE, fill=BLACK)
+        tb, tf = _txbox(slide, tile_x, tile_y, tile_w, B.LOGO_TILE)
+        tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+        tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+        _run(tf.paragraphs[0], _initials(data.get("name") or ""), size=18, bold=True, color=WHITE)
 
-    # Sections share ONE text box on purpose: edited text reflows instead of
-    # overflowing a fixed frame, which is the whole point of the .pptx export.
-    # Auto-shrink on top of that, so adding a sentence nudges the type down a
-    # notch rather than spilling out of the card. The generated pages sit at
-    # ~87-91% of the box, so there is room, but not unlimited room.
-    tb, tf = _txbox(slide, inner_x, BODY_Y + CARD_PAD + 0.72,
-                    inner_w, BODY_H - CARD_PAD * 2 - 0.72)
+    text_x = tile_x + tile_w + 16
+    text_w = x0 + B.LEFT_W - 18 - text_x
+    tb, tf = _txbox(slide, text_x, y0 + 14, text_w, B.ID_H - 24)
+    tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+    _run(tf.paragraphs[0], str(data.get("name") or ""), size=15.5, bold=True)
+    p = tf.add_paragraph()
+    p.space_before = Pt(2)
+    _run(p, (f"{L['location']}: {data.get('location') or L['unknown']} / "
+             f"{L['founded']}: {data.get('founded') or L['unknown']} / "
+             f"{L['team']}: {data.get('team_size') or L['unknown']}"), size=9)
+    website = data.get("website")
+    if website:
+        p = tf.add_paragraph()
+        p.space_before = Pt(3)
+        r = _run(p, B.display_url(website), size=9, underline=True)
+        r.hyperlink.address = B.href(website)
+
+    # ── five sections ─────────────────────────────────────────────────────────
+    # One text box on purpose: edited text reflows instead of overflowing a
+    # fixed frame, which is the whole point of the .pptx export. Auto-shrink on
+    # top, so an added sentence nudges the type down rather than spilling.
+    sec_y = y0 + B.ID_H + 12
+    tb, tf = _txbox(slide, x0 + 2, sec_y, B.LEFT_W - 4, B.COLS_TOP + B.COLS_H - sec_y)
     tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
-    sections = data["sections"]
-    first = True
-    for key, heading in i18n.sections(lang):
-        p = tf.paragraphs[0] if first else tf.add_paragraph()
-        if not first:
-            p.space_before = Pt(9)
-        _run(p, heading, size=10, bold=True, underline=True)
+    sections = data.get("sections") or {}
+    for i, (key, heading) in enumerate(i18n.sections(lang)):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        if i:
+            p.space_before = Pt(8)
+        _run(p, heading, size=9.5, bold=True)
         pb = tf.add_paragraph()
-        pb.space_before = Pt(2)
-        _run(pb, " ".join(str(sections[key]).split()), size=9.5)
-        first = False
+        pb.space_before = Pt(1.5)
+        _run(pb, " ".join(str(sections.get(key) or "").split()), size=8.7)
 
-    # ── right column ─────────────────────────────────────────────────────────
-    visuals = data["visuals"]
-    slots = zip(i18n.visuals(lang), (BODY_Y, BODY_Y + VIS_H_TOP + VIS_GAP), (VIS_H_TOP, VIS_H_BOTTOM))
+    # ── two image containers ───────────────────────────────────────────────────
+    visuals = data.get("visuals") or {}
+    slots = zip(i18n.visuals(lang),
+                (B.COLS_TOP, B.COLS_TOP + B.VIS_TOP_H + B.VIS_GAP),
+                (B.VIS_TOP_H, B.VIS_BOTTOM_H))
     for (key, default_label), y, h in slots:
         _visual(slide, visuals.get(key) or {}, default_label, base_dir, tmp_dir, y, h)
 

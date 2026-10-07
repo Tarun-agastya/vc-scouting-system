@@ -1,0 +1,96 @@
+# GT Hub One-Pager (Deutsch) — DRAFT, generated from Bliro.record.json.
+# Written by templates/one_pager/generate.py. Nothing here is checked yet:
+# every item under review.open_questions needs a person.
+# Its twin in the other language: bliro.en.yaml
+# Format and rules: templates/one_pager/FORMAT.md
+
+lang: de
+meta:
+  page_label: Matchmaking-Startups
+claim: KI-Assistent zur Automatisierung von Vertriebs-Workflows
+name: Bliro
+website: https://www.bliro.io/
+location: München
+founded: '2022'
+team_size: '6'
+logo: assets/bliro/logo.png
+sections:
+  loesung: >-
+    Bliro bietet einen KI-Assistenten für Vertriebsmitarbeiter an, der den gesamten Workflow
+    von der Vorbereitung bis zur Nachbereitung von Kundenterminen automatisiert. Die Lösung
+    integriert sich in bestehende CRM-Systeme und ermöglicht die Erstellung von Besuchsberichten,
+    die Pflege von Kalendern sowie das Versenden von Follow-up-E-Mails per Sprache. Zudem
+    werden Online- und Vor-Ort-Meetings in Echtzeit transkribiert und die entsprechenden Daten
+    automatisch in die CRM-Felder übertragen.
+  mehrwerte: >-
+    Die Nutzung der Plattform spart den Vertriebsmitarbeitern durchschnittlich 6 bis 8 Stunden
+    pro Woche. Zudem führt die Automatisierung zu einer Steigerung der Conversion-Rate um
+    22 % und einer Erhöhung des Deal-Wertes um 11 %.
+  usp: >-
+    Im Gegensatz zu herkömmlichen Lösungen bietet Bliro eine nahtlose Integration in Systeme
+    wie SAP oder Salesforce ohne komplexes IT-Projekt. Die Plattform ermöglicht zudem ein
+    autonomes, anonymes Coaching auf Basis von Playbooks, das ohne physische Begleitung oder
+    Überwachung der Mitarbeiter funktioniert.
+  zielgruppe: >-
+    Die Zielgruppe umfasst Unternehmen im Bereich B2B-Vertrieb, Recruiting und Kundenservice.
+    Zu den bereits bestätigten Kunden gehören namhafte Unternehmen wie igus, Telefónica, LANXESS
+    und Stepstone.
+  geschaeftsmodell: >-
+    Das Unternehmen agiert als B2B-Softwareanbieter (SaaS) und verkauft seine KI-gestützte
+    Vertriebslösung an Unternehmen im Bereich Business- und Produktivitätssoftware.
+visuals:
+  visual_solution:
+    label: Visualisierung der Lösung
+    placeholder: >-
+      Candidates in assets/bliro/: web01.jpg, web02.jpg, web03.jpg, web04.jpg, web05.jpg
+  visual_how_it_works:
+    label: So funktioniert die Lösung
+    placeholder: >-
+      Candidates in assets/bliro/: web01.jpg, web02.jpg, web03.jpg, web04.jpg, web05.jpg
+sources:
+- >-
+  HubDrive database record: Bliro (id 85fd66e7-6c58-5a50-9199-a34ce410d273) — used as a lead
+  only
+- >-
+  Website pages read: https://www.bliro.io/de, https://www.bliro.io/de/imprint, https://www.bliro.io/de/solutions/vertriebsleiter,
+  https://www.bliro.io/de/solutions/aussendienst, https://www.bliro.io/de/solutions/digitaler-vertrieb
+- 'Website: https://www.bliro.io/'
+- 'Logo: the website''s apple-touch-icon'
+- 'Web search: https://www.cbinsights.com/company/bliro'
+- 'Web search: https://www.linkedin.com/company/bliro-io'
+- 'Web search: https://pitchbook.com/profiles/company/510213-34'
+source_record:
+  id: 85fd66e7-6c58-5a50-9199-a34ce410d273
+  name: Bliro
+research:
+  covered:
+  - product
+  - figures
+  - competition
+  - traction
+  - business_model
+  - founded
+  - location
+  - team
+  missing: []
+  website_found_via: an earlier run
+  searches:
+    paid: 0
+    cached: 1
+    free: 0
+review:
+  status: draft
+  open_questions:
+  - >-
+    Section 'Benefits & Performance': figure(s) not in the deck: 6 (from a web search result
+    — third-party), 8 (from a web search result — third-party), 22 (from a web search result
+    — third-party), 11 (from a web search result — third-party). Check before use.
+  - >-
+    Images: 5 candidates were extracted to data/assets/bliro/. Pick two and enter them under
+    'visuals' as image: assets/bliro/<file> (in both language files).
+  - >-
+    Logo taken automatically from the website's apple-touch-icon — check it is the startup's
+    current logo before export (upload a better one in the 'Logo' field).
+  - >-
+    Web search added 3 third-party source(s) (no paid credits). Facts from them come from
+    third parties — check them against the links under 'sources'.

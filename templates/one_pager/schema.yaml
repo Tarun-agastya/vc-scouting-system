@@ -47,11 +47,29 @@ team_size:
 logo:
   required: false
   type: path
-  description: Path to logo image. Falls back to a violet plate with the name.
+  description: >
+    The startup's own logo (relative to data/). generate.py fills it from your
+    upload (assets/<slug>/logo_manual.png) or from the website's own markup
+    (assets/<slug>/logo.png, see logo_fetch.py). Without one, the page shows the
+    name's initials on a black tile.
 
 website:
   required: false
   type: string
+  description: Printed under the meta line as a link (render.py and the PowerPoint).
+
+lang:
+  required: false
+  description: de | en. Picks every heading and label (i18n.py). Missing = de.
+
+manual:
+  required: false
+  type: object
+  description: >
+    What the GT Hub team entered by hand (dashboard "Your input" / CLI flags):
+    location, founded, team_size, notes (extra facts + instructions for the
+    model), logo. Beats every source, appears verbatim in both languages, and is
+    kept when the draft is regenerated until someone changes it.
 
 # ── The five sections. Fixed order, fixed headings, none optional. ────────────
 sections:

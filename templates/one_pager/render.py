@@ -32,6 +32,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import brand  # noqa: E402
 import i18n  # noqa: E402
 
 # The five sections, in their fixed order. Order is the reading argument: what
@@ -40,8 +41,6 @@ import i18n  # noqa: E402
 # `lang:` — the page is either all English or all German, never mixed.
 
 REQUIRED_TOP = ["claim", "name", "location", "founded", "team_size"]
-
-ACCENT = "#6C5CE7"
 
 
 def validate(data: dict, path: Path) -> list:
@@ -106,26 +105,77 @@ def _img_src(image: str, base_dir: Path, embed: bool) -> str:
     return f"data:{mime};base64," + base64.b64encode(resolved.read_bytes()).decode("ascii")
 
 
-def _visual_box(slot: dict, default_label: str, base_dir: Path, grow: int, embed: bool) -> str:
+def _font_src(path: Path, base_dir: Path, embed: bool) -> str:
+    if not embed:
+        return os.path.relpath(path, base_dir)
+    mime = "font/woff2" if path.suffix == ".woff2" else "font/otf" if path.suffix == ".otf" else "font/ttf"
+    return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+
+
+def _font_faces(base_dir: Path, embed: bool) -> str:
+    """Work Sans (bundled, OFL) always; PP Neue Machina only if a licensed file
+    has been dropped in (see brand.py). A missing file just falls back to the
+    next font in the stack — never an error."""
+    fmt = {".ttf": "truetype", ".otf": "opentype", ".woff2": "woff2"}
+    faces = []
+    for weight, path in brand.WORK_SANS.items():
+        if path.exists():
+            faces.append(
+                f"@font-face {{ font-family: 'Work Sans'; font-weight: {weight}; font-style: normal; "
+                f"src: url('{_font_src(path, base_dir, embed)}') format('{fmt[path.suffix]}'); }}")
+    if brand.HEADLINE_IS_LICENSED:
+        p = brand.HEADLINE_FONT_FILE
+        faces.append(
+            f"@font-face {{ font-family: 'PP Neue Machina'; font-weight: 400; "
+            f"src: url('{_font_src(p, base_dir, embed)}') format('{fmt.get(p.suffix, 'woff2')}'); }}")
+    return "\n  ".join(faces)
+
+
+def _r(short_side: float) -> str:
+    """Corner radius per the style guide: short side / 24 (brand.corner_radius)."""
+    return f"{brand.corner_radius(short_side):.1f}px"
+
+
+def _visual_box(slot: dict, default_label: str, base_dir: Path, height: int, embed: bool) -> str:
     label = html.escape(str(slot.get("label") or default_label))
+    radius = _r(min(height, brand.RIGHT_W))
     image = slot.get("image")
     if image:
+        # Style guide p.8 "Bildcontainer": the rounded shape is the image's mask.
         src = _img_src(image, base_dir, embed)
         return (
-            f'<figure class="vbox vbox--img" style="flex:{grow}">'
+            f'<figure class="vbox vbox--img" style="height:{height}px;border-radius:{radius}">'
             f'<img src="{html.escape(src)}" alt="{label}">'
             f"</figure>"
         )
     placeholder = html.escape(str(slot.get("placeholder") or ""))
     return (
-        f'<figure class="vbox vbox--ph" style="flex:{grow}">'
+        f'<figure class="vbox vbox--ph" style="height:{height}px;border-radius:{radius}">'
         f'<span class="vbox__label">{label}</span>'
         f'<span class="vbox__hint">{placeholder}</span>'
         f"</figure>"
     )
 
 
+def _initials(name: str) -> str:
+    words = [w for w in str(name).replace("-", " ").split() if w]
+    return "".join(w[0] for w in words[:2]).upper() or "?"
+
+
 def render(data: dict, base_dir: Path, *, embed: bool = False, draft_mark: bool = False) -> str:
+    """
+    One GT Hub one-pager as a self-contained 16:9 HTML page, following
+    241023_GTHub_Styleguide.pdf (all tokens and geometry from brand.py):
+      * the real GT Hub lockup (logo + name), top right;
+      * Work Sans throughout; the claim in the headline face;
+      * a lime identity block with the startup's own logo, name, location /
+        founding year / team, and its website as a link;
+      * images in rounded containers, placeholders as purple blocks;
+      * every corner radius = that element's short side / 24.
+    Only print-safe colour pairs from the guide's p.6 are used: black on
+    white/lime/grey, white on black/purple. (Lime-on-black and purple-on-white
+    are "digital only" there, and a one-pager gets printed.)
+    """
     lang = i18n.lang_of(data)
     L = i18n.labels(lang)
     meta = data.get("meta") or {}
@@ -140,11 +190,19 @@ def render(data: dict, base_dir: Path, *, embed: bool = False, draft_mark: bool 
         f"{L['team']}: {html.escape(str(data.get('team_size') or L['unknown']))}",
     ])
 
+    website = data.get("website")
+    website_html = (
+        f'<a class="web" href="{html.escape(brand.href(website))}">'
+        f'{html.escape(brand.display_url(website))}</a>' if website else ""
+    )
+
     logo = data.get("logo")
     if logo:
-        logo_html = f'<div class="logo"><img src="{html.escape(_img_src(logo, base_dir, embed))}" alt="{name}"></div>'
+        tile_w = brand.logo_tile_width(base_dir / str(logo))
+        logo_html = (f'<div class="id__logo" style="flex-basis:{tile_w}px">'
+                     f'<img src="{html.escape(_img_src(logo, base_dir, embed))}" alt="{name}"></div>')
     else:
-        logo_html = f'<div class="logo logo--text">{name}</div>'
+        logo_html = f'<div class="id__logo id__logo--text">{html.escape(_initials(data.get("name") or ""))}</div>'
 
     sections = data.get("sections") or {}
     section_html = "".join(
@@ -154,90 +212,101 @@ def render(data: dict, base_dir: Path, *, embed: bool = False, draft_mark: bool 
     )
 
     visuals = data.get("visuals") or {}
-    # 40/60 split: the "how it works" box usually carries a denser graphic.
     visual_html = "".join(
-        _visual_box(visuals.get(key) or {}, label, base_dir, grow, embed)
-        for (key, label), grow in zip(i18n.visuals(lang), (40, 60))
+        _visual_box(visuals.get(key) or {}, label, base_dir, h, embed)
+        for (key, label), h in zip(i18n.visuals(lang), (brand.VIS_TOP_H, brand.VIS_BOTTOM_H))
     )
 
     # Opt-in only. The watermark is our own bookkeeping, not part of the GT Hub
     # format, so it must never appear on a page destined for the real deck. The
-    # audit trail lives in the YAML (`review.status` + `open_questions`), which
-    # is where it belongs — a stamp on the artwork is not the same as a record.
+    # audit trail lives in the YAML (`review.status` + `open_questions`).
     status = ((data.get("review") or {}).get("status") or "").lower()
     draft_ribbon = (
         '<div class="draft">' + html.escape(L["draft"]) + '</div>'
         if (draft_mark and status != "approved") else ""
     )
 
+    headline = ("'PP Neue Machina', " if brand.HEADLINE_IS_LICENSED else "") + "'Work Sans', Arial, sans-serif"
+    # Without the licensed headline face, Work Sans SemiBold with tighter
+    # tracking is the closest stand-in for Neue Machina's squared grotesk.
+    headline_weight = 400 if brand.HEADLINE_IS_LICENSED else 600
+
+    B = brand
     return f"""<!doctype html>
 <html lang="{lang}"><head><meta charset="utf-8">
 <title>{name} — GT Hub One-Pager</title>
 <style>
+  {_font_faces(base_dir, embed)}
   @page {{ size: 338.7mm 190.5mm; margin: 0; }}
   * {{ box-sizing: border-box; }}
-  html, body {{ margin: 0; padding: 0; background: #999; }}
-  body {{ font-family: Arial, Helvetica, "Helvetica Neue", system-ui, sans-serif; }}
+  html, body {{ margin: 0; padding: 0; background: #E6E6E6; }}
+  body {{ font-family: 'Work Sans', Arial, Helvetica, sans-serif; color: {B.BLACK}; }}
   .slide {{
-    position: relative; width: 1280px; height: 720px; margin: 24px auto;
-    background: #F2F2F2; color: #111; padding: 26px 34px 30px;
-    display: flex; flex-direction: column; overflow: hidden;
+    position: relative; width: {B.PAGE_W}px; height: {B.PAGE_H}px; margin: 24px auto;
+    background: {B.WHITE}; padding: {B.PAD_TOP}px {B.PAD_X}px {B.PAD_BOTTOM}px;
+    overflow: hidden;
   }}
-  @media print {{ body {{ background: #fff; }} .slide {{ margin: 0; }} }}
+  @media print {{ html, body {{ background: {B.WHITE}; }} .slide {{ margin: 0; }} }}
 
-  .hdr {{ display: flex; justify-content: space-between; align-items: baseline;
-          font-size: 11px; letter-spacing: .01em; }}
-  .hdr__r {{ display: flex; gap: 26px; }}
-  .rule {{ border-bottom: 1px solid #111; margin: 5px 0 16px; }}
+  .top {{ display: flex; justify-content: space-between; align-items: flex-start;
+          gap: 28px; height: {B.TOP_H}px; }}
+  .label {{ font-size: 12px; font-weight: 600; letter-spacing: .02em; display: flex; gap: 18px; }}
+  .claim {{ font-family: {headline}; font-weight: {headline_weight}; font-size: 30px;
+            line-height: 1.1; letter-spacing: -.02em; margin: 8px 0 0; text-wrap: balance; }}
+  .gtlogo {{ flex: 0 0 auto; height: {B.GT_LOGO_H}px; }}
+  .gtlogo svg {{ height: {B.GT_LOGO_H}px; width: auto; display: block; }}
 
-  .claim {{ font-size: 34px; line-height: 1.12; font-weight: 400;
-            color: {ACCENT}; margin: 0 0 16px; letter-spacing: -.01em; }}
+  .cols {{ position: absolute; left: {B.PAD_X}px; top: {B.COLS_TOP}px; right: {B.PAD_X}px;
+           height: {B.COLS_H}px; display: flex; gap: {B.COL_GAP}px; }}
+  .left {{ flex: 0 0 {B.LEFT_W}px; display: flex; flex-direction: column; min-width: 0; }}
 
-  .cols {{ display: flex; gap: 20px; flex: 1; min-height: 0; }}
-  .card {{ flex: 0 0 48.5%; background: #fff; border: 1px solid #111;
-           padding: 15px 17px; display: flex; flex-direction: column; overflow: hidden; }}
-  .idhead {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }}
-  .idhead h2 {{ font-size: 19px; margin: 0 0 2px; font-weight: 700; }}
-  .metaline {{ font-size: 11.5px; font-style: italic; margin: 0; }}
-  .logo {{ flex: 0 0 auto; height: 46px; min-width: 104px; display: flex;
-           align-items: center; justify-content: center; overflow: hidden; }}
-  .logo img {{ max-height: 46px; max-width: 150px; object-fit: contain; }}
-  .logo--text {{ background: {ACCENT}; color: #fff; font-weight: 700;
-                 font-size: 13px; padding: 0 12px; letter-spacing: .04em; }}
+  .id {{ background: {B.LIME}; border-radius: {_r(B.ID_H)}; height: {B.ID_H}px;
+         padding: 12px 18px 12px 12px; display: flex; gap: 16px; align-items: center; }}
+  .id__logo {{ flex: 0 0 {B.LOGO_TILE}px; height: {B.LOGO_TILE}px; background: {B.WHITE};
+               border-radius: {_r(B.LOGO_TILE)}; display: flex; align-items: center;
+               justify-content: center; padding: 8px; overflow: hidden; }}
+  .id__logo img {{ max-width: 100%; max-height: 100%; object-fit: contain; display: block; }}
+  .id__logo--text {{ background: {B.BLACK}; color: {B.WHITE}; font-weight: 600; font-size: 24px; }}
+  .id__text {{ min-width: 0; }}
+  .id h2 {{ font-size: 21px; font-weight: 600; margin: 0 0 3px; line-height: 1.15; }}
+  .meta {{ font-size: 12px; margin: 0; }}
+  .web {{ font-size: 12px; color: {B.BLACK}; text-decoration: underline;
+          text-underline-offset: 2px; display: inline-block; margin-top: 4px; }}
 
   .sec {{ margin-top: 11px; }}
-  .sec h3 {{ font-size: 12.5px; margin: 0 0 2px; font-weight: 700;
-             text-decoration: underline; text-underline-offset: 2px; }}
-  .sec p {{ font-size: 11.8px; line-height: 1.42; margin: 0; }}
+  .sec h3 {{ font-size: 12.5px; font-weight: 600; margin: 0 0 2px; }}
+  .sec p {{ font-size: 11.6px; line-height: 1.42; margin: 0; }}
 
-  .vis {{ flex: 1; display: flex; flex-direction: column; gap: 14px; min-width: 0; }}
-  .vbox {{ margin: 0; border: 1px solid #111; background: #fff;
-           display: flex; align-items: center; justify-content: center;
-           overflow: hidden; min-height: 0; }}
-  .vbox--img img {{ width: 100%; height: 100%; object-fit: contain; }}
+  .vis {{ flex: 1; display: flex; flex-direction: column; gap: {B.VIS_GAP}px; min-width: 0; }}
+  .vbox {{ margin: 0; overflow: hidden; flex: 0 0 auto; display: flex;
+           align-items: center; justify-content: center; }}
+  .vbox--img img {{ width: 100%; height: 100%; object-fit: cover; display: block; }}
   .vbox--ph {{ flex-direction: column; gap: 8px; text-align: center;
-               background: {ACCENT}; color: #fff; padding: 18px 26px;
-               border: 1px dashed rgba(255,255,255,.75); }}
-  .vbox__label {{ font-size: 15px; font-weight: 500; }}
-  .vbox__hint {{ font-size: 11px; opacity: .92; max-width: 82%; line-height: 1.4; }}
+               background: {B.PURPLE}; color: {B.WHITE}; padding: 18px 26px; }}
+  .vbox__label {{ font-size: 15px; font-weight: 600; }}
+  .vbox__hint {{ font-size: 11px; max-width: 82%; line-height: 1.4; }}
 
-  .draft {{ position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
-            background: #E8E24A; color: #111; font-size: 11px; font-weight: 700;
-            letter-spacing: .1em; padding: 3px 22px; }}
+  .draft {{ position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+            background: {B.BLACK}; color: {B.WHITE}; font-size: 10.5px; font-weight: 600;
+            letter-spacing: .12em; padding: 4px 20px; border-radius: 0 0 4px 4px; }}
 </style></head>
 <body>
 <div class="slide">
   {draft_ribbon}
-  <div class="hdr"><span>GT Hub</span><span class="hdr__r"><span>{page_label}</span><span>{page_number}</span></span></div>
-  <div class="rule"></div>
-  <h1 class="claim">{claim}</h1>
+  <div class="top">
+    <div>
+      <div class="label"><span>{page_label}</span><span>{page_number}</span></div>
+      <h1 class="claim">{claim}</h1>
+    </div>
+    <div class="gtlogo">{brand.logo_svg_markup()}</div>
+  </div>
   <div class="cols">
-    <div class="card">
-      <div class="idhead">
-        <div><h2>{name}</h2><p class="metaline">{metaline}</p></div>
+    <div class="left">
+      <div class="id">
         {logo_html}
+        <div class="id__text"><h2>{name}</h2><p class="meta">{metaline}</p>{website_html}</div>
       </div>
-      {section_html}
+      <div class="secs">{section_html}</div>
     </div>
     <div class="vis">{visual_html}</div>
   </div>

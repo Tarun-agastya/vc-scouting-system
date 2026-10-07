@@ -1,0 +1,95 @@
+# GT Hub One-Pager (English) — DRAFT, generated from REEcover.record.json.
+# Written by templates/one_pager/generate.py. Nothing here is checked yet:
+# every item under review.open_questions needs a person.
+# Its twin in the other language: reecover.de.yaml
+# Format and rules: templates/one_pager/FORMAT.md
+
+lang: en
+meta:
+  page_label: Matchmaking Startups
+claim: Technology for recovering rare earths from electronic waste
+name: REEcover
+website: https://www.reecover.ch/
+location: Zurich
+founded: '2023'
+team_size: n/a
+logo: assets/reecover/logo.png
+sections:
+  loesung: >-
+    REEcover develops a patented technology for the selective refining and recovery of rare
+    earth metals from electronic waste. The process is based on a bio-inspired approach and
+    serves the extraction of elements such as europium and yttrium from energy-saving lamps.
+    The goal is the establishment of a circular supply chain for critical raw materials.
+  mehrwerte: >-
+    The technology enables a separation of rare earth metals with a factor 10 times higher
+    than existing processes. This reduces the dependence on environmentally harmful mining
+    and secures the availability of critical raw materials for the digital and energy transformation.
+  usp: >-
+    In contrast to conventional processes, REEcover uses a bio-inspired approach for selective
+    refining. This patented method enables a significantly more efficient separation of rare
+    earth metals from waste, representing a more sustainable alternative to conventional mining
+    and the associated generation of toxic waste.
+  zielgruppe: >-
+    The target group includes companies and actors in the recycling industry as well as the
+    industry of digital and energy infrastructure. The company was recognized among others
+    as the winner of the Rocket Day + Impact Award 2026 and is part of the Energy & Environment
+    Accelerator.
+  geschaeftsmodell: >-
+    The company follows a B2B model and sells the technology for the recovery and refining
+    of rare earth metals from waste to industrial partners.
+visuals:
+  visual_solution:
+    label: Visualisation of the Solution
+    placeholder: >-
+      Candidates in assets/reecover/: web01.jpg, web02.jpg, web03.jpg, web04.jpg, web05.jpg,
+      web06.jpg
+  visual_how_it_works:
+    label: How the Solution Works
+    placeholder: >-
+      Candidates in assets/reecover/: web01.jpg, web02.jpg, web03.jpg, web04.jpg, web05.jpg,
+      web06.jpg
+sources:
+- >-
+  HubDrive database record: REEcover (id 8345fe3c-bbb1-5ee2-9f0c-c90ce4305e1a) — used as a
+  lead only
+- >-
+  Website pages read: https://www.reecover.ch/, https://www.reecover.ch/team, https://www.reecover.ch/technology
+- 'Website: https://www.reecover.ch/'
+- 'Logo: a logo image on the website'
+- 'Web search: https://www.linkedin.com/company/reecover'
+- 'Web search: https://axomap.com/maps/deeptech-recycling-startups'
+source_record:
+  id: 8345fe3c-bbb1-5ee2-9f0c-c90ce4305e1a
+  name: REEcover
+research:
+  covered:
+  - product
+  - figures
+  - competition
+  - traction
+  - business_model
+  - founded
+  - location
+  missing:
+  - team
+  website_found_via: an earlier run
+  searches:
+    paid: 0
+    cached: 2
+    free: 0
+review:
+  status: draft
+  open_questions:
+  - Translated automatically from the Deutsch version — read it through before use.
+  - >-
+    Team size not found in any source (deck, website, web search) — enter it in the 'Team
+    size' field (an approximate number is fine).
+  - >-
+    Images: 6 candidates were extracted to data/assets/reecover/. Pick two and enter them
+    under 'visuals' as image: assets/reecover/<file> (in both language files).
+  - >-
+    Logo taken automatically from a logo image on the website — check it is the startup's
+    current logo before export (upload a better one in the 'Logo' field).
+  - >-
+    Web search added 2 third-party source(s) (no paid credits). Facts from them come from
+    third parties — check them against the links under 'sources'.

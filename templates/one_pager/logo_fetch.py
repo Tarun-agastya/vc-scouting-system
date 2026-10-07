@@ -198,6 +198,21 @@ def _save_png(img, out_path: Path) -> None:
     img.save(out_path, "PNG", optimize=True)
 
 
+def save_local(src, out_path: Path) -> bool:
+    """A logo file someone uploaded (png/jpg/svg/...): validate and normalise it
+    to the same PNG form as a fetched one. Size and banner checks are skipped —
+    a person chose this file on purpose."""
+    try:
+        data = Path(src).read_bytes()
+    except OSError:
+        return False
+    img = _load_image(data, str(src), "")
+    if img is None:
+        return False
+    _save_png(img, out_path)
+    return True
+
+
 def _try_clearbit(page_url: str, out_path: Path) -> Optional[dict]:
     """Last resort: Clearbit's free, keyless logo lookup by domain. Public
     service, no account, no quota — but still a third-party source, so it is

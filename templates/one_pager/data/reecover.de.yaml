@@ -1,0 +1,96 @@
+# GT Hub One-Pager (Deutsch) — DRAFT, generated from REEcover.record.json.
+# Written by templates/one_pager/generate.py. Nothing here is checked yet:
+# every item under review.open_questions needs a person.
+# Its twin in the other language: reecover.en.yaml
+# Format and rules: templates/one_pager/FORMAT.md
+
+lang: de
+meta:
+  page_label: Matchmaking-Startups
+claim: Technologie zur Rückgewinnung Seltener Erden aus Elektroschrott
+name: REEcover
+website: https://www.reecover.ch/
+location: Zürich
+founded: '2023'
+team_size: k. A.
+logo: assets/reecover/logo.png
+sections:
+  loesung: >-
+    REEcover entwickelt eine patentierte Technologie zur selektiven Raffinierung und Rückgewinnung
+    von Seltenerdmetallen aus Elektroschrott. Das Verfahren basiert auf einem bio-inspirierten
+    Ansatz und dient der Gewinnung von Elementen wie Europium und Yttrium aus Energiesparlampen.
+    Das Ziel ist die Etablierung einer kreislauforientierten Versorgungskette für kritische
+    Rohstoffe.
+  mehrwerte: >-
+    Die Technologie ermöglicht eine Trennung von Seltenerdmetallen mit einem Faktor, der 10-mal
+    höher ist als bei bestehenden Verfahren. Dadurch wird die Abhängigkeit von umweltschädlichem
+    Bergbau reduziert und die Verfügbarkeit kritischer Rohstoffe für die digitale und energetische
+    Transformation gesichert.
+  usp: >-
+    Im Gegensatz zu herkömmlichen Verfahren nutzt REEcover einen bio-inspirierten Ansatz zur
+    selektiven Raffinierung. Diese patentierte Methode ermöglicht eine deutlich effizientere
+    Trennung von Seltenerdmetallen aus Abfällen, was eine nachhaltigere Alternative zum konventionellen
+    Bergbau und der damit verbundenen Entstehung von toxischen Abfällen darstellt.
+  zielgruppe: >-
+    Die Zielgruppe umfasst Unternehmen und Akteure in der Recyclingbranche sowie die Industrie
+    der digitalen und energetischen Infrastruktur. Das Unternehmen wurde unter anderem als
+    Gewinner des Rocket Day + Impact Award 2026 ausgezeichnet und ist Teil des Energy & Environment
+    Accelerators.
+  geschaeftsmodell: >-
+    Das Unternehmen verfolgt ein B2B-Modell und verkauft die Technologie zur Rückgewinnung
+    und Raffinierung von Seltenerdmetallen aus Abfällen an industrielle Partner.
+visuals:
+  visual_solution:
+    label: Visualisierung der Lösung
+    placeholder: >-
+      Candidates in assets/reecover/: web01.jpg, web02.jpg, web03.jpg, web04.jpg, web05.jpg,
+      web06.jpg
+  visual_how_it_works:
+    label: So funktioniert die Lösung
+    placeholder: >-
+      Candidates in assets/reecover/: web01.jpg, web02.jpg, web03.jpg, web04.jpg, web05.jpg,
+      web06.jpg
+sources:
+- >-
+  HubDrive database record: REEcover (id 8345fe3c-bbb1-5ee2-9f0c-c90ce4305e1a) — used as a
+  lead only
+- >-
+  Website pages read: https://www.reecover.ch/, https://www.reecover.ch/team, https://www.reecover.ch/technology
+- 'Website: https://www.reecover.ch/'
+- 'Logo: a logo image on the website'
+- 'Web search: https://www.linkedin.com/company/reecover'
+- 'Web search: https://axomap.com/maps/deeptech-recycling-startups'
+source_record:
+  id: 8345fe3c-bbb1-5ee2-9f0c-c90ce4305e1a
+  name: REEcover
+research:
+  covered:
+  - product
+  - figures
+  - competition
+  - traction
+  - business_model
+  - founded
+  - location
+  missing:
+  - team
+  website_found_via: an earlier run
+  searches:
+    paid: 0
+    cached: 2
+    free: 0
+review:
+  status: draft
+  open_questions:
+  - >-
+    Team size not found in any source (deck, website, web search) — enter it in the 'Team
+    size' field (an approximate number is fine).
+  - >-
+    Images: 6 candidates were extracted to data/assets/reecover/. Pick two and enter them
+    under 'visuals' as image: assets/reecover/<file> (in both language files).
+  - >-
+    Logo taken automatically from a logo image on the website — check it is the startup's
+    current logo before export (upload a better one in the 'Logo' field).
+  - >-
+    Web search added 2 third-party source(s) (no paid credits). Facts from them come from
+    third parties — check them against the links under 'sources'.

@@ -398,3 +398,116 @@ def test_preview_renders_an_incomplete_draft_but_export_still_refuses(pdf_deck, 
     assert "ENTWURF" in (tmp_path / "x.de_onepager.html").read_text(encoding="utf-8")
     assert run(str(tool / "render.py"), str(src), "--check").returncode == 1
     assert run(str(tool / "export_pptx.py"), str(src), "--out-dir", str(tmp_path)).returncode == 1
+
+
+# ── Your input, website, logo, team approximations ────────────────────────────
+
+def test_team_size_keeps_ranges_and_approximations():
+    assert llm_mod.normalise_team("6 Personen", "de") == "6"
+    assert llm_mod.normalise_team("11-50 employees", "en") == "11–50"
+    assert llm_mod.normalise_team("about 10 people", "en") == "approx. 10"
+    assert llm_mod.normalise_team("rund 10 Mitarbeitende", "de") == "ca. 10"
+    assert llm_mod.normalise_team("über 20", "de") == "20+"
+
+
+def test_a_team_range_is_supported_only_if_both_ends_are_in_a_source():
+    assert gen._supported_meta("11–50", "LinkedIn: 11-50 employees") == "11–50"
+    assert gen._supported_meta("11–50", "we are 11 people") is None
+    assert gen._supported_meta("ca. 10", "rund 10 Personen") == "ca. 10"
+
+
+def test_your_input_beats_the_sources_and_is_never_flagged(pdf_deck):
+    manual = {"team_size": "12", "location": "Kempten",
+              "notes": "Pilot mit 3 Allgäuer Molkereien seit 2026."}
+    drafted = dict(_DRAFT_DE, team_size="99", location="Isny",
+                   zielgruppe="Höfe und 3 Allgäuer Molkereien seit 2026.")
+    data = gen.build_yaml(
+        name="ONOX", slug="onox", drafted=drafted, deck_obj=deck_mod.parse_deck(pdf_deck),
+        images=["slide01_page.jpg"], url=None, url_ok=False, llm_note=None, lang="de",
+        manual=manual)
+    assert data["team_size"] == "12" and data["location"] == "Kempten"
+    assert data["manual"] == manual
+    q = " ".join(data["review"]["open_questions"])
+    assert "Team size" not in q and "Location not found" not in q
+    assert "2026" not in q and "'3'" not in q, "figures from your input are a source, not a fabrication"
+
+
+def test_an_unsupported_team_estimate_is_shown_to_you_not_printed(pdf_deck):
+    data = _build(pdf_deck, dict(_DRAFT_DE, team_size="ca. 7"), lang="de")
+    assert data["team_size"] == "k. A."
+    assert any("estimated 'ca. 7'" in q and "Team size" in q for q in data["review"]["open_questions"])
+
+
+def test_the_model_is_given_your_input_first():
+    text = gen.manual_prompt_text({"team_size": "12", "notes": "Betone das Lizenzmodell."})
+    assert "Team size / Teamgröße: 12" in text and "Betone das Lizenzmodell." in text
+    for _lang, (_system, prompt) in llm_mod._PROMPTS.items():
+        assert "[GT Hub input]" in prompt
+
+
+def test_translation_keeps_your_values_verbatim(pdf_deck, monkeypatch):
+    de = gen.build_yaml(name="ONOX", slug="onox", drafted=_DRAFT_DE, deck_obj=deck_mod.parse_deck(pdf_deck),
+                        images=[], url=None, url_ok=False, llm_note=None, lang="de",
+                        manual={"location": "München", "team_size": "ca. 12"})
+    monkeypatch.setattr(gen.llm_mod, "translate",
+                        lambda f, s, d: dict(_TRANSLATED_EN, location="Munich", team_size="approx. 12"))
+    en, _ = gen.translate_data(de, "en")
+    assert en["location"] == "München" and en["team_size"] == "ca. 12"
+
+
+def test_website_and_logo_reach_the_yaml_and_the_page(pdf_deck, tmp_path):
+    from PIL import Image
+    (tmp_path / "assets" / "onox").mkdir(parents=True)
+    Image.new("RGBA", (300, 100), (0, 0, 0, 255)).save(tmp_path / "assets" / "onox" / "logo.png")
+    data = gen.build_yaml(name="ONOX", slug="onox", drafted=_DRAFT_DE, deck_obj=deck_mod.parse_deck(pdf_deck),
+                          images=[], url="https://www.onox.de/", url_ok=True, llm_note=None, lang="de",
+                          logo="assets/onox/logo.png", logo_source="the website's apple-touch-icon")
+    assert data["website"] == "https://www.onox.de/" and data["logo"] == "assets/onox/logo.png"
+    assert any("Logo taken automatically" in q for q in data["review"]["open_questions"])
+    page = render_mod.render(data, tmp_path, embed=True)
+    assert 'href="https://www.onox.de/"' in page and ">onox.de</a>" in page
+    assert "data:image/png;base64" in page
+    assert 'aria-label="GT Hub"' in page, "the GT Hub lockup (logo + name) is on every page"
+
+
+def test_no_logo_is_flagged_and_gets_an_initials_tile(pdf_deck, tmp_path):
+    data = _build(pdf_deck, _DRAFT_DE, lang="de")
+    assert "logo" not in data
+    assert any(q.startswith("No logo") for q in data["review"]["open_questions"])
+    assert '>O</div>' in render_mod.render(data, tmp_path)
+
+
+def test_page_follows_the_style_guide(pdf_deck, tmp_path):
+    import brand
+    page = render_mod.render(_build(pdf_deck, _DRAFT_DE, lang="de"), tmp_path, embed=True)
+    for token in (brand.LIME, brand.PURPLE, "font-family: 'Work Sans'", "font/ttf;base64"):
+        assert token in page
+    assert "#6C5CE7" not in page, "the old non-brand violet is gone"
+    assert brand.corner_radius(1080) == 45, "style guide p.9's worked example"
+
+
+def test_regeneration_keeps_your_input_until_you_replace_it(pdf_deck, tmp_path, monkeypatch):
+    """The CLI end to end, with no model and no network: input given once is
+    still there after a plain --force, and --manual-replace clears it."""
+    import yaml
+    from PIL import Image
+    monkeypatch.setattr(gen, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(gen, "ASSETS_DIR", tmp_path / "assets")
+    monkeypatch.setattr(gen, "DECKS_DIR", tmp_path / "decks")
+    logo = tmp_path / "mine.png"
+    Image.new("RGB", (120, 120), (215, 241, 89)).save(logo)
+
+    def run(*extra):
+        monkeypatch.setattr(sys, "argv", ["generate.py", "--deck", str(pdf_deck), "--name", "ONOX",
+                                          "--no-llm", "--no-web-search", "--save-deck", *extra])
+        assert gen.main() == 0
+        return yaml.safe_load((tmp_path / "onox.de.yaml").read_text(encoding="utf-8"))
+
+    first = run("--team-size", "7", "--notes", "Betone den Service.", "--logo", str(logo))
+    assert first["team_size"] == "7" and first["logo"] == "assets/onox/logo_manual.png"
+    assert (tmp_path / "decks" / "onox.pdf").exists(), "deck kept for regeneration"
+    again = run("--force")
+    assert again["manual"]["team_size"] == "7" and again["manual"]["notes"] == "Betone den Service."
+    assert again["logo"] == "assets/onox/logo_manual.png"
+    cleared = run("--force", "--manual-replace", "--team-size", "")
+    assert "team_size" not in (cleared.get("manual") or {}) and cleared["team_size"] == "k. A."

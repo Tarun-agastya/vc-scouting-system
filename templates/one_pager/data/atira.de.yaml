@@ -1,0 +1,112 @@
+# GT Hub One-Pager (Deutsch) — DRAFT, generated from Atira.record.json.
+# Written by templates/one_pager/generate.py. Nothing here is checked yet:
+# every item under review.open_questions needs a person.
+# Its twin in the other language: atira.en.yaml
+# Format and rules: templates/one_pager/FORMAT.md
+
+lang: de
+meta:
+  page_label: Matchmaking-Startups
+claim: KI-Orchestrierung für industrielle Vertriebsprozesse
+name: Atira
+website: https://atira.ai/
+location: München
+founded: '2024'
+team_size: k. A.
+logo: assets/atira/logo.png
+sections:
+  loesung: >-
+    Atira bietet eine KI-gestützte Orchestrierungsschicht für industrielle Vertriebsprozesse
+    an, insbesondere für Unternehmen, die komplexe, auf Kundenwünsche zugeschnittene Produkte
+    verkaufen. Die Plattform automatisiert die Bearbeitung von Angebotsanfragen (RFQ) durch
+    die Integration bestehender CRM-, ERP- und CPQ-Systeme. Sie extrahiert Anforderungen aus
+    Dokumenten, prüft diese auf Risiken und erstellt automatisch technische sowie kommerzielle
+    Dokumentationen.
+  mehrwerte: >-
+    Die Plattform reduziert den manuellen Aufwand bei der Bearbeitung von Angebotsanfragen
+    erheblich. Ein konkretes Beispiel zeigt, dass die Extraktion von RFQ-Daten, die normalerweise
+    zwei bis drei Tage manuelle Arbeit in Anspruch nehmen würden, durch Atira in nur 15 Minuten
+    abgeschlossen werden kann.
+  usp: >-
+    Im Gegensatz zu herkömmlichen manuellen Prozessen, die oft Wochen dauern und die Abhängigkeit
+    von wenigen Experten erfordern, automatisiert Atira den gesamten Workflow von der Anforderungsanalyse
+    bis zur Dokumentenerstellung. Die Lösung verbindet bestehende Unternehmensdaten mit KI-Agenten,
+    um Expertenwissen skalierbar zu machen.
+  zielgruppe: >-
+    Die Zielgruppe umfasst industrielle Unternehmen und Hersteller, die komplexe, maßgeschneiderte
+    Produkte und Dienstleistungen anbieten. Die Lösung ist bereits bei weltweit führenden
+    Industrieunternehmen im Bereich der Fertigung und Industrie 4.0 erfolgreich erprobt.
+  geschaeftsmodell: >-
+    Das Unternehmen verfolgt ein B2B-Geschäftsmodell und verkauft seine KI-Plattform zur Automatisierung
+    von Vertriebs- und Angebotsprozessen an industrielle Unternehmen.
+visuals:
+  visual_solution:
+    label: Visualisierung der Lösung
+    placeholder: >-
+      Candidates in assets/atira/: web01.jpg, web02.jpg, web03.jpg, web04.jpg, web05.jpg,
+      web06.jpg
+  visual_how_it_works:
+    label: So funktioniert die Lösung
+    placeholder: >-
+      Candidates in assets/atira/: web01.jpg, web02.jpg, web03.jpg, web04.jpg, web05.jpg,
+      web06.jpg
+sources:
+- >-
+  HubDrive database record: Atira (id 82afa52d-aa27-529a-8543-47e3c4e4bc8f) — used as a lead
+  only
+- >-
+  Source article: https://tech.eu/2026/09/03/atira-raises-175m-to-bring-ai-orchestration-to-industrial-sales/
+- >-
+  Website pages read: https://atira.ai/, https://atira.ai/legal/impressum, https://atira.ai/company,
+  https://atira.ai/product, https://atira.ai/customers?tab=industrial-services
+- 'Website: https://atira.ai/'
+- 'Logo: the website''s apple-touch-icon'
+- >-
+  Web search: https://pulse2.com/atira-raises-17-5-million-to-build-ai-orchestration-platform-for-industrial-sales-engineering
+- >-
+  Web search: https://fortune.com/2026/09/03/exclusive-german-ai-startup-atira-raises-17-5-million-to-unclog-the-paperwork-bottleneck-in-industrial-dealmaking
+- >-
+  Web search: https://finance.yahoo.com/technology/ai/articles/exclusive-german-ai-startup-atira-120000677.html
+- >-
+  Web search: https://tracxn.com/d/companies/atira/__8WTvr1J1YB2SQOc7G_3oZTIA1q8mquA7xUdpBHkaikI
+- >-
+  Web search: https://apps.mylearning.org/jobs/companies/atira/product-66692b63306266744d7a6a73684e757838673d3d
+- 'Web search: https://pitchbook.com/profiles/company/769700-26'
+- 'Web search: https://www.beri.net/tools/atira'
+source_record:
+  id: 82afa52d-aa27-529a-8543-47e3c4e4bc8f
+  name: Atira
+research:
+  covered:
+  - product
+  - figures
+  - traction
+  - business_model
+  - founded
+  - location
+  missing:
+  - competition
+  - team
+  website_found_via: an earlier run
+  searches:
+    paid: 0
+    cached: 3
+    free: 0
+review:
+  status: draft
+  open_questions:
+  - >-
+    Team size not found in any source (deck, website, web search) — enter it in the 'Team
+    size' field (an approximate number is fine).
+  - >-
+    Images: 6 candidates were extracted to data/assets/atira/. Pick two and enter them under
+    'visuals' as image: assets/atira/<file> (in both language files).
+  - >-
+    Not found anywhere (database, website, web search): Competitors or the usual alternative.
+    Add it in 'Your input' and regenerate, or the section stays thin.
+  - >-
+    Logo taken automatically from the website's apple-touch-icon — check it is the startup's
+    current logo before export (upload a better one in the 'Logo' field).
+  - >-
+    Web search added 7 third-party source(s) (no paid credits). Facts from them come from
+    third parties — check them against the links under 'sources'.

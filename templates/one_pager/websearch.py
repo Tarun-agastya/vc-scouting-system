@@ -157,10 +157,10 @@ def budget_status() -> dict:
     }
 
 
-def _may_spend(report: SearchReport) -> Optional[str]:
+def _may_spend(report: SearchReport, max_paid: int = MAX_SEARCHES_PER_DRAFT) -> Optional[str]:
     """None if one more paid search is allowed, else the human reason why not."""
-    if report.paid >= MAX_SEARCHES_PER_DRAFT:
-        return f"per-draft limit of {MAX_SEARCHES_PER_DRAFT} paid searches reached"
+    if report.paid >= max_paid:
+        return f"per-draft limit of {max_paid} paid searches reached"
     if used_this_month() >= MONTHLY_CAP:
         return f"the one-pager's monthly limit of {MONTHLY_CAP} Tavily credits is used up"
     if not _tavily_key():
@@ -249,10 +249,40 @@ def _domain(url: str) -> str:
     return d[4:] if d.startswith("www.") else d
 
 
+# Company-profile pages: one URL per company, the company's slug in the path.
+# Namesakes come from here — searching "Atira" returned CB Insights' page for
+# "Atira Hotels" (Oct 2026). A profile is kept only if its slug IS the name.
+_PROFILE_PATHS = {
+    "cbinsights.com": r"/company/([^/]+)", "crunchbase.com": r"/organization/([^/]+)",
+    "linkedin.com": r"/company/([^/]+)", "dealroom.co": r"/companies/([^/]+)",
+    "pitchbook.com": r"/profiles/company/[^/]*?([a-z][^/]*)$", "tracxn.com": r"/companies/([^/]+)",
+    "northdata.de": r"/([^/,]+)", "northdata.com": r"/([^/,]+)",
+}
+
+
+def _profile_of_other_company(url: str, name: str) -> bool:
+    import sitereader
+
+    d = _domain(url)
+    for host_, pat in _PROFILE_PATHS.items():
+        if d == host_ or d.endswith("." + host_):
+            m = re.search(pat, urlparse(url).path.lower())
+            if not m:
+                return False
+            slug = re.sub(r"[-_]+(gmbh|ag|ug|inc|io|ai|de|com|hq|se|ltd)$", "", m.group(1))
+            slug = re.sub(r"^\d+-?", "", slug)                  # pitchbook ids
+            return sitereader._norm(slug) != sitereader.norm_name(name) and \
+                not sitereader._norm(slug).startswith(sitereader.norm_name(name) + "io")
+    return False
+
+
 def _names_company(result: dict, name: str) -> bool:
-    """The company's name must appear as a word in the title or snippet."""
+    """The company's name must appear as a word in the title or snippet — and a
+    company-profile page must be THIS company's profile, not a namesake's."""
     hay = f"{result.get('title', '')} {result.get('snippet', '')}".lower()
-    return re.search(rf"(?<!\w){re.escape(name.lower())}(?!\w)", hay) is not None
+    if re.search(rf"(?<!\w){re.escape(name.lower())}(?!\w)", hay) is None:
+        return False
+    return not _profile_of_other_company(result.get("url", ""), name)
 
 
 def queries_for(name: str) -> List[str]:
@@ -267,16 +297,27 @@ def queries_for(name: str) -> List[str]:
 
 
 def search_company(name: str, website: Optional[str] = None, *, allow_paid: bool = True) -> SearchReport:
-    """
-    Run the startup's queries through cache -> SearXNG -> Tavily (guarded), keep
-    results that name the company, read the best two pages, and return one
-    text block for the model plus a report of what was spent. Never raises.
-    """
-    rep = SearchReport()
-    own = _domain(website) if website else ""
-    seen, kept = set(), []
+    """The deck flow's two standard questions (see queries_for)."""
+    return search(name, queries_for(name), website, allow_paid=allow_paid)
 
-    for q in queries_for(name):
+
+def search(name: str, queries: List[str], website: Optional[str] = None, *,
+           allow_paid: bool = True, max_paid: int = MAX_SEARCHES_PER_DRAFT,
+           rep: Optional[SearchReport] = None) -> SearchReport:
+    """
+    Run `queries` through cache -> SearXNG -> Tavily (guarded), keep results
+    that name the company, and (re)build one text block for the model. Pass the
+    same `rep` again to add queries: the per-draft limit (`max_paid`) counts
+    across every call on that report, so research in rounds can't overspend.
+    Never raises.
+    """
+    rep = rep or SearchReport()
+    own = _domain(website) if website else ""
+    seen = {r["url"] for r in rep.results}
+
+    for q in queries:
+        if q in rep.queries:
+            continue
         rep.queries.append(q)
         results = _cache_get(q)
         if results is not None:
@@ -287,7 +328,7 @@ def search_company(name: str, website: Optional[str] = None, *, allow_paid: bool
                 rep.free += 1
                 _cache_put(q, results, "searxng")
             elif allow_paid:
-                why_not = _may_spend(rep)
+                why_not = _may_spend(rep, max_paid)
                 if why_not:
                     rep.notes.append(f"Paid web search skipped: {why_not}.")
                     results = []
@@ -306,28 +347,58 @@ def search_company(name: str, website: Optional[str] = None, *, allow_paid: bool
 
         for r in results:
             u = r["url"].split("#")[0]
-            if u in seen or (own and _domain(u) == own) or not _names_company(r, name):
+            if u in seen or not _names_company(r, name):
                 continue
             seen.add(u)
-            kept.append(r)
+            rep.results.append(r)
 
-    rep.results = kept
-    rep.text = _build_text(kept)
-    # Dedupe notes (two queries can hit the same refusal).
-    rep.notes = list(dict.fromkeys(rep.notes))
+    rebuild(rep, name, website)
+    rep.notes = list(dict.fromkeys(rep.notes))       # two queries can hit the same refusal
     return rep
 
 
-def _build_text(results: List[dict]) -> str:
-    """Snippets for all kept results, plus the full text of the first PAGE_FETCH
-    pages (plain HTTP, costs no credits), capped at WEB_TEXT_BUDGET."""
+def rebuild(rep: SearchReport, name: str, website: Optional[str] = None) -> None:
+    """Drop the company's own site from the third-party results (it is read
+    separately, in full) and rebuild the text block for the model."""
+    import sitereader
+
+    own = _domain(website) if website else ""
+    if own:
+        n = sitereader.norm_name(name)
+        # Its own site is read in full elsewhere; ANOTHER domain built on the
+        # same name is another company (atirahotels.com vs atira.ai).
+        rep.results = [r for r in rep.results
+                       if _domain(r["url"]) != own
+                       and not sitereader._norm(_domain(r["url"]).split(".")[0]).startswith(n)]
+    rep.text = _build_text(rep.results, name)
+
+
+def all_result_urls(rep: SearchReport) -> List[str]:
+    """Every URL the queries returned, in order — including the company's own
+    site, which is how a missing website is discovered (sitereader)."""
+    out = []
+    for q in rep.queries:
+        for r in _cache_get(q) or []:
+            if r.get("url") and r["url"] not in out:
+                out.append(r["url"])
+    return out
+
+
+def _build_text(results: List[dict], name: str = "") -> str:
+    """Snippets for all kept results, plus the first PAGE_FETCH pages read in
+    full (plain HTTP, no credits) — but only the paragraphs that name the
+    company: a listing or newsletter page names many companies, and taking all
+    of it is how facts end up on the wrong startup. Capped at WEB_TEXT_BUDGET."""
+    import sitereader
+
     blocks, used = [], 0
     for i, r in enumerate(results):
         body = r.get("snippet", "")
         if i < PAGE_FETCH:
             page = _fetch(r["url"])
-            if page:
-                body = page
+            excerpt = sitereader.name_excerpt(page, name) if (page and name) else page
+            if excerpt:
+                body = excerpt
         block = f"[Quelle: {r['url']}]\n{' '.join(body.split())}"
         room = WEB_TEXT_BUDGET - used
         if room < 200:
